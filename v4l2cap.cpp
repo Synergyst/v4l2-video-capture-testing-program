@@ -469,7 +469,7 @@ static void process_image(const void* p, int size) {
       rescale_bilinear(redVals, startingWidth, startingHeight, outputFrameScaledR, scaledOutWidth, scaledOutHeight);
       rescale_bilinear(greenVals, startingWidth, startingHeight, outputFrameScaledG, scaledOutWidth, scaledOutHeight);
       rescale_bilinear(blueVals, startingWidth, startingHeight, outputFrameScaledB, scaledOutWidth, scaledOutHeight);
-      combine_rgb24(outputFrameScaledR, outputFrameScaledG, outputFrameScaledB, outputFrameRGB24, scaledOutWidth, scaledOutHeight);
+      combine_rgb24(outputFrameScaledB, outputFrameScaledG, outputFrameScaledR, outputFrameRGB24, scaledOutWidth, scaledOutHeight);
       /*rgb24_to_greyscale(outputFrameRGB24, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
       frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));*/
       frame_to_stdout(outputFrameRGB24, (scaledOutWidth * scaledOutHeight * 3));
