@@ -48,7 +48,7 @@ int start_main(char *device_name);
 
 int main(int argc, char **argv) {
   device = (char*)calloc(64, sizeof(char));
-  strcpy(device, "/dev/video2");
+  strcpy(device, "/dev/video0");
   start_main(device);
   /*devicealt = (char*)calloc(64, sizeof(char));
   strcpy(devicealt, "/dev/video0");

@@ -67,10 +67,10 @@ static int xioctl(int fh, int request, void* arg) {
 }
 
 // The width and height of the input video and any downscaled output video
-static const int startingWidth = 1920;
-static const int startingHeight = 1080;
-static const int scaledOutWidth = 452;
-static const int scaledOutHeight = 254;
+static const int startingWidth = 1280;
+static const int startingHeight = 720;
+static const int scaledOutWidth = 640;
+static const int scaledOutHeight = 480;
 static int croppedWidth = 0;
 static int croppedHeight = 0;
 // Crop size matrix (scale up or down as needed)
@@ -462,6 +462,7 @@ static void process_image(const void* p, int size) {
     //frame_number++;
     if (force_format == 1) {
       yuyv_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
+      frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
     } else if (force_format == 3) {
       //rgb24_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
       separate_rgb24(preP, redVals, greenVals, blueVals, startingWidth, startingHeight);
@@ -469,7 +470,8 @@ static void process_image(const void* p, int size) {
       rescale_bilinear(greenVals, startingWidth, startingHeight, outputFrameScaledG, scaledOutWidth, scaledOutHeight);
       rescale_bilinear(blueVals, startingWidth, startingHeight, outputFrameScaledB, scaledOutWidth, scaledOutHeight);
       combine_rgb24(outputFrameScaledR, outputFrameScaledG, outputFrameScaledB, outputFrameRGB24, scaledOutWidth, scaledOutHeight);
-      rgb24_to_greyscale(outputFrameRGB24, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+      /*rgb24_to_greyscale(outputFrameRGB24, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+      frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));*/
       frame_to_stdout(outputFrameRGB24, (scaledOutWidth * scaledOutHeight * 3));
     } else {
       rgb24_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
