@@ -67,10 +67,12 @@ static int xioctl(int fh, int request, void* arg) {
 }
 
 // The width and height of the input video and any downscaled output video
-static const int startingWidth = 1280;
-static const int startingHeight = 720;
+static const int startingWidth = 1920;
+static const int startingHeight = 1080;
 static const int scaledOutWidth = 640;
-static const int scaledOutHeight = 480;
+static const int scaledOutHeight = 360;
+/*static const int scaledOutWidth = 384;
+static const int scaledOutHeight = 216;*/
 static int croppedWidth = 0;
 static int croppedHeight = 0;
 // Crop size matrix (scale up or down as needed)
@@ -457,24 +459,38 @@ static void combine_rgb24(unsigned char* red, unsigned char* green, unsigned cha
   }
 }
 
+bool noRGB = true;
+bool doMinimalGreyscaleOnly = true;
 static void process_image(const void* p, int size) {
     unsigned char* preP = (unsigned char*)p;
-    //frame_number++;
-    if (force_format == 1) {
-      yuyv_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
-      frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
-    } else if (force_format == 3) {
-      //rgb24_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
-      separate_rgb24(preP, redVals, greenVals, blueVals, startingWidth, startingHeight);
-      rescale_bilinear(redVals, startingWidth, startingHeight, outputFrameScaledR, scaledOutWidth, scaledOutHeight);
-      rescale_bilinear(greenVals, startingWidth, startingHeight, outputFrameScaledG, scaledOutWidth, scaledOutHeight);
-      rescale_bilinear(blueVals, startingWidth, startingHeight, outputFrameScaledB, scaledOutWidth, scaledOutHeight);
-      combine_rgb24(outputFrameScaledB, outputFrameScaledG, outputFrameScaledR, outputFrameRGB24, scaledOutWidth, scaledOutHeight);
-      /*rgb24_to_greyscale(outputFrameRGB24, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-      frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));*/
-      frame_to_stdout(outputFrameRGB24, (scaledOutWidth * scaledOutHeight * 3));
-    } else {
-      rgb24_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
+    if (frame_number % 5 == 0) {
+      if (force_format == 1) {
+        yuyv_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
+        rescale_bilinear(outputFrameGreyscale, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
+        frame_to_stdout(outputFrameGreyscale1, scaledOutWidth * scaledOutHeight);
+      } else if (force_format == 3) {
+        if (doMinimalGreyscaleOnly) {
+          rgb24_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
+          rescale_bilinear(outputFrameGreyscale, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
+          frame_to_stdout(outputFrameGreyscale1, scaledOutWidth * scaledOutHeight);
+        } else {
+          separate_rgb24(preP, redVals, greenVals, blueVals, startingWidth, startingHeight);
+          rescale_bilinear(redVals, startingWidth, startingHeight, outputFrameScaledR, scaledOutWidth, scaledOutHeight);
+          rescale_bilinear(greenVals, startingWidth, startingHeight, outputFrameScaledG, scaledOutWidth, scaledOutHeight);
+          rescale_bilinear(blueVals, startingWidth, startingHeight, outputFrameScaledB, scaledOutWidth, scaledOutHeight);
+          combine_rgb24(outputFrameScaledB, outputFrameScaledG, outputFrameScaledR, outputFrameRGB24, scaledOutWidth, scaledOutHeight);
+          if (noRGB) {
+            rgb24_to_greyscale(outputFrameRGB24, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+            frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
+          } else {
+            frame_to_stdout(outputFrameRGB24, (scaledOutWidth * scaledOutHeight * 3));
+          }
+        }
+      } else {
+        rgb24_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
+      }
+    } else if (frame_number == 60) {
+      frame_number = 0;
     }
     /*rescale_bilinear(outputFrameGreyscale, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
     frame_to_stdout(outputFrameGreyscale1, (scaledOutWidth * scaledOutHeight));*/
@@ -485,6 +501,7 @@ static void process_image(const void* p, int size) {
     frame_to_stdout(outputFrameGreyscale4, (croppedWidth * croppedHeight));*/
     croppedWidth = 0;
     croppedHeight = 0;
+    frame_number++;
 }
 
 static int read_frame(void) {
