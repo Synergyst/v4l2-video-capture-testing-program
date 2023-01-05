@@ -122,7 +122,7 @@ static void yuyv_to_greyscale(const unsigned char* yuyv, unsigned char* grey, in
 }
 
 static void replace_pixels_below_val(const unsigned char* input, unsigned char* output, int width, int height, const int val) {
-#pragma omp parallel for num_threads(3)
+#pragma omp parallel for num_threads(4)
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       // Get the pixel value at the current position
@@ -140,7 +140,7 @@ static void replace_pixels_below_val(const unsigned char* input, unsigned char* 
 }
 
 static void replace_pixels_above_val(const unsigned char* input, unsigned char* output, int width, int height, const int val) {
-#pragma omp parallel for num_threads(3)
+#pragma omp parallel for num_threads(4)
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       // Get the pixel value at the current position
@@ -265,7 +265,7 @@ static void yuyv_to_uyvy(unsigned char* input, unsigned char* output, int width,
 
 static void rgb24_to_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
   // Iterate over each pixel in the input image
-#pragma omp parallel for num_threads(3)
+#pragma omp parallel for num_threads(4)
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       // Calculate the offset into the input buffer for the current pixel
@@ -337,7 +337,7 @@ static void resize_image_nearest_neighbor(const uint8_t* src, int src_width, int
 }
 
 static void rescale_bilinear(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
-#pragma omp parallel for num_threads(3)
+#pragma omp parallel for num_threads(4)
   for (int y = 0; y < output_height; y++) {
     for (int x = 0; x < output_width; x++) {
       // Calculate the corresponding pixel coordinates in the input image.
@@ -448,7 +448,7 @@ static void crop_greyscale(unsigned char* image, int width, int height, int* cro
 }
 
 static void separate_rgb24(unsigned char* rgb, unsigned char* red, unsigned char* green, unsigned char* blue, int width, int height) {
-#pragma omp parallel for num_threads(3)
+#pragma omp parallel for num_threads(4)
   for (int i = 0; i < width * height * 3; i += 3) {
     red[i / 3] = rgb[i];
     green[i / 3] = rgb[i + 1];
@@ -457,7 +457,7 @@ static void separate_rgb24(unsigned char* rgb, unsigned char* red, unsigned char
 }
 
 static void combine_rgb24(unsigned char* red, unsigned char* green, unsigned char* blue, unsigned char* rgb, int width, int height) {
-#pragma omp parallel for num_threads(3)
+#pragma omp parallel for num_threads(4)
   for (int i = 0; i < width * height; i++) {
     rgb[i * 3] = red[i];
     rgb[i * 3 + 1] = green[i];
@@ -466,7 +466,7 @@ static void combine_rgb24(unsigned char* red, unsigned char* green, unsigned cha
 }
 
 void invert_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
-#pragma omp parallel for num_threads(3)
+#pragma omp parallel for num_threads(4)
   for (int i = 0; i < width * height; i++) {
     output[i] = 255 - input[i];
   }
@@ -479,7 +479,8 @@ const bool doMinimalGreyscaleOnly = true;
 const bool doInvert = false;
 static void process_image(const void* p, int size) {
     unsigned char* preP = (unsigned char*)p;
-#ifdef FPS_LIMITER_10_OF_30
+    //frame_to_stdout(preP, (size));
+/*#ifdef FPS_LIMITER_10_OF_30
     if (frame_number % 3 == 0) {
 #elseif FPS_LIMITER_30_OF_60
     if (frame_number % 6 == 0) {
@@ -497,12 +498,12 @@ static void process_image(const void* p, int size) {
           if (doInvert) {
             invert_greyscale(outputFrameGreyscale1, outputFrameGreyscale2, scaledOutWidth, scaledOutHeight);
             frame_to_stdout(outputFrameGreyscale2, scaledOutWidth * scaledOutHeight);
-          } else {
+          } else {*/
             /*replace_pixels_below_val(outputFrameGreyscale1, outputFrameGreyscale2, scaledOutWidth, scaledOutHeight, 85);
             replace_pixels_above_val(outputFrameGreyscale2, outputFrameGreyscale3, scaledOutWidth, scaledOutHeight, 127);
             greyscale_to_sobel(outputFrameGreyscale3, outputFrameGreyscale4, scaledOutWidth, scaledOutHeight);
             frame_to_stdout(outputFrameGreyscale4, scaledOutWidth * scaledOutHeight);*/
-            frame_to_stdout(outputFrameGreyscale1, scaledOutWidth * scaledOutHeight);
+            /*frame_to_stdout(outputFrameGreyscale1, scaledOutWidth * scaledOutHeight);
           }
         } else {
           separate_rgb24(preP, redVals, greenVals, blueVals, startingWidth, startingHeight);
@@ -527,7 +528,7 @@ static void process_image(const void* p, int size) {
       }
     } else if (frame_number == 2147483647) {
       frame_number = 0;
-    }
+    }*/
     /*rescale_bilinear(outputFrameGreyscale, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
     frame_to_stdout(outputFrameGreyscale1, (scaledOutWidth * scaledOutHeight));*/
     /*rescale_bilinear(outputFrameGreyscale, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
@@ -973,6 +974,15 @@ int start_main(char *device_name) {
     dev_name = (char*)calloc(64, sizeof(char));
     strcpy(dev_name, device_name);
     dev_name_alt = (char*)calloc(64, sizeof(char));
+    fprintf(stderr, "Potential output resolutions(alt: %s): %dx%d (unscaled)", dev_name_alt, (startingWidthAlt), (startingHeightAlt));
+    int tempCropAmtWidthAlt = scaledOutWidthAlt;
+    int tempCropAmtHeightAlt = scaledOutHeightAlt;
+    for (int i = 0; i < (sizeof(cropMatrixAlt) / sizeof(*cropMatrixAlt)); i++) {
+      tempCropAmtWidthAlt = (tempCropAmtWidthAlt - (cropMatrixAlt[i][0] + cropMatrixAlt[i][1]));
+      tempCropAmtHeightAlt = (tempCropAmtHeightAlt - (cropMatrixAlt[i][2] + cropMatrixAlt[i][3]));
+      fprintf(stderr, " >> %dx%d (L:%d,R:%d,T:%d,B:%d)", tempCropAmtWidthAlt, tempCropAmtHeightAlt, cropMatrixAlt[i][0], cropMatrixAlt[i][1], cropMatrixAlt[i][2], cropMatrixAlt[i][3]);
+    }
+    fprintf(stderr, "\n");
     strcpy(dev_name_alt, "/dev/video0");
     fprintf(stderr, "Potential output resolutions(main: %s): %dx%d (unscaled)", dev_name, (startingWidth), (startingHeight));
     int tempCropAmtWidth = scaledOutWidth;
@@ -983,27 +993,14 @@ int start_main(char *device_name) {
       fprintf(stderr, " >> %dx%d (L:%d,R:%d,T:%d,B:%d)", tempCropAmtWidth, tempCropAmtHeight, cropMatrix[i][0], cropMatrix[i][1], cropMatrix[i][2], cropMatrix[i][3]);
     }
     fprintf(stderr, "\n");
-    fprintf(stderr, "Potential output resolutions(alt: %s): %dx%d (unscaled)", dev_name_alt, (startingWidthAlt), (startingHeightAlt));
-    int tempCropAmtWidthAlt = scaledOutWidthAlt;
-    int tempCropAmtHeightAlt = scaledOutHeightAlt;
-    for (int i = 0; i < (sizeof(cropMatrixAlt) / sizeof(*cropMatrixAlt)); i++) {
-      tempCropAmtWidthAlt = (tempCropAmtWidthAlt - (cropMatrixAlt[i][0] + cropMatrixAlt[i][1]));
-      tempCropAmtHeightAlt = (tempCropAmtHeightAlt - (cropMatrixAlt[i][2] + cropMatrixAlt[i][3]));
-      fprintf(stderr, " >> %dx%d (L:%d,R:%d,T:%d,B:%d)", tempCropAmtWidthAlt, tempCropAmtHeightAlt, cropMatrixAlt[i][0], cropMatrixAlt[i][1], cropMatrixAlt[i][2], cropMatrixAlt[i][3]);
-    }
-    fprintf(stderr, "\n");
     open_deviceAlt();
     init_deviceAlt();
     start_capturingAlt();
-    fprintf(stderr, "Started alt-loop. Sleeping for 3 seconds..\n");
-    usleep(3000000);
+    fprintf(stderr, "Started alt-loop.\n");
     open_device();
     init_device();
     start_capturing();
-    fprintf(stderr, "Started main-loop. Sleeping for 3 seconds..\n");
-    usleep(3000000);
-    fprintf(stderr, "Done initializing. Sleeping for 3 seconds..\n");
-    usleep(3000000);
+    fprintf(stderr, "Started main-loop.\n");
     mainloop();
     //mainloopAlt();
     stop_capturingAlt();

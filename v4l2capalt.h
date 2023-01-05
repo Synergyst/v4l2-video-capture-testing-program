@@ -989,7 +989,7 @@ void init_deviceAlt(void) {
     init_userpAlt(fmt.fmt.pix.sizeimage);
     break;
   }
-  //set_framerateAlt();
+  set_framerateAlt();
 }
 
 void close_deviceAlt(void) {
