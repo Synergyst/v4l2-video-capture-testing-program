@@ -43,6 +43,7 @@ struct buffer {
 
 static char* dev_name;
 static enum io_method io = IO_METHOD_MMAP;
+//static enum io_method io = IO_METHOD_USERPTR;
 static int fd = -1;
 static struct buffer* buffers;
 static unsigned int n_buffers;
@@ -67,10 +68,14 @@ static int xioctl(int fh, int request, void* arg) {
 }
 
 // The width and height of the input video and any downscaled output video
-static const int startingWidth = 1920;
+static const int startingWidth = 1280;
+static const int startingHeight = 720;
+/*static const int startingWidth = 1920;
 static const int startingHeight = 1080;
 static const int scaledOutWidth = 640;
-static const int scaledOutHeight = 360;
+static const int scaledOutHeight = 360;*/
+static const int scaledOutWidth = 160;
+static const int scaledOutHeight = 90;
 /*static const int scaledOutWidth = 384;
 static const int scaledOutHeight = 216;*/
 static int croppedWidth = 0;
@@ -116,7 +121,7 @@ static void yuyv_to_greyscale(const unsigned char* yuyv, unsigned char* grey, in
 }
 
 static void replace_pixels_below_val(const unsigned char* input, unsigned char* output, int width, int height, const int val) {
-#pragma omp parallel for
+#pragma omp parallel for num_threads(3)
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       // Get the pixel value at the current position
@@ -124,8 +129,8 @@ static void replace_pixels_below_val(const unsigned char* input, unsigned char* 
       // If the pixel value is below 63, replace it with a modified value
       if (pixel < val) {
         output[y * width + x] = (unsigned char)sqrt(output[y * width + x]);
-      }
-      else {
+        //output[y * width + x] = 0;
+      } else {
         // Otherwise, copy the pixel value from the input to the output
         output[y * width + x] = pixel;
       }
@@ -134,7 +139,7 @@ static void replace_pixels_below_val(const unsigned char* input, unsigned char* 
 }
 
 static void replace_pixels_above_val(const unsigned char* input, unsigned char* output, int width, int height, const int val) {
-#pragma omp parallel for
+#pragma omp parallel for num_threads(3)
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       // Get the pixel value at the current position
@@ -259,7 +264,7 @@ static void yuyv_to_uyvy(unsigned char* input, unsigned char* output, int width,
 
 static void rgb24_to_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
   // Iterate over each pixel in the input image
-#pragma omp parallel for
+#pragma omp parallel for num_threads(3)
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       // Calculate the offset into the input buffer for the current pixel
@@ -331,7 +336,7 @@ static void resize_image_nearest_neighbor(const uint8_t* src, int src_width, int
 }
 
 static void rescale_bilinear(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
-#pragma omp parallel for
+#pragma omp parallel for num_threads(3)
   for (int y = 0; y < output_height; y++) {
     for (int x = 0; x < output_width; x++) {
       // Calculate the corresponding pixel coordinates in the input image.
@@ -442,7 +447,7 @@ static void crop_greyscale(unsigned char* image, int width, int height, int* cro
 }
 
 static void separate_rgb24(unsigned char* rgb, unsigned char* red, unsigned char* green, unsigned char* blue, int width, int height) {
-#pragma omp parallel for
+#pragma omp parallel for num_threads(3)
   for (int i = 0; i < width * height * 3; i += 3) {
     red[i / 3] = rgb[i];
     green[i / 3] = rgb[i + 1];
@@ -451,7 +456,7 @@ static void separate_rgb24(unsigned char* rgb, unsigned char* red, unsigned char
 }
 
 static void combine_rgb24(unsigned char* red, unsigned char* green, unsigned char* blue, unsigned char* rgb, int width, int height) {
-#pragma omp parallel for
+#pragma omp parallel for num_threads(3)
   for (int i = 0; i < width * height; i++) {
     rgb[i * 3] = red[i];
     rgb[i * 3 + 1] = green[i];
@@ -459,11 +464,27 @@ static void combine_rgb24(unsigned char* red, unsigned char* green, unsigned cha
   }
 }
 
-bool noRGB = true;
-bool doMinimalGreyscaleOnly = true;
+void invert_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
+#pragma omp parallel for num_threads(3)
+  for (int i = 0; i < width * height; i++) {
+    output[i] = 255 - input[i];
+  }
+}
+
+/*#define FPS_LIMITER_10_OF_30
+#define FPS_LIMITER_30_OF_60*/
+const bool noRGB = true;
+const bool doMinimalGreyscaleOnly = true;
+const bool doInvert = false;
 static void process_image(const void* p, int size) {
     unsigned char* preP = (unsigned char*)p;
-    if (frame_number % 5 == 0) {
+#ifdef FPS_LIMITER_10_OF_30
+    if (frame_number % 3 == 0) {
+#elseif FPS_LIMITER_30_OF_60
+    if (frame_number % 6 == 0) {
+#else
+    if (true) {
+#endif
       if (force_format == 1) {
         yuyv_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
         rescale_bilinear(outputFrameGreyscale, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
@@ -472,7 +493,16 @@ static void process_image(const void* p, int size) {
         if (doMinimalGreyscaleOnly) {
           rgb24_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
           rescale_bilinear(outputFrameGreyscale, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
-          frame_to_stdout(outputFrameGreyscale1, scaledOutWidth * scaledOutHeight);
+          if (doInvert) {
+            invert_greyscale(outputFrameGreyscale1, outputFrameGreyscale2, scaledOutWidth, scaledOutHeight);
+            frame_to_stdout(outputFrameGreyscale2, scaledOutWidth * scaledOutHeight);
+          } else {
+            /*replace_pixels_below_val(outputFrameGreyscale1, outputFrameGreyscale2, scaledOutWidth, scaledOutHeight, 85);
+            replace_pixels_above_val(outputFrameGreyscale2, outputFrameGreyscale3, scaledOutWidth, scaledOutHeight, 127);
+            greyscale_to_sobel(outputFrameGreyscale3, outputFrameGreyscale4, scaledOutWidth, scaledOutHeight);
+            frame_to_stdout(outputFrameGreyscale4, scaledOutWidth * scaledOutHeight);*/
+            frame_to_stdout(outputFrameGreyscale1, scaledOutWidth * scaledOutHeight);
+          }
         } else {
           separate_rgb24(preP, redVals, greenVals, blueVals, startingWidth, startingHeight);
           rescale_bilinear(redVals, startingWidth, startingHeight, outputFrameScaledR, scaledOutWidth, scaledOutHeight);
@@ -481,7 +511,12 @@ static void process_image(const void* p, int size) {
           combine_rgb24(outputFrameScaledB, outputFrameScaledG, outputFrameScaledR, outputFrameRGB24, scaledOutWidth, scaledOutHeight);
           if (noRGB) {
             rgb24_to_greyscale(outputFrameRGB24, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-            frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
+            if (doInvert) {
+              invert_greyscale(outputFrameGreyscale, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
+              frame_to_stdout(outputFrameGreyscale1, (scaledOutWidth * scaledOutHeight));
+            } else {
+              frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
+            }
           } else {
             frame_to_stdout(outputFrameRGB24, (scaledOutWidth * scaledOutHeight * 3));
           }
@@ -489,7 +524,7 @@ static void process_image(const void* p, int size) {
       } else {
         rgb24_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
       }
-    } else if (frame_number == 60) {
+    } else if (frame_number == 2147483647) {
       frame_number = 0;
     }
     /*rescale_bilinear(outputFrameGreyscale, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
@@ -839,38 +874,35 @@ static void init_device(void) {
     fprintf(stderr, "Force Format %d\n", force_format);
     if (force_format) {
         if (force_format == 3) {
-            fmt.fmt.pix.width = 1280;
-            fmt.fmt.pix.height = 720;
-            //fmt.fmt.pix.width = startingWidth;
-            //fmt.fmt.pix.height = startingHeight;
+            //fmt.fmt.pix.width = 1280;
+            //fmt.fmt.pix.height = 720;
+            fmt.fmt.pix.width = startingWidth;
+            fmt.fmt.pix.height = startingHeight;
             fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_RGB24;
             fmt.fmt.pix.field = V4L2_FIELD_NONE;
             //fmt.fmt.pix.field       = V4L2_FIELD_INTERLACED;
-        }
-        else if (force_format == 2) {
-            fmt.fmt.pix.width = 1280;
-            fmt.fmt.pix.height = 720;
-            //fmt.fmt.pix.width = startingWidth;
-            //fmt.fmt.pix.height = startingHeight;
+        } else if (force_format == 2) {
+            //fmt.fmt.pix.width = 1280;
+            //fmt.fmt.pix.height = 720;
+            fmt.fmt.pix.width = startingWidth;
+            fmt.fmt.pix.height = startingHeight;
             fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_H264;
             fmt.fmt.pix.field = V4L2_FIELD_NONE;
             //fmt.fmt.pix.field       = V4L2_FIELD_INTERLACED;
-        }
-        else if (force_format == 1) {
-            fmt.fmt.pix.width = 1280;
-            fmt.fmt.pix.height = 720;
-            //fmt.fmt.pix.width = startingWidth;
-            //fmt.fmt.pix.height = startingHeight;
-            fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
-            //fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_UYVY;
+        } else if (force_format == 1) {
+            //fmt.fmt.pix.width = 1280;
+            //fmt.fmt.pix.height = 720;
+            fmt.fmt.pix.width = startingWidth;
+            fmt.fmt.pix.height = startingHeight;
+            //fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+            fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_UYVY;
             fmt.fmt.pix.field = V4L2_FIELD_NONE;
             //fmt.fmt.pix.field	= V4L2_FIELD_INTERLACED;
         }
         if (-1 == xioctl(fd, VIDIOC_S_FMT, &fmt))
             errno_exit("VIDIOC_S_FMT");
         /* Note VIDIOC_S_FMT may change width and height. */
-    }
-    else {
+    } else {
         /* Preserve original settings as set by v4l2-ctl for example */
         if (-1 == xioctl(fd, VIDIOC_G_FMT, &fmt))
             errno_exit("VIDIOC_G_FMT");
@@ -893,7 +925,7 @@ static void init_device(void) {
         init_userp(fmt.fmt.pix.sizeimage);
         break;
     }
-    set_framerate();
+    //set_framerate();
 }
 
 static void close_device(void) {
