@@ -21,6 +21,7 @@
 #include <linux/videodev2.h>
 #include <libv4l2.h>
 #include <omp.h>
+#include "v4l2capalt.h"
 
 #define V4L_ALLFORMATS  3
 #define V4L_RAWFORMATS  1
@@ -960,21 +961,55 @@ int start_main(char *device_name) {
     memset(outputFrameGreyscale3, 0, startingWidth * startingHeight * sizeof(unsigned char));
     memset(outputFrameGreyscale4, 0, startingWidth * startingHeight * sizeof(unsigned char));
     memset(outputFrameGreyscale5, 0, startingWidth * startingHeight * sizeof(unsigned char));
-    fprintf(stderr, "Potential output resolutions: %dx%d (unscaled)", (startingWidth), (startingHeight));
+    memset(outputFrameAlt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
+    memset(outputFrame2Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
+    memset(outputFrame3Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
+    memset(outputFrameGreyscaleAlt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
+    memset(outputFrameGreyscale1Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
+    memset(outputFrameGreyscale2Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
+    memset(outputFrameGreyscale3Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
+    memset(outputFrameGreyscale4Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
+    memset(outputFrameGreyscale5Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
+    dev_name = (char*)calloc(64, sizeof(char));
+    strcpy(dev_name, device_name);
+    dev_name_alt = (char*)calloc(64, sizeof(char));
+    strcpy(dev_name_alt, "/dev/video0");
+    fprintf(stderr, "Potential output resolutions(main: %s): %dx%d (unscaled)", dev_name, (startingWidth), (startingHeight));
     int tempCropAmtWidth = scaledOutWidth;
     int tempCropAmtHeight = scaledOutHeight;
     for (int i = 0; i < (sizeof(cropMatrix) / sizeof(*cropMatrix)); i++) {
-        tempCropAmtWidth = (tempCropAmtWidth - (cropMatrix[i][0] + cropMatrix[i][1]));
-        tempCropAmtHeight = (tempCropAmtHeight - (cropMatrix[i][2] + cropMatrix[i][3]));
-        fprintf(stderr, " >> %dx%d (L:%d,R:%d,T:%d,B:%d)", tempCropAmtWidth, tempCropAmtHeight, cropMatrix[i][0], cropMatrix[i][1], cropMatrix[i][2], cropMatrix[i][3]);
+      tempCropAmtWidth = (tempCropAmtWidth - (cropMatrix[i][0] + cropMatrix[i][1]));
+      tempCropAmtHeight = (tempCropAmtHeight - (cropMatrix[i][2] + cropMatrix[i][3]));
+      fprintf(stderr, " >> %dx%d (L:%d,R:%d,T:%d,B:%d)", tempCropAmtWidth, tempCropAmtHeight, cropMatrix[i][0], cropMatrix[i][1], cropMatrix[i][2], cropMatrix[i][3]);
     }
     fprintf(stderr, "\n");
-    dev_name = (char*)calloc(64, sizeof(char));
-    strcpy(dev_name, device_name);
+    fprintf(stderr, "Potential output resolutions(alt: %s): %dx%d (unscaled)", dev_name_alt, (startingWidthAlt), (startingHeightAlt));
+    int tempCropAmtWidthAlt = scaledOutWidthAlt;
+    int tempCropAmtHeightAlt = scaledOutHeightAlt;
+    for (int i = 0; i < (sizeof(cropMatrixAlt) / sizeof(*cropMatrixAlt)); i++) {
+      tempCropAmtWidthAlt = (tempCropAmtWidthAlt - (cropMatrixAlt[i][0] + cropMatrixAlt[i][1]));
+      tempCropAmtHeightAlt = (tempCropAmtHeightAlt - (cropMatrixAlt[i][2] + cropMatrixAlt[i][3]));
+      fprintf(stderr, " >> %dx%d (L:%d,R:%d,T:%d,B:%d)", tempCropAmtWidthAlt, tempCropAmtHeightAlt, cropMatrixAlt[i][0], cropMatrixAlt[i][1], cropMatrixAlt[i][2], cropMatrixAlt[i][3]);
+    }
+    fprintf(stderr, "\n");
+    open_deviceAlt();
+    init_deviceAlt();
+    start_capturingAlt();
+    fprintf(stderr, "Started alt-loop. Sleeping for 3 seconds..\n");
+    usleep(3000000);
     open_device();
     init_device();
     start_capturing();
+    fprintf(stderr, "Started main-loop. Sleeping for 3 seconds..\n");
+    usleep(3000000);
+    fprintf(stderr, "Done initializing. Sleeping for 3 seconds..\n");
+    usleep(3000000);
     mainloop();
+    //mainloopAlt();
+    stop_capturingAlt();
+    uninit_deviceAlt();
+    close_deviceAlt();
+    fprintf(stderr, "\n");
     stop_capturing();
     uninit_device();
     close_device();

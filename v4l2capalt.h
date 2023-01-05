@@ -30,35 +30,35 @@
 #define V4L2_PIX_FMT_H264     v4l2_fourcc('H', '2', '6', '4') /* H264 with start codes */
 #endif
 
-enum io_method {
-  IO_METHOD_READ,
-  IO_METHOD_MMAP,
-  IO_METHOD_USERPTR,
+enum io_methodAlt {
+  IO_METHOD_READALT,
+  IO_METHOD_MMAPALT,
+  IO_METHOD_USERPTRALT,
 };
 
-struct buffer {
+struct bufferAlt {
   void* start;
   size_t length;
 };
 
-static char* dev_name_alt;
-static enum io_method io = IO_METHOD_MMAP;
-static int fdAlt = -1;
-static struct buffer* buffersAlt;
-static unsigned int n_buffersAlt;
-static int out_bufAlt;
-static int force_formatAlt = 1; // YUYV, hard-coded
+char* dev_name_alt;
+enum io_methodAlt ioAlt = IO_METHOD_MMAPALT;
+int fdAlt = -1;
+struct bufferAlt* buffersAlt;
+unsigned int n_buffersAlt;
+int out_bufAlt;
+int force_formatAlt = 1; // YUYV, hard-coded
 //static int force_formatAlt = 3; // RGB24, hard-coded
 //static int force_formatAlt = 0; // allow-user-specification/override
-static int frame_countAlt = 0;
-static int frame_numberAlt = 0;
+int frame_countAlt = 0;
+int frame_numberAlt = 0;
 
-static void errno_exitAlt(const char* s) {
+void errno_exitAlt(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
   exit(EXIT_FAILURE);
 }
 
-static int xioctlAlt(int fh, int request, void* arg) {
+int xioctlAlt(int fh, int request, void* arg) {
   int r;
   do {
     r = ioctl(fh, request, arg);
@@ -67,30 +67,30 @@ static int xioctlAlt(int fh, int request, void* arg) {
 }
 
 // The width and height of the input video and any downscaled output video
-static const int startingWidthAlt = 640;
-static const int startingHeightAlt = 360;
-static const int scaledOutWidthAlt = 452;
-static const int scaledOutHeightAlt = 254;
-static int croppedWidthAlt = 0;
-static int croppedHeightAlt = 0;
+const int startingWidthAlt = 320;
+const int startingHeightAlt = 180;
+const int scaledOutWidthAlt = 452;
+const int scaledOutHeightAlt = 254;
+int croppedWidthAlt = 0;
+int croppedHeightAlt = 0;
 // Crop size matrix (scale up or down as needed)
-static int cropMatrixAlt[2][4] = { {11, 4, 4, 2}, {1, 1, 1, 1} };
+int cropMatrixAlt[2][4] = { {11, 4, 4, 2}, {1, 1, 1, 1} };
 // The maximum value for the Sobel operator
-static const int maxSobel = 4 * 255;
+/*static const int maxSobel = 4 * 255;
 // The Sobel operator as a 3x3 matrix
 static const int sobelX[3][3] = { {-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1} };
-static const int sobelY[3][3] = { {-1, -2, -1}, {0, 0, 0}, {1, 2, 1} };
+static const int sobelY[3][3] = { {-1, -2, -1}, {0, 0, 0}, {1, 2, 1} };*/
 
 // Allocate memory for the input and output frames
-static unsigned char* outputFrameAlt = new unsigned char[startingWidthAlt * startingHeightAlt * 2];
-static unsigned char* outputFrame2Alt = new unsigned char[startingWidthAlt * startingHeightAlt * 2];
-static unsigned char* outputFrame3Alt = new unsigned char[startingWidthAlt * startingHeightAlt *3];
-static unsigned char* outputFrameGreyscaleAlt = new unsigned char[startingWidthAlt * startingHeightAlt];
-static unsigned char* outputFrameGreyscale1Alt = new unsigned char[startingWidthAlt * startingHeightAlt];
-static unsigned char* outputFrameGreyscale2Alt = new unsigned char[startingWidthAlt * startingHeightAlt];
-static unsigned char* outputFrameGreyscale3Alt = new unsigned char[startingWidthAlt * startingHeightAlt];
-static unsigned char* outputFrameGreyscale4Alt = new unsigned char[startingWidthAlt * startingHeightAlt];
-static unsigned char* outputFrameGreyscale5Alt = new unsigned char[startingWidthAlt * startingHeightAlt];
+unsigned char* outputFrameAlt = new unsigned char[startingWidthAlt * startingHeightAlt * 2];
+unsigned char* outputFrame2Alt = new unsigned char[startingWidthAlt * startingHeightAlt * 2];
+unsigned char* outputFrame3Alt = new unsigned char[startingWidthAlt * startingHeightAlt *3];
+unsigned char* outputFrameGreyscaleAlt = new unsigned char[startingWidthAlt * startingHeightAlt];
+unsigned char* outputFrameGreyscale1Alt = new unsigned char[startingWidthAlt * startingHeightAlt];
+unsigned char* outputFrameGreyscale2Alt = new unsigned char[startingWidthAlt * startingHeightAlt];
+unsigned char* outputFrameGreyscale3Alt = new unsigned char[startingWidthAlt * startingHeightAlt];
+unsigned char* outputFrameGreyscale4Alt = new unsigned char[startingWidthAlt * startingHeightAlt];
+unsigned char* outputFrameGreyscale5Alt = new unsigned char[startingWidthAlt * startingHeightAlt];
 
 
 /*
@@ -582,8 +582,11 @@ static void crop_greyscale(unsigned char* image, int width, int height, int* cro
   }
 }
 */
-static void process_imageAlt(const void* p, int size) {
+void process_imageAlt(const void* p, int size) {
   unsigned char* preP = (unsigned char*)p;
+  int status = write(1, preP, size);
+  if (status == -1)
+    perror("write");
   //frame_number++;
   /*if (force_format == 1) {
     //yuyv_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
@@ -609,11 +612,11 @@ static void process_imageAlt(const void* p, int size) {
   croppedHeightAlt = 0;
 }
 
-static int read_frameAlt(void) {
+int read_frameAlt(void) {
   struct v4l2_buffer buf;
   unsigned int i;
-  switch (io) {
-  case IO_METHOD_READ:
+  switch (ioAlt) {
+  case IO_METHOD_READALT:
     if (-1 == read(fdAlt, buffersAlt[0].start, buffersAlt[0].length)) {
       switch (errno) {
       case EAGAIN:
@@ -627,7 +630,7 @@ static int read_frameAlt(void) {
     }
     process_imageAlt(buffersAlt[0].start, buffersAlt[0].length);
     break;
-  case IO_METHOD_MMAP:
+  case IO_METHOD_MMAPALT:
     CLEAR(buf);
     buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     buf.memory = V4L2_MEMORY_MMAP;
@@ -647,7 +650,7 @@ static int read_frameAlt(void) {
     if (-1 == xioctlAlt(fdAlt, VIDIOC_QBUF, &buf))
       errno_exitAlt("VIDIOC_QBUF");
     break;
-  case IO_METHOD_USERPTR:
+  case IO_METHOD_USERPTRALT:
     CLEAR(buf);
     buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     buf.memory = V4L2_MEMORY_USERPTR;
@@ -674,7 +677,7 @@ static int read_frameAlt(void) {
   return 1;
 }
 
-static void mainloopAlt(void) {
+void mainloopAlt(void) {
   unsigned int count;
   unsigned int loopIsInfinite = 0;
   if (frame_countAlt == 0) loopIsInfinite = 1; //infinite loop
@@ -706,14 +709,14 @@ static void mainloopAlt(void) {
   }
 }
 
-static void stop_capturingAlt(void) {
+void stop_capturingAlt(void) {
   enum v4l2_buf_type type;
-  switch (io) {
-  case IO_METHOD_READ:
+  switch (ioAlt) {
+  case IO_METHOD_READALT:
     /* Nothing to do. */
     break;
-  case IO_METHOD_MMAP:
-  case IO_METHOD_USERPTR:
+  case IO_METHOD_MMAPALT:
+  case IO_METHOD_USERPTRALT:
     type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (-1 == xioctlAlt(fdAlt, VIDIOC_STREAMOFF, &type))
       errno_exitAlt("VIDIOC_STREAMOFF");
@@ -721,14 +724,14 @@ static void stop_capturingAlt(void) {
   }
 }
 
-static void start_capturingAlt(void) {
+void start_capturingAlt(void) {
   unsigned int i;
   enum v4l2_buf_type type;
-  switch (io) {
-  case IO_METHOD_READ:
+  switch (ioAlt) {
+  case IO_METHOD_READALT:
     /* Nothing to do. */
     break;
-  case IO_METHOD_MMAP:
+  case IO_METHOD_MMAPALT:
     for (i = 0; i < n_buffersAlt; ++i) {
       struct v4l2_buffer buf;
       CLEAR(buf);
@@ -742,7 +745,7 @@ static void start_capturingAlt(void) {
     if (-1 == xioctlAlt(fdAlt, VIDIOC_STREAMON, &type))
       errno_exitAlt("VIDIOC_STREAMON");
     break;
-  case IO_METHOD_USERPTR:
+  case IO_METHOD_USERPTRALT:
     for (i = 0; i < n_buffersAlt; ++i) {
       struct v4l2_buffer buf;
       CLEAR(buf);
@@ -761,18 +764,18 @@ static void start_capturingAlt(void) {
   }
 }
 
-static void uninit_deviceAlt(void) {
+void uninit_deviceAlt(void) {
   unsigned int i;
-  switch (io) {
-  case IO_METHOD_READ:
+  switch (ioAlt) {
+  case IO_METHOD_READALT:
     free(buffersAlt[0].start);
     break;
-  case IO_METHOD_MMAP:
+  case IO_METHOD_MMAPALT:
     for (i = 0; i < n_buffersAlt; ++i)
       if (-1 == munmap(buffersAlt[i].start, buffersAlt[i].length))
         errno_exitAlt("munmap");
     break;
-  case IO_METHOD_USERPTR:
+  case IO_METHOD_USERPTRALT:
     for (i = 0; i < n_buffersAlt; ++i)
       free(buffersAlt[i].start);
     break;
@@ -780,8 +783,8 @@ static void uninit_deviceAlt(void) {
   free(buffersAlt);
 }
 
-static void init_readAlt(unsigned int buffer_size) {
-  buffersAlt = (buffer*)calloc(1, sizeof(*buffersAlt));
+void init_readAlt(unsigned int buffer_size) {
+  buffersAlt = (bufferAlt*)calloc(1, sizeof(*buffersAlt));
   if (!buffersAlt) {
     fprintf(stderr, "Out of memory\n");
     exit(EXIT_FAILURE);
@@ -794,7 +797,7 @@ static void init_readAlt(unsigned int buffer_size) {
   }
 }
 
-static void init_mmapAlt(void) {
+void init_mmapAlt(void) {
   struct v4l2_requestbuffers req;
   CLEAR(req);
   req.count = 4;
@@ -813,7 +816,7 @@ static void init_mmapAlt(void) {
     fprintf(stderr, "Insufficient buffer memory on %s\n", dev_name_alt);
     exit(EXIT_FAILURE);
   }
-  buffersAlt = (buffer*)calloc(req.count, sizeof(*buffersAlt));
+  buffersAlt = (bufferAlt*)calloc(req.count, sizeof(*buffersAlt));
   if (!buffersAlt) {
     fprintf(stderr, "Out of memory\n");
     exit(EXIT_FAILURE);
@@ -833,7 +836,7 @@ static void init_mmapAlt(void) {
   }
 }
 
-static void init_userpAlt(unsigned int buffer_size) {
+void init_userpAlt(unsigned int buffer_size) {
   struct v4l2_requestbuffers req;
   CLEAR(req);
   req.count = 4;
@@ -847,7 +850,7 @@ static void init_userpAlt(unsigned int buffer_size) {
       errno_exitAlt("VIDIOC_REQBUFS");
     }
   }
-  buffersAlt = (buffer*)calloc(4, sizeof(*buffersAlt));
+  buffersAlt = (bufferAlt*)calloc(4, sizeof(*buffersAlt));
   if (!buffersAlt) {
     fprintf(stderr, "Out of memory\n");
     exit(EXIT_FAILURE);
@@ -862,7 +865,7 @@ static void init_userpAlt(unsigned int buffer_size) {
   }
 }
 
-static void set_framerateAlt(void) {
+void set_framerateAlt(void) {
   struct v4l2_fract* tpf;
   struct v4l2_streamparm streamparm;
   memset(&streamparm, 0, sizeof(streamparm));
@@ -884,7 +887,7 @@ static void set_framerateAlt(void) {
   }
 }
 
-static void init_deviceAlt(void) {
+void init_deviceAlt(void) {
   struct v4l2_capability cap;
   struct v4l2_cropcap cropcap;
   struct v4l2_crop crop;
@@ -894,8 +897,7 @@ static void init_deviceAlt(void) {
     if (EINVAL == errno) {
       fprintf(stderr, "%s is no V4L2 device\n", dev_name_alt);
       exit(EXIT_FAILURE);
-    }
-    else {
+    } else {
       errno_exitAlt("VIDIOC_QUERYCAP");
     }
   }
@@ -903,15 +905,15 @@ static void init_deviceAlt(void) {
     fprintf(stderr, "%s is no video capture device\n", dev_name_alt);
     exit(EXIT_FAILURE);
   }
-  switch (io) {
-  case IO_METHOD_READ:
+  switch (ioAlt) {
+  case IO_METHOD_READALT:
     if (!(cap.capabilities & V4L2_CAP_READWRITE)) {
       fprintf(stderr, "%s does not support read i/o\n", dev_name_alt);
       exit(EXIT_FAILURE);
     }
     break;
-  case IO_METHOD_MMAP:
-  case IO_METHOD_USERPTR:
+  case IO_METHOD_MMAPALT:
+  case IO_METHOD_USERPTRALT:
     if (!(cap.capabilities & V4L2_CAP_STREAMING)) {
       fprintf(stderr, "%s does not support streaming i/o\n", dev_name_alt);
       exit(EXIT_FAILURE);
@@ -934,8 +936,7 @@ static void init_deviceAlt(void) {
         break;
       }
     }
-  }
-  else {
+  } else {
     /* Errors ignored. */
   }
   CLEAR(fmt);
@@ -964,10 +965,9 @@ static void init_deviceAlt(void) {
     }
     if (-1 == xioctlAlt(fdAlt, VIDIOC_S_FMT, &fmt))
       errno_exitAlt("VIDIOC_S_FMT");
-    /* Note VIDIOC_S_FMT may change width and height. */
-  }
-  else {
-    /* Preserve original settings as set by v4l2-ctl for example */
+    // Note VIDIOC_S_FMT may change width and height.
+  } else {
+    // Preserve original settings as set by v4l2-ctl for example
     if (-1 == xioctlAlt(fdAlt, VIDIOC_G_FMT, &fmt))
       errno_exitAlt("VIDIOC_G_FMT");
   }
@@ -978,27 +978,27 @@ static void init_deviceAlt(void) {
   min = fmt.fmt.pix.bytesperline * fmt.fmt.pix.height;
   if (fmt.fmt.pix.sizeimage < min)
     fmt.fmt.pix.sizeimage = min;
-  switch (io) {
-  case IO_METHOD_READ:
+  switch (ioAlt) {
+  case IO_METHOD_READALT:
     init_readAlt(fmt.fmt.pix.sizeimage);
     break;
-  case IO_METHOD_MMAP:
+  case IO_METHOD_MMAPALT:
     init_mmapAlt();
     break;
-  case IO_METHOD_USERPTR:
+  case IO_METHOD_USERPTRALT:
     init_userpAlt(fmt.fmt.pix.sizeimage);
     break;
   }
-  set_framerateAlt();
+  //set_framerateAlt();
 }
 
-static void close_deviceAlt(void) {
+void close_deviceAlt(void) {
   if (-1 == close(fdAlt))
     errno_exitAlt("close");
   fdAlt = -1;
 }
 
-static void open_deviceAlt(void) {
+void open_deviceAlt(void) {
   struct stat st;
   if (-1 == stat(dev_name_alt, &st)) {
     fprintf(stderr, "Cannot identify '%s': %d, %s\n", dev_name_alt, errno, strerror(errno));
@@ -1015,7 +1015,7 @@ static void open_deviceAlt(void) {
   }
 }
 
-int start_mainalt(char* device_name) {
+/*int init_mainAlt() {
   memset(outputFrameAlt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
   memset(outputFrame2Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
   memset(outputFrame3Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
@@ -1025,8 +1025,6 @@ int start_mainalt(char* device_name) {
   memset(outputFrameGreyscale3Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
   memset(outputFrameGreyscale4Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
   memset(outputFrameGreyscale5Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
-  dev_name_alt = (char*)calloc(64, sizeof(char));
-  strcpy(dev_name_alt, device_name);
   open_deviceAlt();
   init_deviceAlt();
   start_capturingAlt();
@@ -1036,4 +1034,4 @@ int start_mainalt(char* device_name) {
   close_deviceAlt();
   fprintf(stderr, "\n");
   return 0;
-}
+}*/

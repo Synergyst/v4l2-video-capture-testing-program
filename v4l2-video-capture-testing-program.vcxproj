@@ -82,7 +82,7 @@
     <None Include="v4l2cap.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="v4l2capalt.cpp" />
+    <None Include="v4l2capalt.h" />
   </ItemGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">
     <RemotePostBuildEvent>
