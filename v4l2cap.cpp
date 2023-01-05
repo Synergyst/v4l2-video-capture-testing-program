@@ -613,27 +613,50 @@ static void mainloop(void) {
     count = frame_count;
     while ((count-- > 0) || loopIsInfinite) {
         for (;;) {
-            fd_set fds;
-            struct timeval tv;
-            int r;
-            FD_ZERO(&fds);
-            FD_SET(fd, &fds);
-            /* Timeout. */
-            tv.tv_sec = 2;
-            tv.tv_usec = 0;
-            r = select(fd + 1, &fds, NULL, NULL, &tv);
-            if (-1 == r) {
-                if (EINTR == errno)
-                    continue;
-                errno_exit("select");
-            }
-            if (0 == r) {
-                fprintf(stderr, "select timeout\n");
-                exit(EXIT_FAILURE);
-            }
-            if (read_frame())
-                break;
-            /* EAGAIN - continue select loop. */
+          fd_set fdsAlt;
+          struct timeval tvAlt;
+          int rAlt;
+          FD_ZERO(&fdsAlt);
+          FD_SET(fdAlt, &fdsAlt);
+          // Timeout.
+          tvAlt.tv_sec = 2;
+          tvAlt.tv_usec = 0;
+          rAlt = select(fdAlt + 1, &fdsAlt, NULL, NULL, &tvAlt);
+          if (-1 == rAlt) {
+            if (EINTR == errno)
+              continue;
+            errno_exitAlt("select");
+          }
+          if (0 == rAlt) {
+            fprintf(stderr, "select timeout\n");
+            exit(EXIT_FAILURE);
+          }
+          if (read_frameAlt())
+            break;
+          // EAGAIN - continue select loop.
+
+
+          fd_set fds;
+          struct timeval tv;
+          int r;
+          FD_ZERO(&fds);
+          FD_SET(fd, &fds);
+          // Timeout.
+          tv.tv_sec = 2;
+          tv.tv_usec = 0;
+          r = select(fd + 1, &fds, NULL, NULL, &tv);
+          if (-1 == r) {
+            if (EINTR == errno)
+              continue;
+              errno_exit("select");
+          }
+          if (0 == r) {
+            fprintf(stderr, "select timeout\n");
+            exit(EXIT_FAILURE);
+          }
+          if (read_frame())
+            break;
+          // EAGAIN - continue select loop.
         }
     }
 }
@@ -1001,11 +1024,10 @@ int start_main(char *device_name) {
     init_device();
     start_capturing();
     fprintf(stderr, "Initialized main (%s)..\n", dev_name);
-    fprintf(stderr, "Starting main-loop (%s)\n", dev_name);
+    fprintf(stderr, "Starting loop with the following devices: %s and %s\n", dev_name, dev_name_alt);
     mainloop();
-    //mainloopAlt();
-    // main loop
-    /*for (;;) {
+    /* main loop
+    for (;;) {
       fd_set fdsAlt;
       struct timeval tvAlt;
       int rAlt;
@@ -1049,9 +1071,9 @@ int start_main(char *device_name) {
       if (read_frame())
         break;
       // EAGAIN - continue select loop.
-    }*/
+    }
     // main loop end
-    /* alt loop
+    // alt loop
     fprintf(stderr, "Started alt-loop.\n");
     for (;;) {
       fd_set fds;
