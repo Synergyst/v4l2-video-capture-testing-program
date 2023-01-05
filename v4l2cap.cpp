@@ -873,7 +873,7 @@ static void init_device(void) {
     }
     CLEAR(fmt);
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    fprintf(stderr, "Force Format (%s) %d\n", dev_name, force_formatAlt);
+    fprintf(stderr, "Forced format for main (%s) to: %d\n", dev_name, force_formatAlt);
     if (force_format) {
         if (force_format == 3) {
             //fmt.fmt.pix.width = 1280;
@@ -974,7 +974,8 @@ int start_main(char *device_name) {
     dev_name = (char*)calloc(64, sizeof(char));
     strcpy(dev_name, device_name);
     dev_name_alt = (char*)calloc(64, sizeof(char));
-    fprintf(stderr, "Potential output resolutions(alt: %s): %dx%d (unscaled)", dev_name_alt, (startingWidthAlt), (startingHeightAlt));
+    strcpy(dev_name_alt, "/dev/video0");
+    fprintf(stderr, "Potential output resolutions for alt (%s): %dx%d (unscaled)", dev_name_alt, (startingWidthAlt), (startingHeightAlt));
     int tempCropAmtWidthAlt = scaledOutWidthAlt;
     int tempCropAmtHeightAlt = scaledOutHeightAlt;
     for (int i = 0; i < (sizeof(cropMatrixAlt) / sizeof(*cropMatrixAlt)); i++) {
@@ -983,8 +984,7 @@ int start_main(char *device_name) {
       fprintf(stderr, " >> %dx%d (L:%d,R:%d,T:%d,B:%d)", tempCropAmtWidthAlt, tempCropAmtHeightAlt, cropMatrixAlt[i][0], cropMatrixAlt[i][1], cropMatrixAlt[i][2], cropMatrixAlt[i][3]);
     }
     fprintf(stderr, "\n");
-    strcpy(dev_name_alt, "/dev/video0");
-    fprintf(stderr, "Potential output resolutions(main: %s): %dx%d (unscaled)", dev_name, (startingWidth), (startingHeight));
+    fprintf(stderr, "Potential output resolutions for main (%s): %dx%d (unscaled)", dev_name, (startingWidth), (startingHeight));
     int tempCropAmtWidth = scaledOutWidth;
     int tempCropAmtHeight = scaledOutHeight;
     for (int i = 0; i < (sizeof(cropMatrix) / sizeof(*cropMatrix)); i++) {

@@ -941,7 +941,7 @@ void init_deviceAlt(void) {
   }
   CLEAR(fmt);
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  fprintf(stderr, "Force Format (%s) %d\n", dev_name_alt, force_formatAlt);
+  fprintf(stderr, "Forced format for alt (%s) to: %d\n", dev_name_alt, force_formatAlt);
   if (force_formatAlt) {
     if (force_formatAlt == 3) {
       fmt.fmt.pix.width = startingWidthAlt;
