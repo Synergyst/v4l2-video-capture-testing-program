@@ -584,9 +584,9 @@ static void crop_greyscale(unsigned char* image, int width, int height, int* cro
 */
 void process_imageAlt(const void* p, int size) {
   unsigned char* preP = (unsigned char*)p;
-  int status = write(1, preP, size);
+  /*int status = write(1, preP, size);
   if (status == -1)
-    perror("write");
+    perror("write");*/
   //frame_number++;
   /*if (force_format == 1) {
     //yuyv_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
@@ -659,8 +659,8 @@ int read_frameAlt(void) {
       case EAGAIN:
         return 0;
       case EIO:
-        /* Could ignore EIO, see spec. */
-        /* fall through */
+        // Could ignore EIO, see spec.
+        // fall through
       default:
         errno_exitAlt("VIDIOC_DQBUF");
       }
@@ -878,7 +878,7 @@ void set_framerateAlt(void) {
     //streamparm.parm.capture.capturemode |= V4L2_CAP_TIMEPERFRAME;
     tpf = &streamparm.parm.capture.timeperframe;
     int num = 1, denom = 30;
-    fprintf(stderr, "Setting time per frame to: %d/%d\n", denom, num);
+    fprintf(stderr, "Setting time per frame on %s to: %d/%d\n", dev_name_alt, denom, num);
     tpf->denominator = denom;
     tpf->numerator = num;
   }
@@ -941,7 +941,7 @@ void init_deviceAlt(void) {
   }
   CLEAR(fmt);
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  fprintf(stderr, "Force Format %d\n", force_formatAlt);
+  fprintf(stderr, "Force Format (%s) %d\n", dev_name_alt, force_formatAlt);
   if (force_formatAlt) {
     if (force_formatAlt == 3) {
       fmt.fmt.pix.width = startingWidthAlt;
