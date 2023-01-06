@@ -41,17 +41,15 @@
 #include <omp.h>
 
 char* device;
-//char* deviceAlt;
+char* deviceAlt;
 
-int start_main(char *device_name);
-//int start_mainAlt(char *device_name);
+int start_main(char *device_name, char *device_name_alt);
 
 int main(int argc, char **argv) {
   device = (char*)calloc(64, sizeof(char));
   strcpy(device, "/dev/video2");
-  start_main(device);
-  /*deviceAlt = (char*)calloc(64, sizeof(char));
+  deviceAlt = (char*)calloc(64, sizeof(char));
   strcpy(deviceAlt, "/dev/video0");
-  start_mainAlt(deviceAlt);*/
+  start_main(device, deviceAlt);
   return 0;
 }

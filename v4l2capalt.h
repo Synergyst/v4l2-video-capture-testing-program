@@ -1,97 +1,366 @@
-#include <iostream>
-#include <cstdio>
-#include <cmath>
-#include <cstdint>
-#include <algorithm>
-#include <vector>
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdbool.h>
-#include <string.h>
-#include <assert.h>
-#include <getopt.h>  /* getopt_long() */
-#include <fcntl.h>   /* low-level i/o */
-#include <unistd.h>
-#include <errno.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/time.h>
-#include <sys/mman.h>
-#include <sys/ioctl.h>
-#include <linux/videodev2.h>
-#include <libv4l2.h>
-#include <omp.h>
-
-#define V4L_ALLFORMATS  3
-#define V4L_RAWFORMATS  1
-#define V4L_COMPFORMATS 2
-#define CLEAR(x) memset(&(x), 0, sizeof(x))
-#ifndef V4L2_PIX_FMT_H264
-#define V4L2_PIX_FMT_H264     v4l2_fourcc('H', '2', '6', '4') /* H264 with start codes */
-#endif
-
-enum io_methodAlt {
-  IO_METHOD_READALT,
-  IO_METHOD_MMAPALT,
-  IO_METHOD_USERPTRALT,
-};
-
-struct bufferAlt {
-  void* start;
-  size_t length;
-};
-
-char* dev_name_alt;
-enum io_methodAlt ioAlt = IO_METHOD_MMAPALT;
-int fdAlt = -1;
-struct bufferAlt* buffersAlt;
-unsigned int n_buffersAlt;
-int out_bufAlt;
-int force_formatAlt = 1; // YUYV, hard-coded
-//static int force_formatAlt = 3; // RGB24, hard-coded
-//static int force_formatAlt = 0; // allow-user-specification/override
-int frame_countAlt = 0;
-int frame_numberAlt = 0;
-
-void errno_exitAlt(const char* s) {
-  fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
-  exit(EXIT_FAILURE);
+void yuyv_to_greyscale(const unsigned char* yuyv, unsigned char* grey, int width, int height) {
+#pragma omp parallel for
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      int index = y * width + x;
+      // YUYV format stores chroma (Cb and Cr) values interleaved with the luma (Y) values.
+      // So, we need to skip every other pixel.
+      int y_index = index * 2;
+      grey[index] = yuyv[y_index];
+    }
+  }
 }
 
-int xioctlAlt(int fh, int request, void* arg) {
-  int r;
-  do {
-    r = ioctl(fh, request, arg);
-  } while (-1 == r && EINTR == errno);
-  return r;
+void replace_pixels_below_val(const unsigned char* input, unsigned char* output, int width, int height, const int val) {
+#pragma omp parallel for num_threads(4)
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      // Get the pixel value at the current position
+      unsigned char pixel = input[y * width + x];
+      // If the pixel value is below 63, replace it with a modified value
+      if (pixel < val) {
+        output[y * width + x] = (unsigned char)sqrt(output[y * width + x]);
+        //output[y * width + x] = 0;
+      }
+      else {
+        // Otherwise, copy the pixel value from the input to the output
+        output[y * width + x] = pixel;
+      }
+    }
+  }
 }
 
-// The width and height of the input video and any downscaled output video
-const int startingWidthAlt = 320;
-const int startingHeightAlt = 180;
-const int scaledOutWidthAlt = 452;
-const int scaledOutHeightAlt = 254;
-int croppedWidthAlt = 0;
-int croppedHeightAlt = 0;
-// Crop size matrix (scale up or down as needed)
-int cropMatrixAlt[2][4] = { {11, 4, 4, 2}, {1, 1, 1, 1} };
-// The maximum value for the Sobel operator
-/*static const int maxSobel = 4 * 255;
-// The Sobel operator as a 3x3 matrix
-static const int sobelX[3][3] = { {-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1} };
-static const int sobelY[3][3] = { {-1, -2, -1}, {0, 0, 0}, {1, 2, 1} };*/
+void replace_pixels_above_val(const unsigned char* input, unsigned char* output, int width, int height, const int val) {
+#pragma omp parallel for num_threads(4)
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      // Get the pixel value at the current position
+      unsigned char pixel = input[y * width + x];
+      // If the pixel value is below 63, replace it with a modified value
+      if (pixel > val) {
+        output[y * width + x] = 255;
+        //output[y * width + x] = (unsigned char)sqrt(output[y * width + x]);
+      }
+      else {
+        // Otherwise, copy the pixel value from the input to the output
+        output[y * width + x] = pixel;
+      }
+    }
+  }
+}
 
-// Allocate memory for the input and output frames
-unsigned char* outputFrameAlt = new unsigned char[startingWidthAlt * startingHeightAlt * 2];
-unsigned char* outputFrame2Alt = new unsigned char[startingWidthAlt * startingHeightAlt * 2];
-unsigned char* outputFrame3Alt = new unsigned char[startingWidthAlt * startingHeightAlt *3];
-unsigned char* outputFrameGreyscaleAlt = new unsigned char[startingWidthAlt * startingHeightAlt];
-unsigned char* outputFrameGreyscale1Alt = new unsigned char[startingWidthAlt * startingHeightAlt];
-unsigned char* outputFrameGreyscale2Alt = new unsigned char[startingWidthAlt * startingHeightAlt];
-unsigned char* outputFrameGreyscale3Alt = new unsigned char[startingWidthAlt * startingHeightAlt];
-unsigned char* outputFrameGreyscale4Alt = new unsigned char[startingWidthAlt * startingHeightAlt];
-unsigned char* outputFrameGreyscale5Alt = new unsigned char[startingWidthAlt * startingHeightAlt];
+void uyvy_to_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
+  // Iterate over each pixel in the input image
+#pragma omp parallel for
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      // Calculate the offset into the input buffer for the current pixel
+      int offset = (y * width + x) * 2;
+      // Extract the Y component from the UYVY pixel
+      output[y * width + x] = input[offset];
+    }
+  }
+}
 
+void greyscale_to_sobel(const unsigned char* input, unsigned char* output, int width, int height) {
+  // Iterate over each pixel in the image
+#pragma omp parallel for
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      // Apply the Sobel kernel in the x and y directions
+      int gx = sobelX[0][0] * input[(y - 1) * width + x - 1] + sobelX[0][1] * input[(y - 1) * width + x] + sobelX[0][2] * input[(y - 1) * width + x + 1] + sobelX[1][0] * input[y * width + x - 1] + sobelX[1][1] * input[y * width + x] + sobelX[1][2] * input[y * width + x + 1] + sobelX[2][0] * input[(y + 1) * width + x - 1] + sobelX[2][1] * input[(y + 1) * width + x] + sobelX[2][2] * input[(y + 1) * width + x + 1];
+      int gy = sobelY[0][0] * input[(y - 1) * width + x - 1] + sobelY[0][1] * input[(y - 1) * width + x] + sobelY[0][2] * input[(y - 1) * width + x + 1] + sobelY[1][0] * input[y * width + x - 1] + sobelY[1][1] * input[y * width + x] + sobelY[1][2] * input[y * width + x + 1] + sobelY[2][0] * input[(y + 1) * width + x - 1] + sobelY[2][1] * input[(y + 1) * width + x] + sobelY[2][2] * input[(y + 1) * width + x + 1];
+      // Compute the magnitude of the gradient at this pixel
+      output[y * width + x] = (unsigned char)sqrt(gx * gx + gy * gy);
+    }
+  }
+}
+
+void uyvy_sobel(unsigned char* input, unsigned char* output, int width, int height) {
+  // Create buffers to hold the intermediate images
+  unsigned char* greyscale = new unsigned char[width * height];
+  short* gradient_x = new short[width * height];
+  short* gradient_y = new short[width * height];
+  // Convert the input frame to greyscale
+  uyvy_to_greyscale(input, greyscale, width, height);
+  // Iterate over each pixel in the greyscale image
+  for (int y = 1; y < height - 1; y++) {
+    for (int x = 1; x < width - 1; x++) {
+      // Calculate the gradient in the X and Y directions using Sobel filters
+      gradient_x[y * width + x] = greyscale[(y - 1) * width + x - 1] + 2 * greyscale[y * width + x - 1] + greyscale[(y + 1) * width + x - 1] - greyscale[(y - 1) * width + x + 1] - 2 * greyscale[y * width + x + 1] - greyscale[(y + 1) * width + x + 1];
+      gradient_y[y * width + x] = greyscale[(y - 1) * width + x - 1] + 2 * greyscale[(y - 1) * width + x] + greyscale[(y - 1) * width + x + 1] - greyscale[(y + 1) * width + x - 1] - 2 * greyscale[(y + 1) * width + x] - greyscale[(y + 1) * width + x + 1];
+    }
+  }
+  // Iterate over each pixel in the output image
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      // Calculate the offset into the output buffer for the current pixel
+      int offset = (y * width + x) * 2;
+      // Calculate the magnitude of the gradient using the X and Y gradients
+      int gradient = abs(gradient_x[y * width + x]) + abs(gradient_y[y * width + x]);
+      // Clamp the gradient to the range [0, 255]
+      gradient = std::max(0, std::min(255, gradient));
+      // Set the Y component of the output pixel to the gradient magnitude
+      output[offset] = gradient;
+      // Set the U and V components of the output pixel to 128 (neutral color)
+      output[offset + 1] = 128;
+    }
+  }
+  // Free the intermediate buffers
+  delete[] greyscale;
+  delete[] gradient_x;
+  delete[] gradient_y;
+}
+
+void uyvy_to_yuyv(unsigned char* input, unsigned char* output, int width, int height) {
+  // Iterate over each pixel in the input image
+#pragma omp parallel for
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      // Calculate the offset into the input buffer for the current pixel
+      int offset = (y * width + x) * 2;
+      // Extract the Y and U/V components from the UYVY pixel
+      unsigned char y1 = input[offset];
+      unsigned char u = input[offset + 1];
+      unsigned char y2 = input[offset + 2];
+      unsigned char v = input[offset + 3];
+      // Pack the Y1, U, Y2, and V components into a YUYV pixel
+      output[offset] = y1;
+      output[offset + 1] = u;
+      output[offset + 2] = y2;
+      output[offset + 3] = v;
+    }
+  }
+}
+
+void yuyv_to_uyvy(unsigned char* input, unsigned char* output, int width, int height) {
+  // Iterate over each pixel in the input image
+#pragma omp parallel for
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      // Calculate the offset into the input buffer for the current pixel
+      int offset = (y * width + x) * 2;
+      // Extract the Y1, U, Y2, and V components from the YUYV pixel
+      unsigned char y1 = input[offset];
+      unsigned char u = input[offset + 1];
+      unsigned char y2 = input[offset + 2];
+      unsigned char v = input[offset + 3];
+      // Pack the Y1 and U/V components into a UYVY pixel
+      output[offset] = y1;
+      output[offset + 1] = u;
+      output[offset + 2] = y2;
+      output[offset + 3] = v;
+    }
+  }
+}
+
+void rgb24_to_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
+  // Iterate over each pixel in the input image
+#pragma omp parallel for num_threads(4)
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      // Calculate the offset into the input buffer for the current pixel
+      int offset = (y * width + x) * 3;
+      // Extract the red, green, and blue components from the RGB pixel
+      unsigned char r = input[offset];
+      unsigned char g = input[offset + 1];
+      unsigned char b = input[offset + 2];
+      // Calculate the greyscale value using the formula:
+      // greyscale = 0.299 * red + 0.587 * green + 0.114 * blue
+      unsigned char greyscale = static_cast<unsigned char>(0.299 * r + 0.587 * g + 0.114 * b);
+      // Set the greyscale value as the intensity of the output pixel
+      output[y * width + x] = greyscale;
+    }
+  }
+}
+
+void rgb24_to_yuyv(unsigned char* input, unsigned char* output, int width, int height) {
+  // Iterate over each pixel in the input image
+#pragma omp parallel for
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      // Calculate the offset into the input buffer for the current pixel
+      int offset = (y * width + x) * 3;
+      // Extract the red, green, and blue components from the RGB pixel
+      unsigned char r = input[offset];
+      unsigned char g = input[offset + 1];
+      unsigned char b = input[offset + 2];
+      // Calculate the Y, U, and V components using the following formulas:
+      // Y = 0.299 * red + 0.587 * green + 0.114 * blue
+      // U = -0.147 * red - 0.289 * green + 0.436 * blue + 128
+      // V = 0.615 * red - 0.515 * green - 0.100 * blue + 128
+      unsigned char y = static_cast<unsigned char>(0.299 * r + 0.587 * g + 0.114 * b);
+      unsigned char u = static_cast<unsigned char>(-0.147 * r - 0.289 * g + 0.436 * b + 128);
+      unsigned char v = static_cast<unsigned char>(0.615 * r - 0.515 * g - 0.100 * b + 128);
+      // Pack the Y, U, and V components into a YUYV pixel
+      output[offset] = y;
+      output[offset + 1] = u;
+      output[offset + 2] = y;
+      output[offset + 3] = v;
+    }
+  }
+}
+
+void resize_image_nearest_neighbor(const uint8_t* src, int src_width, int src_height, uint8_t* dst, int dst_width, int dst_height) {
+#pragma omp parallel for
+  for (int y = 0; y < dst_height; ++y) {
+    for (int x = 0; x < dst_width; ++x) {
+      // Calculate the source image coordinates corresponding to the current
+      // destination image coordinates
+      float src_x = (x + 0.5f) * src_width / dst_width - 0.5f;
+      float src_y = (y + 0.5f) * src_height / dst_height - 0.5f;
+      // Round the source image coordinates to the nearest integer
+      int src_x_int = std::round(src_x);
+      int src_y_int = std::round(src_y);
+      // Clamp the source image coordinates to the valid range
+      src_x_int = std::max(0, std::min(src_x_int, src_width - 1));
+      src_y_int = std::max(0, std::min(src_y_int, src_height - 1));
+      // Copy the pixel value from the source image to the destination image
+      dst[y * dst_width + x] = src[src_y_int * src_width + src_x_int];
+    }
+  }
+}
+
+void rescale_bilinear(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
+#pragma omp parallel for num_threads(4)
+  for (int y = 0; y < output_height; y++) {
+    for (int x = 0; x < output_width; x++) {
+      // Calculate the corresponding pixel coordinates in the input image.
+      float in_x = x * input_width / output_width;
+      float in_y = y * input_height / output_height;
+      // Calculate the integer and fractional parts of the coordinates.
+      int x1 = (int)in_x;
+      int y1 = (int)in_y;
+      float dx = in_x - x1;
+      float dy = in_y - y1;
+      // Clamp the coordinates to the edges of the input image.
+      x1 = std::clamp(x1, 0, input_width - 1);
+      y1 = std::clamp(y1, 0, input_height - 1);
+      int x2 = std::clamp(x1 + 1, 0, input_width - 1);
+      int y2 = std::clamp(y1 + 1, 0, input_height - 1);
+      // Get the values of the four surrounding pixels in the input image.
+      int index = y * output_width + x;
+      int in_index1 = y1 * input_width + x1;
+      int in_index2 = y1 * input_width + x2;
+      int in_index3 = y2 * input_width + x1;
+      int in_index4 = y2 * input_width + x2;
+      float v1 = input[in_index1];
+      float v2 = input[in_index2];
+      float v3 = input[in_index3];
+      float v4 = input[in_index4];
+      // Use bilinear interpolation to estimate the value of the pixel in the input image.
+      float value = (1 - dx) * (1 - dy) * v1 + dx * (1 - dy) * v2 + (1 - dx) * dy * v3 + dx * dy * v4;
+#pragma omp critical
+      output[index] = (unsigned char)value;
+    }
+  }
+}
+// The kernel size of the Gaussian blur
+//const int KERNEL_SIZE = 5;
+const int KERNEL_SIZE = 7;
+
+// The sigma value of the Gaussian blur
+const double SIGMA = 2.0;
+
+// A helper function to compute the Gaussian kernel
+std::vector<double> computeGaussianKernel(int kernelSize, double sigma) {
+  std::vector<double> kernel(kernelSize);
+  double sum = 0.0;
+  for (int i = 0; i < kernelSize; i++) {
+    kernel[i] = exp(-0.5 * pow(i / sigma, 2.0)) / (sqrt(2.0 * M_PI) * sigma);
+    sum += kernel[i];
+  }
+  for (int i = 0; i < kernelSize; i++) {
+    kernel[i] /= sum;
+  }
+  return kernel;
+}
+
+// The main function that performs the Gaussian blur
+void gaussianBlur(unsigned char* input, int inputWidth, int inputHeight, unsigned char* output, int outputWidth, int outputHeight) {
+  std::vector<double> kernel = computeGaussianKernel(KERNEL_SIZE, SIGMA);
+  // Perform the blur in the horizontal direction
+#pragma omp parallel for
+  for (int y = 0; y < inputHeight; y++) {
+    for (int x = 0; x < inputWidth; x++) {
+      double sumY = 0.0;
+      for (int i = -KERNEL_SIZE / 2; i <= KERNEL_SIZE / 2; i++) {
+        int xi = x + i;
+        // Handle edge cases by clamping the values
+        if (xi < 0) xi = 0;
+        if (xi >= inputWidth) xi = inputWidth - 1;
+        sumY += kernel[i + KERNEL_SIZE / 2] * input[y * inputWidth + xi];
+      }
+      output[y * outputWidth + x] = sumY;
+    }
+  }
+  // Perform the blur in the vertical direction
+#pragma omp parallel for
+  for (int x = 0; x < inputWidth; x++) {
+    for (int y = 0; y < inputHeight; y++) {
+      double sumY = 0.0;
+      for (int i = -KERNEL_SIZE / 2; i <= KERNEL_SIZE / 2; i++) {
+        int yi = y + i;
+        // Handle edge cases by clamping the values
+        if (yi < 0) yi = 0;
+        if (yi >= inputHeight) yi = inputHeight - 1;
+        sumY += kernel[i + KERNEL_SIZE / 2] * output[yi * outputWidth + x];
+      }
+      output[y * outputWidth + x] = sumY;
+    }
+  }
+}
+
+void crop_greyscale_alt (unsigned char* image, int width, int height, int* crops, unsigned char* croppedImage) {
+  if (croppedWidthAlt > 0 || croppedHeightAlt > 0) {
+    croppedWidthAlt = croppedWidthAlt - crops[0] - crops[1];
+    croppedHeightAlt = croppedHeightAlt - crops[2] - crops[3];
+  } else {
+    croppedWidthAlt = width - crops[0] - crops[1];
+    croppedHeightAlt = height - crops[2] - crops[3];
+  }
+#pragma omp parallel for
+  for (int y = crops[2]; y < crops[2] + croppedHeightAlt; y++) {
+    for (int x = crops[0]; x < crops[0] + croppedWidthAlt; x++) {
+      int croppedX = x - crops[0];
+      int croppedY = y - crops[2];
+      int croppedIndex = croppedY * croppedWidthAlt + croppedX;
+      int index = y * width + x;
+      croppedImage[croppedIndex] = image[index];
+    }
+  }
+}
+
+void separate_rgb24(unsigned char* rgb, unsigned char* red, unsigned char* green, unsigned char* blue, int width, int height) {
+#pragma omp parallel for num_threads(4)
+  for (int i = 0; i < width * height * 3; i += 3) {
+    red[i / 3] = rgb[i];
+    green[i / 3] = rgb[i + 1];
+    blue[i / 3] = rgb[i + 2];
+  }
+}
+
+void combine_rgb24(unsigned char* red, unsigned char* green, unsigned char* blue, unsigned char* rgb, int width, int height) {
+#pragma omp parallel for num_threads(4)
+  for (int i = 0; i < width * height; i++) {
+    rgb[i * 3] = red[i];
+    rgb[i * 3 + 1] = green[i];
+    rgb[i * 3 + 2] = blue[i];
+  }
+}
+
+void invert_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
+#pragma omp parallel for num_threads(4)
+  for (int i = 0; i < width * height; i++) {
+    output[i] = 255 - input[i];
+  }
+}
+
+void frame_to_stdout(unsigned char* input, int size) {
+  int status = write(1, input, size);
+  if (status == -1)
+    perror("write");
+}
 
 /*
 static void yuyv_to_greyscale(const unsigned char* yuyv, unsigned char* grey, int width, int height) {
@@ -584,6 +853,10 @@ static void crop_greyscale(unsigned char* image, int width, int height, int* cro
 */
 void process_imageAlt(const void* p, int size) {
   unsigned char* preP = (unsigned char*)p;
+  yuyv_to_greyscale(preP, outputFrameGreyscaleAlt, startingWidthAlt, startingHeightAlt);
+  //frame_to_stdout(preP, (startingWidthAlt * startingHeightAlt * 2));
+  //memcpy(outputFrameAlt, preP, (startingWidthAlt * startingHeightAlt * 2));
+  //frame_to_stdout(outputFrameAlt, (startingWidthAlt * startingHeightAlt * 2));
   /*int status = write(1, preP, size);
   if (status == -1)
     perror("write");*/
@@ -1014,24 +1287,3 @@ void open_deviceAlt(void) {
     exit(EXIT_FAILURE);
   }
 }
-
-/*int init_mainAlt() {
-  memset(outputFrameAlt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
-  memset(outputFrame2Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
-  memset(outputFrame3Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
-  memset(outputFrameGreyscaleAlt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
-  memset(outputFrameGreyscale1Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
-  memset(outputFrameGreyscale2Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
-  memset(outputFrameGreyscale3Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
-  memset(outputFrameGreyscale4Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
-  memset(outputFrameGreyscale5Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
-  open_deviceAlt();
-  init_deviceAlt();
-  start_capturingAlt();
-  mainloopAlt();
-  stop_capturingAlt();
-  uninit_deviceAlt();
-  close_deviceAlt();
-  fprintf(stderr, "\n");
-  return 0;
-}*/
