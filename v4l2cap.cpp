@@ -515,7 +515,7 @@ void rescale_bilinear_from_yuyv(const unsigned char* input, int input_width, int
   }
 }
 
-const int KERNEL_SIZE = 7; // The kernel size of the Gaussian blur, default: 5
+const int KERNEL_SIZE = 3; // The kernel size of the Gaussian blur, default: 5
 const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
 
 std::vector<double> computeGaussianKernel(int kernelSize, double sigma) {
@@ -704,7 +704,8 @@ const bool doInvert = false;
 void process_image(const void* p, int size) {
   unsigned char* preP = (unsigned char*)p;
   //yuyv_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
-  rescale_bilinear_from_yuyv(preP, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
+  rescale_bilinear_from_yuyv(preP, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+  gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
   // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
   frame_to_stdout(outputFrameGreyscale1, (scaledOutWidth * scaledOutHeight));
   //frame_to_stdout(preP, (startingWidth * startingHeight * 2));
