@@ -54,31 +54,32 @@ struct bufferAlt {
 };
 
 char* dev_name;
-enum io_method io = IO_METHOD_MMAP;
-//enum io_method io = IO_METHOD_USERPTR;
-int fd = -1;
-struct buffer* buffers;
-unsigned int n_buffers;
-int out_buf;
-int force_format = 3; // RGB24, hard-coded
-//static int force_format = 1; // YUYV, hard-coded
-//static int force_format = 0; // allow-user-specification/override
-int frame_count = 0;
-int frame_number = 0;
-
 char* dev_name_alt;
+enum io_method io = IO_METHOD_MMAP;
 enum io_methodAlt ioAlt = IO_METHOD_MMAPALT;
+int fd = -1;
 int fdAlt = -1;
+struct buffer* buffers;
 struct bufferAlt* buffersAlt;
+unsigned int n_buffers;
 unsigned int n_buffersAlt;
+int out_buf;
 int out_bufAlt;
-int force_formatAlt = 1; // 1=YUYV, 3=RGB24, 2=H264
+// 1 = YUYV, 2 = UYVY, 3 = RGB24 - Do not use RGB24 as it will cause high CPU usage, YUYV/UYVY should be used instead
+int force_format = 1;
+int force_formatAlt = 1;
+int frame_count = 0;
 int frame_countAlt = 0;
+int frame_number = 0;
 int frame_numberAlt = 0;
 
 void errno_exit(const char* s) {
     fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
     exit(EXIT_FAILURE);
+}
+void errno_exitAlt(const char* s) {
+  fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
+  exit(EXIT_FAILURE);
 }
 
 int xioctl(int fh, int request, void* arg) {
@@ -88,12 +89,6 @@ int xioctl(int fh, int request, void* arg) {
     } while (-1 == r && EINTR == errno);
     return r;
 }
-
-void errno_exitAlt(const char* s) {
-  fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
-  exit(EXIT_FAILURE);
-}
-
 int xioctlAlt(int fh, int request, void* arg) {
   int r;
   do {
@@ -105,18 +100,18 @@ int xioctlAlt(int fh, int request, void* arg) {
 // The width and height of the input video and any downscaled output video
 const int startingWidth = 1280;
 const int startingHeight = 720;
+const int startingWidthAlt = 320;
+const int startingHeightAlt = 180;
 /*const int startingWidth = 1920;
 const int startingHeight = 1080;
 const int scaledOutWidth = 640;
 const int scaledOutHeight = 360;*/
-const int scaledOutWidth = 160;
-const int scaledOutHeight = 90;
+const int scaledOutWidth = 320;
+const int scaledOutHeight = 180;
+const int scaledOutWidthAlt = 320;
+const int scaledOutHeightAlt = 180;
 /*const int scaledOutWidth = 384;
 const int scaledOutHeight = 216;*/
-const int startingWidthAlt = 320;
-const int startingHeightAlt = 180;
-const int scaledOutWidthAlt = 452;
-const int scaledOutHeightAlt = 254;
 // Crop size matrix (scale up or down as needed)
 int cropMatrix[2][4] = { {11, 4, 4, 2}, {1, 1, 1, 1} };
 int cropMatrixAlt[2][4] = { {11, 4, 4, 2}, {1, 1, 1, 1} };
@@ -313,9 +308,10 @@ void yuyv_to_uyvy(unsigned char* input, unsigned char* output, int width, int he
   }
 }
 
-void rgb24_to_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
+/*void rgb24_to_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
   // Iterate over each pixel in the input image
-#pragma omp parallel for num_threads(4)
+//#pragma omp parallel for num_threads(4)
+#pragma omp parallel for simd
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       // Calculate the offset into the input buffer for the current pixel
@@ -329,6 +325,27 @@ void rgb24_to_greyscale(unsigned char* input, unsigned char* output, int width, 
       unsigned char greyscale = static_cast<unsigned char>(0.299 * r + 0.587 * g + 0.114 * b);
       // Set the greyscale value as the intensity of the output pixel
       output[y * width + x] = greyscale;
+    }
+  }
+}*/
+void rgb24_to_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
+  // Iterate over each row in the input image
+#pragma omp parallel for
+  for (int y = 0; y < height; y++) {
+    // Get pointers to the beginning of the current row in the input and output arrays
+    unsigned char* input_row = &input[y * width * 3];
+    unsigned char* output_row = &output[y * width];
+    // Iterate over each pixel in the current row
+    for (int x = 0; x < width; x++) {
+      // Extract the red, green, and blue components from the RGB pixel
+      unsigned char r = input_row[x * 3];
+      unsigned char g = input_row[x * 3 + 1];
+      unsigned char b = input_row[x * 3 + 2];
+      // Calculate the greyscale value using the formula:
+      // greyscale = 0.299 * red + 0.587 * green + 0.114 * blue
+      unsigned char greyscale = static_cast<unsigned char>(0.299 * r + 0.587 * g + 0.114 * b);
+      // Set the greyscale value as the intensity of the output pixel
+      output_row[x] = greyscale;
     }
   }
 }
@@ -414,10 +431,91 @@ void rescale_bilinear(const unsigned char* input, int input_width, int input_hei
     }
   }
 }
+/*void rescale_bilinear(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
+#pragma omp parallel for simd
+  for (int y = 0; y < output_height; y++) {
+    for (int x = 0; x < output_width; x++) {
+      // Calculate the corresponding pixel coordinates in the input image.
+      float in_x = x * input_width / output_width;
+      float in_y = y * input_height / output_height;
+      // Calculate the integer and fractional parts of the coordinates.
+      int x1 = (int)in_x;
+      int y1 = (int)in_y;
+      float dx = in_x - x1;
+      float dy = in_y - y1;
+      // Clamp the coordinates to the edges of the input image.
+      x1 = std::clamp(x1, 0, input_width - 1);
+      y1 = std::clamp(y1, 0, input_height - 1);
+      int x2 = std::clamp(x1 + 1, 0, input_width - 1);
+      int y2 = std::clamp(y1 + 1, 0, input_height - 1);
+      // Get the values of the four surrounding pixels in the input image.
+      int index = y * output_width + x;
+      int in_index1 = y1 * input_width + x1;
+      int in_index2 = y1 * input_width + x2;
+      int in_index3 = y2 * input_width + x1;
+      int in_index4 = y2 * input_width + x2;
+      float v1 = input[in_index1];
+      float v2 = input[in_index2];
+      float v3 = input[in_index3];
+      float v4 = input[in_index4];
+      // Use bilinear interpolation to estimate the value of the pixel in the input image.
+      float value = (1 - dx) * (1 - dy) * v1 + dx * (1 - dy) * v2 + (1 - dx) * dy * v3 + dx * dy * v4;
+      output[index] = (unsigned char)value;
+    }
+  }
+}*/
+
+void rescale_bilinear_from_yuyv(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
+#pragma omp parallel for simd
+  for (int y = 0; y < output_height; y++) {
+    for (int x = 0; x < output_width; x++) {
+      // Calculate the corresponding pixel coordinates in the input image.
+      float in_x = x * input_width / output_width;
+      float in_y = y * input_height / output_height;
+      // Calculate the integer and fractional parts of the coordinates.
+      int x1 = (int)in_x;
+      int y1 = (int)in_y;
+      float dx = in_x - x1;
+      float dy = in_y - y1;
+      // Clamp the coordinates to the edges of the input image.
+      x1 = std::clamp(x1, 0, input_width - 1);
+      y1 = std::clamp(y1, 0, input_height - 1);
+      int x2 = std::clamp(x1 + 1, 0, input_width - 1);
+      int y2 = std::clamp(y1 + 1, 0, input_height - 1);
+      // Get the luminance values of the four surrounding pixels in the input image.
+      int index = y * output_width + x;
+      int in_index1 = 2 * (y1 * input_width + x1);
+      int in_index2 = 2 * (y1 * input_width + x2);
+      int in_index3 = 2 * (y2 * input_width + x1);
+      int in_index4 = 2 * (y2 * input_width + x2);
+      float v1 = input[in_index1];
+      float v2 = input[in_index2];
+      float v3 = input[in_index3];
+      float v4 = input[in_index4];
+      // Use bilinear interpolation to estimate the luminance value of the pixel in the input image.
+      float value = (1 - dx) * (1 - dy) * v1 + dx * (1 - dy) * v2 + (1 - dx) * dy * v3 + dx * dy * v4;
+      output[index] = (unsigned char)value;
+    }
+  }
+}
+
 const int KERNEL_SIZE = 7; // The kernel size of the Gaussian blur, default: 5
 const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
 
-// A helper function to compute the Gaussian kernel
+std::vector<double> computeGaussianKernel(int kernelSize, double sigma) {
+  std::vector<double> kernel(kernelSize);
+  double sum = 0.0;
+#pragma omp simd reduction(+:sum)
+  for (int i = 0; i < kernelSize; i++) {
+    kernel[i] = exp(-0.5 * pow(i / sigma, 2.0)) / (sqrt(2.0 * M_PI) * sigma);
+    sum += kernel[i];
+  }
+  for (int i = 0; i < kernelSize; i++) {
+    kernel[i] /= sum;
+  }
+  return kernel;
+}
+/*// A helper function to compute the Gaussian kernel
 std::vector<double> computeGaussianKernel(int kernelSize, double sigma) {
   std::vector<double> kernel(kernelSize);
   double sum = 0.0;
@@ -430,6 +528,19 @@ std::vector<double> computeGaussianKernel(int kernelSize, double sigma) {
   }
   return kernel;
 }
+// A helper function to compute the Gaussian kernel
+double* computeGaussianKernel(int kernelSize, double sigma) {
+  double* kernel = (double*)malloc(kernelSize * sizeof(double));
+  double sum = 0.0;
+  for (int i = 0; i < kernelSize; i++) {
+    kernel[i] = exp(-0.5 * pow(i / sigma, 2.0)) / (sqrt(2.0 * M_PI) * sigma);
+    sum += kernel[i];
+  }
+  for (int i = 0; i < kernelSize; i++) {
+    kernel[i] /= sum;
+  }
+  return kernel;
+}*/
 
 // The main function that performs the Gaussian blur
 void gaussianBlur(unsigned char* input, int inputWidth, int inputHeight, unsigned char* output, int outputWidth, int outputHeight) {
@@ -488,22 +599,39 @@ void crop_greyscale_alt(unsigned char* image, int width, int height, int* crops,
 }
 
 void separate_rgb24(unsigned char* rgb, unsigned char* red, unsigned char* green, unsigned char* blue, int width, int height) {
-#pragma omp parallel for num_threads(4)
+#pragma omp parallel for simd
   for (int i = 0; i < width * height * 3; i += 3) {
-    red[i / 3] = rgb[i];
-    green[i / 3] = rgb[i + 1];
-    blue[i / 3] = rgb[i + 2];
+    //red[i / 3] = rgb[i];
+    //green[i / 3] = rgb[i + 1];
+    //blue[i / 3] = rgb[i + 2];
   }
 }
+/*void separate_rgb24(unsigned char* rgb, unsigned char* red, unsigned char* green, unsigned char* blue, int width, int height) {
+#pragma omp parallel for num_threads(4) simd
+  for (int i = 0; i < width * height; i++) {
+    for (int j = 0; j < 3; j++) {
+      (j == 0) ? red[i] = rgb[i * 3] : (j == 1) ? green[i] = rgb[i * 3 + 1] : blue[i] = rgb[i * 3 + 2];
+    }
+  }
+}*/
 
 void combine_rgb24(unsigned char* red, unsigned char* green, unsigned char* blue, unsigned char* rgb, int width, int height) {
 #pragma omp parallel for num_threads(4)
+//#pragma omp parallel for num_threads(4) simd
   for (int i = 0; i < width * height; i++) {
     rgb[i * 3] = red[i];
     rgb[i * 3 + 1] = green[i];
     rgb[i * 3 + 2] = blue[i];
   }
 }
+/*void combine_rgb24(unsigned char* red, unsigned char* green, unsigned char* blue, unsigned char* rgb, int width, int height) {
+#pragma omp parallel for num_threads(4) simd
+  for (int i = 0; i < width * height; i++) {
+    for (int j = 0; j < 3; j++) {
+      rgb[i * 3 + j] = (j == 0) ? red[i] : (j == 1) ? green[i] : blue[i];
+    }
+  }
+}*/
 
 void invert_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
 #pragma omp parallel for num_threads(4)
@@ -552,9 +680,76 @@ void process_imageAlt(const void* p, int size) {
   croppedHeightAlt = 0;
 }
 
+/*#define FPS_LIMITER_10_OF_30
+#define FPS_LIMITER_30_OF_60*/
+const bool noRGB = true;
+const bool doMinimalGreyscaleOnly = true;
+const bool doInvert = false;
+void process_image(const void* p, int size) {
+  unsigned char* preP = (unsigned char*)p;
+  //yuyv_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
+  rescale_bilinear_from_yuyv(preP, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
+  // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
+  frame_to_stdout(outputFrameGreyscale1, (scaledOutWidth * scaledOutHeight));
+  //frame_to_stdout(preP, (startingWidth * startingHeight * 2));
+  //rgb24_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
+  /*rescale_bilinear(outputFrameGreyscale, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
+  frame_to_stdout(outputFrameGreyscale1, scaledOutWidth * scaledOutHeight);*/
+  /*//frame_to_stdout(outputFrameGreyscaleAlt, (startingWidthAlt * startingHeightAlt));
+#ifdef FPS_LIMITER_10_OF_30
+    if (frame_number % 3 == 0) {
+#elseif FPS_LIMITER_30_OF_60
+    if (frame_number % 6 == 0) {
+#else
+    if (true) {
+#endif
+      if (force_format == 1) {
+        yuyv_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
+        rescale_bilinear(outputFrameGreyscale, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
+        frame_to_stdout(outputFrameGreyscale1, scaledOutWidth * scaledOutHeight);
+      } else if (force_format == 3) {
+        if (doMinimalGreyscaleOnly) {
+          separate_rgb24(preP, redVals, greenVals, blueVals, startingWidth, startingHeight);
+          //rgb24_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
+          //rescale_bilinear(outputFrameGreyscale, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
+          if (doInvert) {
+            invert_greyscale(outputFrameGreyscale1, outputFrameGreyscale2, scaledOutWidth, scaledOutHeight);
+            frame_to_stdout(outputFrameGreyscale2, scaledOutWidth * scaledOutHeight);
+          } else {
+            //frame_to_stdout(outputFrameGreyscale1, scaledOutWidth * scaledOutHeight);
+        }
+      } else {
+        separate_rgb24(preP, redVals, greenVals, blueVals, startingWidth, startingHeight);
+        rescale_bilinear(redVals, startingWidth, startingHeight, outputFrameScaledR, scaledOutWidth, scaledOutHeight);
+        rescale_bilinear(greenVals, startingWidth, startingHeight, outputFrameScaledG, scaledOutWidth, scaledOutHeight);
+        rescale_bilinear(blueVals, startingWidth, startingHeight, outputFrameScaledB, scaledOutWidth, scaledOutHeight);
+        combine_rgb24(outputFrameScaledB, outputFrameScaledG, outputFrameScaledR, outputFrameRGB24, scaledOutWidth, scaledOutHeight);
+        if (noRGB) {
+          rgb24_to_greyscale(outputFrameRGB24, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+          if (doInvert) {
+            invert_greyscale(outputFrameGreyscale, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
+            frame_to_stdout(outputFrameGreyscale1, (scaledOutWidth * scaledOutHeight));
+          } else {
+            frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
+          }
+        } else {
+          frame_to_stdout(outputFrameRGB24, (scaledOutWidth * scaledOutHeight * 3));
+        }
+      }
+    } else {
+      rgb24_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
+    }
+  } else if (frame_number == 2147483647) {
+    frame_number = 0;
+  }
+  croppedWidth = 0;
+  croppedHeight = 0;
+  frame_number++;*/
+}
+
 int read_frameAlt(void) {
-  struct v4l2_buffer buf;
-  unsigned int i;
+  struct v4l2_buffer bufAlt;
+  unsigned int iAlt;
   switch (ioAlt) {
   case IO_METHOD_READALT:
     if (-1 == read(fdAlt, buffersAlt[0].start, buffersAlt[0].length)) {
@@ -571,10 +766,10 @@ int read_frameAlt(void) {
     process_imageAlt(buffersAlt[0].start, buffersAlt[0].length);
     break;
   case IO_METHOD_MMAPALT:
-    CLEAR(buf);
-    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    buf.memory = V4L2_MEMORY_MMAP;
-    if (-1 == xioctlAlt(fdAlt, VIDIOC_DQBUF, &buf)) {
+    CLEAR(bufAlt);
+    bufAlt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    bufAlt.memory = V4L2_MEMORY_MMAP;
+    if (-1 == xioctlAlt(fdAlt, VIDIOC_DQBUF, &bufAlt)) {
       switch (errno) {
       case EAGAIN:
         return 0;
@@ -585,16 +780,17 @@ int read_frameAlt(void) {
         errno_exitAlt("VIDIOC_DQBUF");
       }
     }
-    assert(buf.index < n_buffersAlt);
-    process_imageAlt(buffersAlt[buf.index].start, buf.bytesused);
-    if (-1 == xioctlAlt(fdAlt, VIDIOC_QBUF, &buf))
+    assert(bufAlt.index < n_buffersAlt);
+    //process_imageAlt(buffersAlt[bufAlt.index].start, bufAlt.bytesused);
+    frame_to_stdout((unsigned char*)buffersAlt[bufAlt.index].start, bufAlt.bytesused);
+    if (-1 == xioctlAlt(fdAlt, VIDIOC_QBUF, &bufAlt))
       errno_exitAlt("VIDIOC_QBUF");
     break;
   case IO_METHOD_USERPTRALT:
-    CLEAR(buf);
-    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    buf.memory = V4L2_MEMORY_USERPTR;
-    if (-1 == xioctlAlt(fdAlt, VIDIOC_DQBUF, &buf)) {
+    CLEAR(bufAlt);
+    bufAlt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    bufAlt.memory = V4L2_MEMORY_USERPTR;
+    if (-1 == xioctlAlt(fdAlt, VIDIOC_DQBUF, &bufAlt)) {
       switch (errno) {
       case EAGAIN:
         return 0;
@@ -605,49 +801,82 @@ int read_frameAlt(void) {
         errno_exitAlt("VIDIOC_DQBUF");
       }
     }
-    for (i = 0; i < n_buffersAlt; ++i)
-      if (buf.m.userptr == (unsigned long)buffersAlt[i].start && buf.length == buffersAlt[i].length)
+    for (iAlt = 0; iAlt < n_buffersAlt; ++iAlt)
+      if (bufAlt.m.userptr == (unsigned long)buffersAlt[iAlt].start && bufAlt.length == buffersAlt[iAlt].length)
         break;
-    assert(i < n_buffersAlt);
-    process_imageAlt((void*)buf.m.userptr, buf.bytesused);
-    if (-1 == xioctlAlt(fdAlt, VIDIOC_QBUF, &buf))
+    assert(iAlt < n_buffersAlt);
+    process_imageAlt((void*)bufAlt.m.userptr, bufAlt.bytesused);
+    if (-1 == xioctlAlt(fdAlt, VIDIOC_QBUF, &bufAlt))
       errno_exitAlt("VIDIOC_QBUF");
     break;
   }
+
+  struct v4l2_buffer buf;
+  unsigned int i;
+  switch (io) {
+  case IO_METHOD_READ:
+    if (-1 == read(fd, buffers[0].start, buffers[0].length)) {
+      switch (errno) {
+      case EAGAIN:
+        return 0;
+      case EIO:
+        // Could ignore EIO, see spec.
+        // fall through
+      default:
+        errno_exit("read");
+      }
+    }
+    process_image(buffers[0].start, buffers[0].length);
+    break;
+  case IO_METHOD_MMAP:
+    CLEAR(buf);
+    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory = V4L2_MEMORY_MMAP;
+    frame_to_stdout(outputFrameGreyscaleAlt, (startingWidthAlt * startingHeightAlt));
+    if (-1 == xioctl(fd, VIDIOC_DQBUF, &buf)) {
+      switch (errno) {
+      case EAGAIN:
+        return 0;
+      case EIO:
+        // Could ignore EIO, see spec.
+        // fall through
+      default:
+        errno_exit("VIDIOC_DQBUF");
+      }
+    }
+    assert(buf.index < n_buffers);
+    process_image(buffers[buf.index].start, buf.bytesused);
+    if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
+      errno_exit("VIDIOC_QBUF");
+    break;
+  case IO_METHOD_USERPTR:
+    CLEAR(buf);
+    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory = V4L2_MEMORY_USERPTR;
+    if (-1 == xioctl(fd, VIDIOC_DQBUF, &buf)) {
+      switch (errno) {
+      case EAGAIN:
+        return 0;
+      case EIO:
+        // Could ignore EIO, see spec.
+        // fall through
+      default:
+        errno_exit("VIDIOC_DQBUF");
+      }
+    }
+    for (i = 0; i < n_buffers; ++i)
+      if (buf.m.userptr == (unsigned long)buffers[i].start && buf.length == buffers[i].length)
+        break;
+    assert(i < n_buffers);
+    process_image((void*)buf.m.userptr, buf.bytesused);
+    if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
+      errno_exit("VIDIOC_QBUF");
+    break;
+  }
+
+  //frame_to_stdout(outputFrameGreyscaleAlt, (startingWidthAlt* startingHeightAlt));
   return 1;
 }
-
-/*void mainloopAlt(void) {
-  unsigned int count;
-  unsigned int loopIsInfinite = 0;
-  if (frame_countAlt == 0) loopIsInfinite = 1; //infinite loop
-  count = frame_countAlt;
-  while ((count-- > 0) || loopIsInfinite) {
-    for (;;) {
-      fd_set fds;
-      struct timeval tv;
-      int r;
-      FD_ZERO(&fds);
-      FD_SET(fdAlt, &fds);
-      // Timeout.
-      tv.tv_sec = 2;
-      tv.tv_usec = 0;
-      r = select(fdAlt + 1, &fds, NULL, NULL, &tv);
-      if (-1 == r) {
-        if (EINTR == errno)
-          continue;
-        errno_exitAlt("select");
-      }
-      if (0 == r) {
-        fprintf(stderr, "select timeout\n");
-        exit(EXIT_FAILURE);
-      }
-      if (read_frameAlt())
-        break;
-      // EAGAIN - continue select loop.
-    }
-  }
-}*/
 
 void stop_capturingAlt(void) {
   enum v4l2_buf_type type;
@@ -896,7 +1125,8 @@ void init_deviceAlt(void) {
     else if (force_formatAlt == 2) {
       fmt.fmt.pix.width = startingWidthAlt;
       fmt.fmt.pix.height = startingHeightAlt;
-      fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_H264;
+      //fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_H264;
+      fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_UYVY;
       fmt.fmt.pix.field = V4L2_FIELD_NONE;
       //fmt.fmt.pix.field       = V4L2_FIELD_INTERLACED;
     }
@@ -904,7 +1134,6 @@ void init_deviceAlt(void) {
       fmt.fmt.pix.width = startingWidthAlt;
       fmt.fmt.pix.height = startingHeightAlt;
       fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
-      //fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_UYVY;
       fmt.fmt.pix.field = V4L2_FIELD_NONE;
       //fmt.fmt.pix.field	= V4L2_FIELD_INTERLACED;
     }
@@ -982,75 +1211,6 @@ void crop_greyscale(unsigned char* image, int width, int height, int* crops, uns
   }
 }
 
-/*#define FPS_LIMITER_10_OF_30
-#define FPS_LIMITER_30_OF_60*/
-const bool noRGB = true;
-const bool doMinimalGreyscaleOnly = true;
-const bool doInvert = false;
-void process_image(const void* p, int size) {
-  unsigned char* preP = (unsigned char*)p;
-  frame_to_stdout(outputFrameGreyscaleAlt, (startingWidthAlt * startingHeightAlt));
-/*#ifdef FPS_LIMITER_10_OF_30
-    if (frame_number % 3 == 0) {
-#elseif FPS_LIMITER_30_OF_60
-    if (frame_number % 6 == 0) {
-#else
-    if (true) {
-#endif
-      if (force_format == 1) {
-        yuyv_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
-        rescale_bilinear(outputFrameGreyscale, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
-        frame_to_stdout(outputFrameGreyscale1, scaledOutWidth * scaledOutHeight);
-      } else if (force_format == 3) {
-        if (doMinimalGreyscaleOnly) {
-          rgb24_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
-          rescale_bilinear(outputFrameGreyscale, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
-          if (doInvert) {
-            invert_greyscale(outputFrameGreyscale1, outputFrameGreyscale2, scaledOutWidth, scaledOutHeight);
-            frame_to_stdout(outputFrameGreyscale2, scaledOutWidth * scaledOutHeight);
-          } else {*/
-            /*replace_pixels_below_val(outputFrameGreyscale1, outputFrameGreyscale2, scaledOutWidth, scaledOutHeight, 85);
-            replace_pixels_above_val(outputFrameGreyscale2, outputFrameGreyscale3, scaledOutWidth, scaledOutHeight, 127);
-            greyscale_to_sobel(outputFrameGreyscale3, outputFrameGreyscale4, scaledOutWidth, scaledOutHeight);
-            frame_to_stdout(outputFrameGreyscale4, scaledOutWidth * scaledOutHeight);*/
-            /*frame_to_stdout(outputFrameGreyscale1, scaledOutWidth * scaledOutHeight);
-          }
-        } else {
-          separate_rgb24(preP, redVals, greenVals, blueVals, startingWidth, startingHeight);
-          rescale_bilinear(redVals, startingWidth, startingHeight, outputFrameScaledR, scaledOutWidth, scaledOutHeight);
-          rescale_bilinear(greenVals, startingWidth, startingHeight, outputFrameScaledG, scaledOutWidth, scaledOutHeight);
-          rescale_bilinear(blueVals, startingWidth, startingHeight, outputFrameScaledB, scaledOutWidth, scaledOutHeight);
-          combine_rgb24(outputFrameScaledB, outputFrameScaledG, outputFrameScaledR, outputFrameRGB24, scaledOutWidth, scaledOutHeight);
-          if (noRGB) {
-            rgb24_to_greyscale(outputFrameRGB24, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-            if (doInvert) {
-              invert_greyscale(outputFrameGreyscale, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
-              frame_to_stdout(outputFrameGreyscale1, (scaledOutWidth * scaledOutHeight));
-            } else {
-              frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
-            }
-          } else {
-            frame_to_stdout(outputFrameRGB24, (scaledOutWidth * scaledOutHeight * 3));
-          }
-        }
-      } else {
-        rgb24_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
-      }
-    } else if (frame_number == 2147483647) {
-      frame_number = 0;
-    }*/
-    /*rescale_bilinear(outputFrameGreyscale, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
-    frame_to_stdout(outputFrameGreyscale1, (scaledOutWidth * scaledOutHeight));*/
-    /*rescale_bilinear(outputFrameGreyscale, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
-    crop_greyscale(outputFrameGreyscale1, scaledOutWidth, scaledOutHeight, cropMatrix[0], outputFrameGreyscale2);
-    greyscale_to_sobel(outputFrameGreyscale2, outputFrameGreyscale3, croppedWidth, croppedHeight);
-    crop_greyscale(outputFrameGreyscale3, croppedWidth, croppedHeight, cropMatrix[1], outputFrameGreyscale4);
-    frame_to_stdout(outputFrameGreyscale4, (croppedWidth * croppedHeight));*/
-  croppedWidth = 0;
-  croppedHeight = 0;
-  frame_number++;
-}
-
 int read_frame(void) {
     struct v4l2_buffer buf;
     unsigned int i;
@@ -1078,8 +1238,8 @@ int read_frame(void) {
             case EAGAIN:
                 return 0;
             case EIO:
-                /* Could ignore EIO, see spec. */
-                /* fall through */
+                // Could ignore EIO, see spec.
+                // fall through
             default:
                 errno_exit("VIDIOC_DQBUF");
             }
@@ -1098,8 +1258,8 @@ int read_frame(void) {
             case EAGAIN:
                 return 0;
             case EIO:
-                /* Could ignore EIO, see spec. */
-                /* fall through */
+                // Could ignore EIO, see spec.
+                // fall through
             default:
                 errno_exit("VIDIOC_DQBUF");
             }
@@ -1122,51 +1282,51 @@ void mainloop(void) {
     if (frame_count == 0) loopIsInfinite = 1; //infinite loop
     count = frame_count;
     while ((count-- > 0) || loopIsInfinite) {
-        for (;;) {
-          fd_set fdsAlt;
-          struct timeval tvAlt;
-          int rAlt;
-          FD_ZERO(&fdsAlt);
-          FD_SET(fdAlt, &fdsAlt);
-          // Timeout.
-          tvAlt.tv_sec = 2;
-          tvAlt.tv_usec = 0;
-          rAlt = select(fdAlt + 1, &fdsAlt, NULL, NULL, &tvAlt);
-          if (-1 == rAlt) {
-            if (EINTR == errno)
-              continue;
-            errno_exitAlt("select");
-          }
-          if (0 == rAlt) {
-            fprintf(stderr, "select timeout\n");
-            exit(EXIT_FAILURE);
-          }
-          if (read_frameAlt())
-            break;
-          // EAGAIN - continue select loop.
-
-          fd_set fds;
-          struct timeval tv;
-          int r;
-          FD_ZERO(&fds);
-          FD_SET(fd, &fds);
-          // Timeout.
-          tv.tv_sec = 2;
-          tv.tv_usec = 0;
-          r = select(fd + 1, &fds, NULL, NULL, &tv);
-          if (-1 == r) {
-            if (EINTR == errno)
-              continue;
-              errno_exit("select");
-          }
-          if (0 == r) {
-            fprintf(stderr, "select timeout\n");
-            exit(EXIT_FAILURE);
-          }
-          if (read_frame())
-            break;
-          // EAGAIN - continue select loop.
+      for (;;) {
+        /*fd_set fdsAlt;
+        struct timeval tvAlt;
+        int rAlt;
+        FD_ZERO(&fdsAlt);
+        FD_SET(fdAlt, &fdsAlt);
+        // Timeout.
+        tvAlt.tv_sec = 2;
+        tvAlt.tv_usec = 0;
+        rAlt = select(fdAlt + 1, &fdsAlt, NULL, NULL, &tvAlt);
+        if (-1 == rAlt) {
+          if (EINTR == errno)
+            continue;
+          errno_exitAlt("select");
         }
+        if (0 == rAlt) {
+          fprintf(stderr, "select timeout\n");
+          exit(EXIT_FAILURE);
+        }
+        if (read_frameAlt())
+          break;
+        // EAGAIN - continue select loop. */
+
+        fd_set fds;
+        struct timeval tv;
+        int r;
+        FD_ZERO(&fds);
+        FD_SET(fd, &fds);
+        // Timeout.
+        tv.tv_sec = 2;
+        tv.tv_usec = 0;
+        r = select(fd + 1, &fds, NULL, NULL, &tv);
+        if (-1 == r) {
+          if (EINTR == errno)
+            continue;
+          errno_exit("select");
+        }
+        if (0 == r) {
+          fprintf(stderr, "select timeout\n");
+          exit(EXIT_FAILURE);
+        }
+        if (read_frame())
+          break;
+        // EAGAIN - continue select loop
+      }
     }
 }
 
@@ -1525,15 +1685,16 @@ int start_main(char *device_name, char* device_name_alt) {
       fprintf(stderr, " >> %dx%d (L:%d,R:%d,T:%d,B:%d)", tempCropAmtWidth, tempCropAmtHeight, cropMatrix[i][0], cropMatrix[i][1], cropMatrix[i][2], cropMatrix[i][3]);
     }
     fprintf(stderr, "\n");
-    open_deviceAlt();
+    /*open_deviceAlt();
     init_deviceAlt();
     start_capturingAlt();
-    fprintf(stderr, "Initialized alt (%s)..\n", dev_name_alt);
+    fprintf(stderr, "Initialized alt (%s)..\n", dev_name_alt);*/
     open_device();
     init_device();
     start_capturing();
     fprintf(stderr, "Initialized main (%s)..\n", dev_name);
-    fprintf(stderr, "Starting loop with the following devices: %s and %s\n", dev_name, dev_name_alt);
+    //fprintf(stderr, "Starting loop with the following device(s): %s and %s\n", dev_name, dev_name_alt);
+    fprintf(stderr, "Starting loop with the following device(s): %s\n", dev_name);
     mainloop();
     /* main loop
     for (;;) {
@@ -1608,10 +1769,10 @@ int start_main(char *device_name, char* device_name_alt) {
       // EAGAIN - continue select loop.
     }
     // alt loop end */
-    stop_capturingAlt();
+    /*stop_capturingAlt();
     uninit_deviceAlt();
     close_deviceAlt();
-    fprintf(stderr, "\n");
+    fprintf(stderr, "\n");*/
     stop_capturing();
     uninit_device();
     close_device();
