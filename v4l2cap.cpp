@@ -414,12 +414,8 @@ void rescale_bilinear(const unsigned char* input, int input_width, int input_hei
     }
   }
 }
-// The kernel size of the Gaussian blur
-//const int KERNEL_SIZE = 5;
-const int KERNEL_SIZE = 7;
-
-// The sigma value of the Gaussian blur
-const double SIGMA = 2.0;
+const int KERNEL_SIZE = 7; // The kernel size of the Gaussian blur, default: 5
+const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
 
 // A helper function to compute the Gaussian kernel
 std::vector<double> computeGaussianKernel(int kernelSize, double sigma) {
@@ -621,7 +617,7 @@ int read_frameAlt(void) {
   return 1;
 }
 
-void mainloopAlt(void) {
+/*void mainloopAlt(void) {
   unsigned int count;
   unsigned int loopIsInfinite = 0;
   if (frame_countAlt == 0) loopIsInfinite = 1; //infinite loop
@@ -633,7 +629,7 @@ void mainloopAlt(void) {
       int r;
       FD_ZERO(&fds);
       FD_SET(fdAlt, &fds);
-      /* Timeout. */
+      // Timeout.
       tv.tv_sec = 2;
       tv.tv_usec = 0;
       r = select(fdAlt + 1, &fds, NULL, NULL, &tv);
@@ -648,10 +644,10 @@ void mainloopAlt(void) {
       }
       if (read_frameAlt())
         break;
-      /* EAGAIN - continue select loop. */
+      // EAGAIN - continue select loop.
     }
   }
-}
+}*/
 
 void stop_capturingAlt(void) {
   enum v4l2_buf_type type;
@@ -993,7 +989,7 @@ const bool doMinimalGreyscaleOnly = true;
 const bool doInvert = false;
 void process_image(const void* p, int size) {
   unsigned char* preP = (unsigned char*)p;
-  frame_to_stdout(outputFrameAlt, (startingWidthAlt * startingHeightAlt));
+  frame_to_stdout(outputFrameGreyscaleAlt, (startingWidthAlt * startingHeightAlt));
 /*#ifdef FPS_LIMITER_10_OF_30
     if (frame_number % 3 == 0) {
 #elseif FPS_LIMITER_30_OF_60
@@ -1050,9 +1046,9 @@ void process_image(const void* p, int size) {
     greyscale_to_sobel(outputFrameGreyscale2, outputFrameGreyscale3, croppedWidth, croppedHeight);
     crop_greyscale(outputFrameGreyscale3, croppedWidth, croppedHeight, cropMatrix[1], outputFrameGreyscale4);
     frame_to_stdout(outputFrameGreyscale4, (croppedWidth * croppedHeight));*/
-    croppedWidth = 0;
-    croppedHeight = 0;
-    frame_number++;
+  croppedWidth = 0;
+  croppedHeight = 0;
+  frame_number++;
 }
 
 int read_frame(void) {
@@ -1148,7 +1144,6 @@ void mainloop(void) {
           if (read_frameAlt())
             break;
           // EAGAIN - continue select loop.
-
 
           fd_set fds;
           struct timeval tv;
