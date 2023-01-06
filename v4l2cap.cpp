@@ -397,6 +397,16 @@ void resize_image_nearest_neighbor(const uint8_t* src, int src_width, int src_he
   }
 }
 
+template <typename T>
+T clip(const T& n, const T& lower, const T& upper) {
+  return std::max(lower, std::min(n, upper));
+}
+
+double clamp(double d, double min, double max) {
+  const double t = d < min ? min : d;
+  return t > max ? max : t;
+}
+
 void rescale_bilinear(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
 #pragma omp parallel for num_threads(4)
   for (int y = 0; y < output_height; y++) {
@@ -494,6 +504,12 @@ void rescale_bilinear_from_yuyv(const unsigned char* input, int input_width, int
       float v4 = input[in_index4];
       // Use bilinear interpolation to estimate the luminance value of the pixel in the input image.
       float value = (1 - dx) * (1 - dy) * v1 + dx * (1 - dy) * v2 + (1 - dx) * dy * v3 + dx * dy * v4;
+      if (value > 126 && value < 131) {
+        value = 255.0F;
+      } else {
+        value = 0.0F;
+      }
+      //output[index] = (unsigned char)value;
       output[index] = (unsigned char)value;
     }
   }
