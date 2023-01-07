@@ -57,6 +57,8 @@ char* dev_name;
 char* dev_name_alt;
 enum io_method io = IO_METHOD_MMAP;
 enum io_methodAlt ioAlt = IO_METHOD_MMAPALT;
+/*enum io_method io = IO_METHOD_READ;
+enum io_methodAlt ioAlt = IO_METHOD_USERPTRALT;*/
 int fd = -1;
 int fdAlt = -1;
 struct buffer* buffers;
@@ -100,16 +102,16 @@ int xioctlAlt(int fh, int request, void* arg) {
 // The width and height of the input video and any downscaled output video
 const int startingWidth = 1280;
 const int startingHeight = 720;
-const int startingWidthAlt = 320;
-const int startingHeightAlt = 180;
+const int startingWidthAlt = 1280;
+const int startingHeightAlt = 720;
 /*const int startingWidth = 1920;
 const int startingHeight = 1080;
 const int scaledOutWidth = 640;
 const int scaledOutHeight = 360;*/
-const int scaledOutWidth = 320;
-const int scaledOutHeight = 180;
-const int scaledOutWidthAlt = 320;
-const int scaledOutHeightAlt = 180;
+const int scaledOutWidth = 640;
+const int scaledOutHeight = 360;
+const int scaledOutWidthAlt = 640;
+const int scaledOutHeightAlt = 360;
 /*const int scaledOutWidth = 384;
 const int scaledOutHeight = 216;*/
 // Crop size matrix (scale up or down as needed)
@@ -664,7 +666,7 @@ void frame_to_stdout(unsigned char* input, int size) {
 
 void process_imageAlt(const void* p, int size) {
   unsigned char* preP = (unsigned char*)p;
-  yuyv_to_greyscale(preP, outputFrameGreyscaleAlt, startingWidthAlt, startingHeightAlt);
+  //yuyv_to_greyscale(preP, outputFrameGreyscaleAlt, startingWidthAlt, startingHeightAlt);
   //frame_to_stdout(preP, (startingWidthAlt * startingHeightAlt * 2));
   //memcpy(outputFrameAlt, preP, (startingWidthAlt * startingHeightAlt * 2));
   //frame_to_stdout(outputFrameAlt, (startingWidthAlt * startingHeightAlt * 2));
@@ -697,17 +699,17 @@ void process_imageAlt(const void* p, int size) {
 }
 
 /*#define FPS_LIMITER_10_OF_30
-#define FPS_LIMITER_30_OF_60*/
+#define FPS_LIMITER_30_OF_60
 const bool noRGB = true;
 const bool doMinimalGreyscaleOnly = true;
-const bool doInvert = false;
+const bool doInvert = false;*/
 void process_image(const void* p, int size) {
   unsigned char* preP = (unsigned char*)p;
   //yuyv_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
-  rescale_bilinear_from_yuyv(preP, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-  gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
+  /*rescale_bilinear_from_yuyv(preP, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+  gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);*/
   // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-  frame_to_stdout(outputFrameGreyscale1, (scaledOutWidth * scaledOutHeight));
+  //frame_to_stdout(outputFrameGreyscale1, (scaledOutWidth * scaledOutHeight));
   //frame_to_stdout(preP, (startingWidth * startingHeight * 2));
   //rgb24_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
   /*rescale_bilinear(outputFrameGreyscale, startingWidth, startingHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
@@ -758,139 +760,58 @@ void process_image(const void* p, int size) {
     }
   } else if (frame_number == 2147483647) {
     frame_number = 0;
-  }
+  }*/
   croppedWidth = 0;
   croppedHeight = 0;
-  frame_number++;*/
+  //frame_number++;
 }
 
 int read_frameAlt(void) {
   struct v4l2_buffer bufAlt;
   unsigned int iAlt;
-  switch (ioAlt) {
-  case IO_METHOD_READALT:
-    if (-1 == read(fdAlt, buffersAlt[0].start, buffersAlt[0].length)) {
-      switch (errno) {
-      case EAGAIN:
-        return 0;
-      case EIO:
-        // Could ignore EIO, see spec.
-        // fall through
-      default:
-        errno_exitAlt("read");
-      }
+  CLEAR(bufAlt);
+  bufAlt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  bufAlt.memory = V4L2_MEMORY_MMAP;
+  if (-1 == xioctlAlt(fdAlt, VIDIOC_DQBUF, &bufAlt)) {
+    switch (errno) {
+    case EAGAIN:
+      return 0;
+    case EIO:
+      // Could ignore EIO, see spec.
+      // fall through
+    default:
+      errno_exitAlt("VIDIOC_DQBUF");
     }
-    process_imageAlt(buffersAlt[0].start, buffersAlt[0].length);
-    break;
-  case IO_METHOD_MMAPALT:
-    CLEAR(bufAlt);
-    bufAlt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    bufAlt.memory = V4L2_MEMORY_MMAP;
-    if (-1 == xioctlAlt(fdAlt, VIDIOC_DQBUF, &bufAlt)) {
-      switch (errno) {
-      case EAGAIN:
-        return 0;
-      case EIO:
-        // Could ignore EIO, see spec.
-        // fall through
-      default:
-        errno_exitAlt("VIDIOC_DQBUF");
-      }
-    }
-    assert(bufAlt.index < n_buffersAlt);
-    //process_imageAlt(buffersAlt[bufAlt.index].start, bufAlt.bytesused);
-    frame_to_stdout((unsigned char*)buffersAlt[bufAlt.index].start, bufAlt.bytesused);
-    if (-1 == xioctlAlt(fdAlt, VIDIOC_QBUF, &bufAlt))
-      errno_exitAlt("VIDIOC_QBUF");
-    break;
-  case IO_METHOD_USERPTRALT:
-    CLEAR(bufAlt);
-    bufAlt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    bufAlt.memory = V4L2_MEMORY_USERPTR;
-    if (-1 == xioctlAlt(fdAlt, VIDIOC_DQBUF, &bufAlt)) {
-      switch (errno) {
-      case EAGAIN:
-        return 0;
-      case EIO:
-        // Could ignore EIO, see spec.
-        // fall through
-      default:
-        errno_exitAlt("VIDIOC_DQBUF");
-      }
-    }
-    for (iAlt = 0; iAlt < n_buffersAlt; ++iAlt)
-      if (bufAlt.m.userptr == (unsigned long)buffersAlt[iAlt].start && bufAlt.length == buffersAlt[iAlt].length)
-        break;
-    assert(iAlt < n_buffersAlt);
-    process_imageAlt((void*)bufAlt.m.userptr, bufAlt.bytesused);
-    if (-1 == xioctlAlt(fdAlt, VIDIOC_QBUF, &bufAlt))
-      errno_exitAlt("VIDIOC_QBUF");
-    break;
   }
+  assert(bufAlt.index < n_buffersAlt);
+  //process_imageAlt(buffersAlt[bufAlt.index].start, bufAlt.bytesused);
+  fprintf(stderr, "[alt]:%d\n", bufAlt.bytesused);
+  if (-1 == xioctlAlt(fdAlt, VIDIOC_QBUF, &bufAlt))
+    errno_exitAlt("VIDIOC_QBUF");
 
   struct v4l2_buffer buf;
   unsigned int i;
-  switch (io) {
-  case IO_METHOD_READ:
-    if (-1 == read(fd, buffers[0].start, buffers[0].length)) {
-      switch (errno) {
-      case EAGAIN:
-        return 0;
-      case EIO:
-        // Could ignore EIO, see spec.
-        // fall through
-      default:
-        errno_exit("read");
-      }
+  CLEAR(buf);
+  buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  buf.memory = V4L2_MEMORY_MMAP;
+  if (-1 == xioctl(fd, VIDIOC_DQBUF, &buf)) {
+    switch (errno) {
+    case EAGAIN:
+      return 0;
+    case EIO:
+      // Could ignore EIO, see spec.
+      // fall through
+    default:
+      errno_exit("VIDIOC_DQBUF");
     }
-    process_image(buffers[0].start, buffers[0].length);
-    break;
-  case IO_METHOD_MMAP:
-    CLEAR(buf);
-    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    buf.memory = V4L2_MEMORY_MMAP;
-    frame_to_stdout(outputFrameGreyscaleAlt, (startingWidthAlt * startingHeightAlt));
-    if (-1 == xioctl(fd, VIDIOC_DQBUF, &buf)) {
-      switch (errno) {
-      case EAGAIN:
-        return 0;
-      case EIO:
-        // Could ignore EIO, see spec.
-        // fall through
-      default:
-        errno_exit("VIDIOC_DQBUF");
-      }
-    }
-    assert(buf.index < n_buffers);
-    process_image(buffers[buf.index].start, buf.bytesused);
-    if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
-      errno_exit("VIDIOC_QBUF");
-    break;
-  case IO_METHOD_USERPTR:
-    CLEAR(buf);
-    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    buf.memory = V4L2_MEMORY_USERPTR;
-    if (-1 == xioctl(fd, VIDIOC_DQBUF, &buf)) {
-      switch (errno) {
-      case EAGAIN:
-        return 0;
-      case EIO:
-        // Could ignore EIO, see spec.
-        // fall through
-      default:
-        errno_exit("VIDIOC_DQBUF");
-      }
-    }
-    for (i = 0; i < n_buffers; ++i)
-      if (buf.m.userptr == (unsigned long)buffers[i].start && buf.length == buffers[i].length)
-        break;
-    assert(i < n_buffers);
-    process_image((void*)buf.m.userptr, buf.bytesused);
-    if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
-      errno_exit("VIDIOC_QBUF");
-    break;
   }
+  assert(buf.index < n_buffers);
+  //process_image(buffers[buf.index].start, buf.bytesused);
+  fprintf(stderr, "[main]:%d\n", buf.bytesused);
+  if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
+    errno_exit("VIDIOC_QBUF");
 
+  //frame_to_stdout(outputFrameGreyscaleAlt, (startingWidthAlt * startingHeightAlt));
   //frame_to_stdout(outputFrameGreyscaleAlt, (startingWidthAlt* startingHeightAlt));
   return 1;
 }
@@ -899,7 +820,7 @@ void stop_capturingAlt(void) {
   enum v4l2_buf_type type;
   switch (ioAlt) {
   case IO_METHOD_READALT:
-    /* Nothing to do. */
+    // Nothing to do.
     break;
   case IO_METHOD_MMAPALT:
   case IO_METHOD_USERPTRALT:
@@ -1290,61 +1211,61 @@ int read_frame(void) {
             errno_exit("VIDIOC_QBUF");
         break;
     }
+    //frame_to_stdout(outputFrameGreyscale, (startingWidth * startingHeight));
     return 1;
 }
 
 void mainloop(void) {
-    unsigned int count;
-    unsigned int loopIsInfinite = 0;
-    if (frame_count == 0) loopIsInfinite = 1; //infinite loop
-    count = frame_count;
-    while ((count-- > 0) || loopIsInfinite) {
-      for (;;) {
-        /*fd_set fdsAlt;
-        struct timeval tvAlt;
-        int rAlt;
-        FD_ZERO(&fdsAlt);
-        FD_SET(fdAlt, &fdsAlt);
-        // Timeout.
-        tvAlt.tv_sec = 2;
-        tvAlt.tv_usec = 0;
-        rAlt = select(fdAlt + 1, &fdsAlt, NULL, NULL, &tvAlt);
-        if (-1 == rAlt) {
-          if (EINTR == errno)
-            continue;
-          errno_exitAlt("select");
-        }
-        if (0 == rAlt) {
-          fprintf(stderr, "select timeout\n");
-          exit(EXIT_FAILURE);
-        }
-        if (read_frameAlt())
-          break;
-        // EAGAIN - continue select loop. */
-
-        fd_set fds;
-        struct timeval tv;
-        int r;
-        FD_ZERO(&fds);
-        FD_SET(fd, &fds);
-        // Timeout.
-        tv.tv_sec = 2;
-        tv.tv_usec = 0;
-        r = select(fd + 1, &fds, NULL, NULL, &tv);
-        if (-1 == r) {
-          if (EINTR == errno)
-            continue;
-          errno_exit("select");
-        }
-        if (0 == r) {
-          fprintf(stderr, "select timeout\n");
-          exit(EXIT_FAILURE);
-        }
-        if (read_frame())
-          break;
-        // EAGAIN - continue select loop
-      }
+  while (true) {
+    fd_set fdsAlt;
+    struct timeval tvAlt;
+    int rAlt;
+    FD_ZERO(&fdsAlt);
+    FD_SET(fdAlt, &fdsAlt);
+    // Timeout.
+    tvAlt.tv_sec = 2;
+    tvAlt.tv_usec = 0;
+    rAlt = select(fdAlt + 1, &fdsAlt, NULL, NULL, &tvAlt);
+    if (-1 == rAlt) {
+      if (EINTR == errno)
+        continue;
+      errno_exitAlt("select");
     }
+    if (0 == rAlt) {
+      fprintf(stderr, "select timeout\n");
+      exit(EXIT_FAILURE);
+    }
+    read_frameAlt();
+    /*if (read_frameAlt())
+      break;*/
+    // EAGAIN - continue select loop.
+
+    /*fd_set fds;
+    struct timeval tv;
+    int r;
+    FD_ZERO(&fds);
+    FD_SET(fd, &fds);
+    // Timeout.
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+    r = select(fd + 1, &fds, NULL, NULL, &tv);
+    if (-1 == r) {
+      if (EINTR == errno)
+        continue;
+      errno_exit("select");
+    }
+    if (0 == r) {
+      fprintf(stderr, "select timeout\n");
+      exit(EXIT_FAILURE);
+    }
+    read_frame();*/
+    /*if (read_frame())
+      break;*/
+    // EAGAIN - continue select loop
+
+    //frame_to_stdout(outputFrameGreyscale1, (scaledOutWidth* scaledOutHeight));
+    //frame_to_stdout(outputFrameGreyscaleAlt, (startingWidthAlt * startingHeightAlt));
+  }
 }
 
 void stop_capturing(void) {
@@ -1702,16 +1623,16 @@ int start_main(char *device_name, char* device_name_alt) {
       fprintf(stderr, " >> %dx%d (L:%d,R:%d,T:%d,B:%d)", tempCropAmtWidth, tempCropAmtHeight, cropMatrix[i][0], cropMatrix[i][1], cropMatrix[i][2], cropMatrix[i][3]);
     }
     fprintf(stderr, "\n");
-    /*open_deviceAlt();
+    open_deviceAlt();
     init_deviceAlt();
     start_capturingAlt();
-    fprintf(stderr, "Initialized alt (%s)..\n", dev_name_alt);*/
+    fprintf(stderr, "Initialized alt (%s)..\n", dev_name_alt);
     open_device();
     init_device();
     start_capturing();
     fprintf(stderr, "Initialized main (%s)..\n", dev_name);
-    //fprintf(stderr, "Starting loop with the following device(s): %s and %s\n", dev_name, dev_name_alt);
-    fprintf(stderr, "Starting loop with the following device(s): %s\n", dev_name);
+    fprintf(stderr, "Starting loop with the following device(s): %s and %s\n", dev_name, dev_name_alt);
+    //fprintf(stderr, "Starting loop with the following device(s): %s\n", dev_name);
     mainloop();
     /* main loop
     for (;;) {
@@ -1786,10 +1707,10 @@ int start_main(char *device_name, char* device_name_alt) {
       // EAGAIN - continue select loop.
     }
     // alt loop end */
-    /*stop_capturingAlt();
+    stop_capturingAlt();
     uninit_deviceAlt();
     close_deviceAlt();
-    fprintf(stderr, "\n");*/
+    fprintf(stderr, "\n");
     stop_capturing();
     uninit_device();
     close_device();
