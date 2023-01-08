@@ -53,6 +53,36 @@ struct bufferAlt {
   size_t length;
 };
 
+struct device {
+  int fd;
+  int opened;
+  unsigned int nbufs;
+  struct buffer* buffers;
+  /*MMAL_COMPONENT_T* isp;
+  MMAL_POOL_T* isp_output_pool;
+  struct component components[MAX_COMPONENTS];
+  // V4L2 to MMAL interface
+  MMAL_QUEUE_T* isp_queue;
+  MMAL_POOL_T* mmal_pool;
+  // Encoded data
+  MMAL_POOL_T* output_pool;
+  MMAL_BOOL_T can_zero_copy;*/
+  unsigned int width;
+  unsigned int height;
+  unsigned int fps;
+  unsigned int frame_time_usec;
+  uint32_t buffer_output_flags;
+  uint32_t timestamp_type;
+  struct timeval starttime;
+  int64_t lastpts;
+  unsigned char num_planes;
+  void* pattern[VIDEO_MAX_PLANES];
+  bool write_data_prefix;
+};
+
+int debug = 1;
+#define print(...) do { if (debug) printf(__VA_ARGS__); }  while (0)
+
 char* dev_name;
 char* dev_name_alt;
 enum io_method io = IO_METHOD_MMAP;
@@ -79,10 +109,6 @@ void errno_exit(const char* s) {
     fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
     exit(EXIT_FAILURE);
 }
-void errno_exitAlt(const char* s) {
-  fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
-  exit(EXIT_FAILURE);
-}
 
 int xioctl(int fh, int request, void* arg) {
     int r;
@@ -90,13 +116,6 @@ int xioctl(int fh, int request, void* arg) {
         r = ioctl(fh, request, arg);
     } while (-1 == r && EINTR == errno);
     return r;
-}
-int xioctlAlt(int fh, int request, void* arg) {
-  int r;
-  do {
-    r = ioctl(fh, request, arg);
-  } while (-1 == r && EINTR == errno);
-  return r;
 }
 
 // The width and height of the input video and any downscaled output video
@@ -121,12 +140,6 @@ int croppedWidthAlt = 0;
 int croppedHeightAlt = 0;
 int croppedWidth = 0;
 int croppedHeight = 0;
-
-// The maximum value for the Sobel operator
-static const int maxSobel = 4 * 255;
-// The Sobel operator as a 3x3 matrix
-static const int sobelX[3][3] = { {-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1} };
-static const int sobelY[3][3] = { {-1, -2, -1}, {0, 0, 0}, {1, 2, 1} };
 
 // Allocate memory for the input and output frames
 unsigned char* outputFrame = new unsigned char[startingWidth * startingHeight * 2];
@@ -219,6 +232,11 @@ void uyvy_to_greyscale(unsigned char* input, unsigned char* output, int width, i
 }
 
 void greyscale_to_sobel(const unsigned char* input, unsigned char* output, int width, int height) {
+  // The maximum value for the Sobel operator
+  const int maxSobel = 4 * 255;
+  // The Sobel operator as a 3x3 matrix
+  const int sobelX[3][3] = { {-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1} };
+  const int sobelY[3][3] = { {-1, -2, -1}, {0, 0, 0}, {1, 2, 1} };
   // Iterate over each pixel in the image
 #pragma omp parallel for
   for (int y = 0; y < height; ++y) {
@@ -766,13 +784,118 @@ void process_image(const void* p, int size) {
   //frame_number++;
 }
 
+int video_set_dv_timings(int fdnum) {
+  struct v4l2_dv_timings timings;
+  v4l2_std_id std;
+  int ret;
+
+  int fps = -1;
+
+  memset(&timings, 0, sizeof timings);
+  ret = xioctl(fdnum, VIDIOC_QUERY_DV_TIMINGS, &timings);
+  if (ret >= 0) {
+    print("QUERY_DV_TIMINGS returned %ux%u pixclk %llu\n", timings.bt.width, timings.bt.height, timings.bt.pixelclock);
+    // Can read DV timings, so set them.
+    ret = xioctl(fdnum, VIDIOC_S_DV_TIMINGS, &timings);
+    if (ret < 0) {
+      print("Failed to set DV timings\n");
+      return -1;
+    } else {
+      double tot_height, tot_width;
+      const struct v4l2_bt_timings* bt = &timings.bt;
+
+      tot_height = bt->height + bt->vfrontporch + bt->vsync + bt->vbackporch + bt->il_vfrontporch + bt->il_vsync + bt->il_vbackporch;
+      tot_width = bt->width + bt->hfrontporch + bt->hsync + bt->hbackporch;
+      fps = (unsigned int)((double)bt->pixelclock / (tot_width * tot_height));
+      fprintf(stderr, "Framerate is %u\n", fps);
+    }
+  } else {
+    memset(&std, 0, sizeof std);
+    ret = ioctl(fdnum, VIDIOC_QUERYSTD, &std);
+    if (ret >= 0) {
+      // Can read standard, so set it.
+      ret = xioctl(fdnum, VIDIOC_S_STD, &std);
+      if (ret < 0) {
+        fprintf(stderr, "Failed to set standard\n");
+        return -1;
+      }
+      else {
+        // SD video - assume 50Hz / 25fps
+        fps = 25;
+      }
+    }
+  }
+  return fps;
+}
+
+void set_framerate(int fdnum) {
+  struct v4l2_fract* tpf;
+  struct v4l2_streamparm streamparm;
+  memset(&streamparm, 0, sizeof(streamparm));
+  streamparm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  if (xioctl(fdnum, VIDIOC_G_PARM, &streamparm) != 0) {
+    // Error
+    fprintf(stderr, "IOCTL ERROR!\n");
+  }
+  if (streamparm.parm.capture.capability & V4L2_CAP_TIMEPERFRAME) {
+    //streamparm.parm.capture.capturemode |= V4L2_CAP_TIMEPERFRAME;
+    tpf = &streamparm.parm.capture.timeperframe;
+    int num = 1, denom = 30;
+    fprintf(stderr, "Setting time per frame to %d/%d from %d/%d\n", denom, num, tpf->denominator, tpf->numerator);
+    tpf->denominator = denom;
+    tpf->numerator = num;
+  }
+  if (xioctl(fdnum, VIDIOC_S_PARM, &streamparm) != 0) {
+    fprintf(stderr, "Failed to set custom frame rate\n");
+  }
+}
+
+int get_framerate(int fdnum) {
+  struct v4l2_fract* tpf;
+  struct v4l2_streamparm streamparm;
+  memset(&streamparm, 0, sizeof(streamparm));
+  streamparm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  if (xioctl(fdnum, VIDIOC_G_PARM, &streamparm) != 0) {
+    // Error
+    fprintf(stderr, "IOCTL ERROR!\n");
+  }
+  if (streamparm.parm.capture.capability & V4L2_CAP_TIMEPERFRAME) {
+    //streamparm.parm.capture.capturemode |= V4L2_CAP_TIMEPERFRAME;
+    tpf = &streamparm.parm.capture.timeperframe;
+    fprintf(stderr, "Time per frame to %d/%d\n", tpf->denominator, tpf->numerator);
+  }
+  /*if (xioctl(fdnum, VIDIOC_S_PARM, &streamparm) != 0) {
+    fprintf(stderr, "Failed to set custom frame rate\n");
+  }*/
+  /*struct v4l2_fract* tpf;
+  struct v4l2_streamparm streamparm;
+  int ret;
+  int fps = -1;
+
+  memset(&streamparm, 0, sizeof streamparm);
+  streamparm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+  ret = xioctl(fdnum, VIDIOC_G_PARM, &streamparm);
+  if (ret < 0) {
+    fprintf(stderr, "Unable to get frame rate: %s (%d).\n", strerror(errno), errno);
+    // Make a wild guess at the frame rate
+    fps = 15;
+    return ret;
+  }
+
+  fprintf(stderr, "Current frame rate: %u/%u\n", tpf->denominator, tpf->numerator);
+  fps = tpf->denominator / tpf->numerator;*/
+
+  return 0;
+}
+
 int read_frameAlt(void) {
   struct v4l2_buffer bufAlt;
   unsigned int iAlt;
   CLEAR(bufAlt);
   bufAlt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   bufAlt.memory = V4L2_MEMORY_MMAP;
-  if (-1 == xioctlAlt(fdAlt, VIDIOC_DQBUF, &bufAlt)) {
+  if (-1 == xioctl(fdAlt, VIDIOC_DQBUF, &bufAlt)) {
     switch (errno) {
     case EAGAIN:
       return 0;
@@ -780,14 +903,14 @@ int read_frameAlt(void) {
       // Could ignore EIO, see spec.
       // fall through
     default:
-      errno_exitAlt("VIDIOC_DQBUF");
+      errno_exit("VIDIOC_DQBUF");
     }
   }
   assert(bufAlt.index < n_buffersAlt);
   //process_imageAlt(buffersAlt[bufAlt.index].start, bufAlt.bytesused);
   fprintf(stderr, "[alt]:%d\n", bufAlt.bytesused);
-  if (-1 == xioctlAlt(fdAlt, VIDIOC_QBUF, &bufAlt))
-    errno_exitAlt("VIDIOC_QBUF");
+  if (-1 == xioctl(fdAlt, VIDIOC_QBUF, &bufAlt))
+    errno_exit("VIDIOC_QBUF");
 
   struct v4l2_buffer buf;
   unsigned int i;
@@ -825,8 +948,8 @@ void stop_capturingAlt(void) {
   case IO_METHOD_MMAPALT:
   case IO_METHOD_USERPTRALT:
     type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (-1 == xioctlAlt(fdAlt, VIDIOC_STREAMOFF, &type))
-      errno_exitAlt("VIDIOC_STREAMOFF");
+    if (-1 == xioctl(fdAlt, VIDIOC_STREAMOFF, &type))
+      errno_exit("VIDIOC_STREAMOFF");
     break;
   }
 }
@@ -845,12 +968,12 @@ void start_capturingAlt(void) {
       buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
       buf.memory = V4L2_MEMORY_MMAP;
       buf.index = i;
-      if (-1 == xioctlAlt(fdAlt, VIDIOC_QBUF, &buf))
-        errno_exitAlt("VIDIOC_QBUF");
+      if (-1 == xioctl(fdAlt, VIDIOC_QBUF, &buf))
+        errno_exit("VIDIOC_QBUF");
     }
     type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (-1 == xioctlAlt(fdAlt, VIDIOC_STREAMON, &type))
-      errno_exitAlt("VIDIOC_STREAMON");
+    if (-1 == xioctl(fdAlt, VIDIOC_STREAMON, &type))
+      errno_exit("VIDIOC_STREAMON");
     break;
   case IO_METHOD_USERPTRALT:
     for (i = 0; i < n_buffersAlt; ++i) {
@@ -861,12 +984,12 @@ void start_capturingAlt(void) {
       buf.index = i;
       buf.m.userptr = (unsigned long)buffersAlt[i].start;
       buf.length = buffersAlt[i].length;
-      if (-1 == xioctlAlt(fdAlt, VIDIOC_QBUF, &buf))
-        errno_exitAlt("VIDIOC_QBUF");
+      if (-1 == xioctl(fdAlt, VIDIOC_QBUF, &buf))
+        errno_exit("VIDIOC_QBUF");
     }
     type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (-1 == xioctlAlt(fdAlt, VIDIOC_STREAMON, &type))
-      errno_exitAlt("VIDIOC_STREAMON");
+    if (-1 == xioctl(fdAlt, VIDIOC_STREAMON, &type))
+      errno_exit("VIDIOC_STREAMON");
     break;
   }
 }
@@ -880,7 +1003,7 @@ void uninit_deviceAlt(void) {
   case IO_METHOD_MMAPALT:
     for (i = 0; i < n_buffersAlt; ++i)
       if (-1 == munmap(buffersAlt[i].start, buffersAlt[i].length))
-        errno_exitAlt("munmap");
+        errno_exit("munmap");
     break;
   case IO_METHOD_USERPTRALT:
     for (i = 0; i < n_buffersAlt; ++i)
@@ -910,13 +1033,13 @@ void init_mmapAlt(void) {
   req.count = 4;
   req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   req.memory = V4L2_MEMORY_MMAP;
-  if (-1 == xioctlAlt(fdAlt, VIDIOC_REQBUFS, &req)) {
+  if (-1 == xioctl(fdAlt, VIDIOC_REQBUFS, &req)) {
     if (EINVAL == errno) {
       fprintf(stderr, "%s does not support memory mapping\n", dev_name_alt);
       exit(EXIT_FAILURE);
     }
     else {
-      errno_exitAlt("VIDIOC_REQBUFS");
+      errno_exit("VIDIOC_REQBUFS");
     }
   }
   if (req.count < 2) {
@@ -934,12 +1057,12 @@ void init_mmapAlt(void) {
     buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     buf.memory = V4L2_MEMORY_MMAP;
     buf.index = n_buffersAlt;
-    if (-1 == xioctlAlt(fdAlt, VIDIOC_QUERYBUF, &buf))
-      errno_exitAlt("VIDIOC_QUERYBUF");
+    if (-1 == xioctl(fdAlt, VIDIOC_QUERYBUF, &buf))
+      errno_exit("VIDIOC_QUERYBUF");
     buffersAlt[n_buffersAlt].length = buf.length;
     buffersAlt[n_buffersAlt].start = mmap(NULL /* start anywhere */, buf.length, PROT_READ | PROT_WRITE /* required */, MAP_SHARED /* recommended */, fdAlt, buf.m.offset);
     if (MAP_FAILED == buffersAlt[n_buffersAlt].start)
-      errno_exitAlt("mmap");
+      errno_exit("mmap");
   }
 }
 
@@ -949,13 +1072,13 @@ void init_userpAlt(unsigned int buffer_size) {
   req.count = 4;
   req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   req.memory = V4L2_MEMORY_USERPTR;
-  if (-1 == xioctlAlt(fdAlt, VIDIOC_REQBUFS, &req)) {
+  if (-1 == xioctl(fdAlt, VIDIOC_REQBUFS, &req)) {
     if (EINVAL == errno) {
       fprintf(stderr, "%s does not support user pointer i/o\n", dev_name_alt);
       exit(EXIT_FAILURE);
     }
     else {
-      errno_exitAlt("VIDIOC_REQBUFS");
+      errno_exit("VIDIOC_REQBUFS");
     }
   }
   buffersAlt = (bufferAlt*)calloc(4, sizeof(*buffersAlt));
@@ -973,12 +1096,12 @@ void init_userpAlt(unsigned int buffer_size) {
   }
 }
 
-void set_framerateAlt(void) {
+/*void set_framerateAlt(int fdnum) {
   struct v4l2_fract* tpf;
   struct v4l2_streamparm streamparm;
   memset(&streamparm, 0, sizeof(streamparm));
   streamparm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  if (xioctlAlt(fdAlt, VIDIOC_G_PARM, &streamparm) != 0) {
+  if (xioctl(fdAlt, VIDIOC_G_PARM, &streamparm) != 0) {
     // Error
     fprintf(stderr, "IOCTL ERROR!\n");
   }
@@ -990,10 +1113,10 @@ void set_framerateAlt(void) {
     tpf->denominator = denom;
     tpf->numerator = num;
   }
-  if (xioctlAlt(fdAlt, VIDIOC_S_PARM, &streamparm) != 0) {
+  if (xioctl(fdAlt, VIDIOC_S_PARM, &streamparm) != 0) {
     fprintf(stderr, "Failed to set custom frame rate\n");
   }
-}
+}*/
 
 void init_deviceAlt(void) {
   struct v4l2_capability cap;
@@ -1001,13 +1124,13 @@ void init_deviceAlt(void) {
   struct v4l2_crop crop;
   struct v4l2_format fmt;
   unsigned int min;
-  if (-1 == xioctlAlt(fdAlt, VIDIOC_QUERYCAP, &cap)) {
+  if (-1 == xioctl(fdAlt, VIDIOC_QUERYCAP, &cap)) {
     if (EINVAL == errno) {
       fprintf(stderr, "%s is no V4L2 device\n", dev_name_alt);
       exit(EXIT_FAILURE);
     }
     else {
-      errno_exitAlt("VIDIOC_QUERYCAP");
+      errno_exit("VIDIOC_QUERYCAP");
     }
   }
   if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) {
@@ -1032,10 +1155,10 @@ void init_deviceAlt(void) {
   /* Select video input, video standard and tune here. */
   CLEAR(cropcap);
   cropcap.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  if (0 == xioctlAlt(fdAlt, VIDIOC_CROPCAP, &cropcap)) {
+  if (0 == xioctl(fdAlt, VIDIOC_CROPCAP, &cropcap)) {
     crop.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     crop.c = cropcap.defrect; /* reset to default */
-    if (-1 == xioctlAlt(fdAlt, VIDIOC_S_CROP, &crop)) {
+    if (-1 == xioctl(fdAlt, VIDIOC_S_CROP, &crop)) {
       switch (errno) {
       case EINVAL:
         /* Cropping not supported. */
@@ -1045,8 +1168,7 @@ void init_deviceAlt(void) {
         break;
       }
     }
-  }
-  else {
+  } else {
     /* Errors ignored. */
   }
   CLEAR(fmt);
@@ -1075,14 +1197,13 @@ void init_deviceAlt(void) {
       fmt.fmt.pix.field = V4L2_FIELD_NONE;
       //fmt.fmt.pix.field	= V4L2_FIELD_INTERLACED;
     }
-    if (-1 == xioctlAlt(fdAlt, VIDIOC_S_FMT, &fmt))
-      errno_exitAlt("VIDIOC_S_FMT");
+    if (-1 == xioctl(fdAlt, VIDIOC_S_FMT, &fmt))
+      errno_exit("VIDIOC_S_FMT");
     // Note VIDIOC_S_FMT may change width and height.
-  }
-  else {
+  } else {
     // Preserve original settings as set by v4l2-ctl for example
-    if (-1 == xioctlAlt(fdAlt, VIDIOC_G_FMT, &fmt))
-      errno_exitAlt("VIDIOC_G_FMT");
+    if (-1 == xioctl(fdAlt, VIDIOC_G_FMT, &fmt))
+      errno_exit("VIDIOC_G_FMT");
   }
   /* Buggy driver paranoia. */
   min = fmt.fmt.pix.width * 2;
@@ -1102,12 +1223,14 @@ void init_deviceAlt(void) {
     init_userpAlt(fmt.fmt.pix.sizeimage);
     break;
   }
-  set_framerateAlt();
+  /*get_framerate(fdAlt);
+  set_framerate(fdAlt);
+  get_framerate(fdAlt);*/
 }
 
 void close_deviceAlt(void) {
   if (-1 == close(fdAlt))
-    errno_exitAlt("close");
+    errno_exit("close");
   fdAlt = -1;
 }
 
@@ -1149,7 +1272,7 @@ void crop_greyscale(unsigned char* image, int width, int height, int* crops, uns
   }
 }
 
-int read_frame(void) {
+/*int read_frame(void) {
     struct v4l2_buffer buf;
     unsigned int i;
     switch (io) {
@@ -1213,7 +1336,7 @@ int read_frame(void) {
     }
     //frame_to_stdout(outputFrameGreyscale, (startingWidth * startingHeight));
     return 1;
-}
+}*/
 
 void mainloop(void) {
   while (true) {
@@ -1229,15 +1352,15 @@ void mainloop(void) {
     if (-1 == rAlt) {
       if (EINTR == errno)
         continue;
-      errno_exitAlt("select");
+      errno_exit("select");
     }
     if (0 == rAlt) {
       fprintf(stderr, "select timeout\n");
       exit(EXIT_FAILURE);
     }
     read_frameAlt();
-    /*if (read_frameAlt())
-      break;*/
+    //if (read_frameAlt())
+    //  break;
     // EAGAIN - continue select loop.
 
     /*fd_set fds;
@@ -1259,8 +1382,8 @@ void mainloop(void) {
       exit(EXIT_FAILURE);
     }
     read_frame();*/
-    /*if (read_frame())
-      break;*/
+    //if (read_frame())
+    //  break;
     // EAGAIN - continue select loop
 
     //frame_to_stdout(outputFrameGreyscale1, (scaledOutWidth* scaledOutHeight));
@@ -1425,28 +1548,6 @@ void init_userp(unsigned int buffer_size) {
     }
 }
 
-void set_framerate(void) {
-    struct v4l2_fract* tpf;
-    struct v4l2_streamparm streamparm;
-    memset(&streamparm, 0, sizeof(streamparm));
-    streamparm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (xioctl(fd, VIDIOC_G_PARM, &streamparm) != 0) {
-        // Error
-        fprintf(stderr, "IOCTL ERROR!\n");
-    }
-    if (streamparm.parm.capture.capability & V4L2_CAP_TIMEPERFRAME) {
-        //streamparm.parm.capture.capturemode |= V4L2_CAP_TIMEPERFRAME;
-        tpf = &streamparm.parm.capture.timeperframe;
-        int num = 1, denom = 30;
-        fprintf(stderr, "Setting time per frame to: %d/%d\n", denom, num);
-        tpf->denominator = denom;
-        tpf->numerator = num;
-    }
-    if (xioctl(fd, VIDIOC_S_PARM, &streamparm) != 0) {
-        fprintf(stderr, "Failed to set custom frame rate\n");
-    }
-}
-
 void init_device(void) {
     struct v4l2_capability cap;
     struct v4l2_cropcap cropcap;
@@ -1493,13 +1594,12 @@ void init_device(void) {
                 /* Cropping not supported. */
                 break;
             default:
-                /* Errors ignored. */
+                // Errors ignored.
                 break;
             }
         }
-    }
-    else {
-        /* Errors ignored. */
+    } else {
+        // Errors ignored.
     }
     CLEAR(fmt);
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -1533,13 +1633,13 @@ void init_device(void) {
         }
         if (-1 == xioctl(fd, VIDIOC_S_FMT, &fmt))
             errno_exit("VIDIOC_S_FMT");
-        /* Note VIDIOC_S_FMT may change width and height. */
+        // Note VIDIOC_S_FMT may change width and height.
     } else {
-        /* Preserve original settings as set by v4l2-ctl for example */
+        // Preserve original settings as set by v4l2-ctl for example
         if (-1 == xioctl(fd, VIDIOC_G_FMT, &fmt))
             errno_exit("VIDIOC_G_FMT");
     }
-    /* Buggy driver paranoia. */
+    // Buggy driver paranoia.
     min = fmt.fmt.pix.width * 2;
     if (fmt.fmt.pix.bytesperline < min)
         fmt.fmt.pix.bytesperline = min;
@@ -1558,6 +1658,8 @@ void init_device(void) {
         break;
     }
     //set_framerate();
+    video_set_dv_timings(fd);
+    //get_framerate(fd);
 }
 
 void close_device(void) {
@@ -1648,7 +1750,7 @@ int start_main(char *device_name, char* device_name_alt) {
       if (-1 == rAlt) {
         if (EINTR == errno)
           continue;
-        errno_exitAlt("select");
+        errno_exit("select");
       }
       if (0 == rAlt) {
         fprintf(stderr, "select timeout\n");
@@ -1696,7 +1798,7 @@ int start_main(char *device_name, char* device_name_alt) {
       if (-1 == r) {
         if (EINTR == errno)
           continue;
-        errno_exitAlt("select");
+        errno_exit("select");
       }
       if (0 == r) {
         fprintf(stderr, "select timeout\n");
