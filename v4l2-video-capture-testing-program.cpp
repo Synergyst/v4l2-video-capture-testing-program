@@ -41,11 +41,11 @@
 #include <omp.h>
 
 char* device;
-int start_main(char *device_name);
+int start_main(char *device_name, const int);
 
 int main(int argc, char **argv) {
   device = (char*)calloc(64, sizeof(char));
   strcpy(device, "/dev/video2");
-  start_main(device);
+  start_main(device, 2);
   return 0;
 }

@@ -4,6 +4,11 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+  const int startingWidth = 1280, startingHeight = 720, scaledOutWidth = 640, scaledOutHeight = 360; // The width and height of the input video and any downscaled output video
+  // Allocate memory for the input and output frames
+  unsigned char* outputFrame = new unsigned char[startingWidth * startingHeight * 2];
+  unsigned char* outputFrameGreyscale = new unsigned char[startingWidth * startingHeight];
+
   void (*frame_to_stdout)(unsigned char* input, int size);
   void (*rescale_bilinear_from_yuyv)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height);
   void (*yuyv_to_greyscale)(const unsigned char* input, unsigned char* grey, int width, int height);

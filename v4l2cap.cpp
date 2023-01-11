@@ -30,9 +30,9 @@
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 
 enum io_method {
-    IO_METHOD_READ,
-    IO_METHOD_MMAP,
-    IO_METHOD_USERPTR,
+  IO_METHOD_READ,
+  IO_METHOD_MMAP,
+  IO_METHOD_USERPTR,
 };
 
 struct buffer {
@@ -40,57 +40,18 @@ struct buffer {
   size_t length;
 };
 
-struct device {
-  int fd;
-  int opened;
-  unsigned int nbufs;
-  struct buffer* buffers;
-  /*MMAL_COMPONENT_T* isp;
-  MMAL_POOL_T* isp_output_pool;
-  struct component components[MAX_COMPONENTS];
-  // V4L2 to MMAL interface
-  MMAL_QUEUE_T* isp_queue;
-  MMAL_POOL_T* mmal_pool;
-  // Encoded data
-  MMAL_POOL_T* output_pool;
-  MMAL_BOOL_T can_zero_copy;*/
-  unsigned int width;
-  unsigned int height;
-  unsigned int fps;
-  unsigned int frame_time_usec;
-  uint32_t buffer_output_flags;
-  uint32_t timestamp_type;
-  struct timeval starttime;
-  int64_t lastpts;
-  unsigned char num_planes;
-  void* pattern[VIDEO_MAX_PLANES];
-  bool write_data_prefix;
-};
-
 enum io_method io = IO_METHOD_MMAP;
 struct buffer* buffers;
 unsigned int n_buffers;
-const int force_format = 2; // 1 = YUYV, 2 = UYVY, 3 = RGB24 - Do not use RGB24 as it will cause high CPU usage, YUYV/UYVY should be used instead
-const int startingWidth = 1280, startingHeight = 720, scaledOutWidth = 640, scaledOutHeight = 360; // The width and height of the input video and any downscaled output video
-// Allocate memory for the input and output frames
-unsigned char* outputFrame = new unsigned char[startingWidth * startingHeight * 2];
-unsigned char* outputFrame2 = new unsigned char[startingWidth * startingHeight * 2];
-unsigned char* outputFrameRGB24 = new unsigned char[startingWidth * startingHeight * 3];
-unsigned char* outputFrameGreyscale = new unsigned char[startingWidth * startingHeight];
-unsigned char* outputFrameGreyscale1 = new unsigned char[startingWidth * startingHeight];
-unsigned char* outputFrameGreyscale2 = new unsigned char[startingWidth * startingHeight];
-unsigned char* outputFrameGreyscale3 = new unsigned char[startingWidth * startingHeight];
-unsigned char* outputFrameGreyscale4 = new unsigned char[startingWidth * startingHeight];
-unsigned char* outputFrameGreyscale5 = new unsigned char[startingWidth * startingHeight];
 
 void process_image(const void* p, int size) {
   unsigned char* preP = (unsigned char*)p;
   //frame_to_stdout(preP, size);
-  //uyvy_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
   rescale_bilinear_from_yuyv(preP, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-  gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
+  gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
   // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-  frame_to_stdout(outputFrameGreyscale1, (scaledOutWidth * scaledOutHeight));
+  frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
+  memset(outputFrameGreyscale, 0, startingWidth * startingHeight * sizeof(unsigned char));
   //croppedWidth = 0, croppedHeight = 0;
 }
 
@@ -187,7 +148,7 @@ void init_read(unsigned int buffer_size) {
   }
 }
 
-void init_mmap(int fd, char *device_name) {
+void init_mmap(int fd, char* device_name) {
   struct v4l2_requestbuffers req;
   CLEAR(req);
   req.count = 4;
@@ -197,7 +158,8 @@ void init_mmap(int fd, char *device_name) {
     if (EINVAL == errno) {
       fprintf(stderr, "%s does not support memory mapping\n", device_name);
       exit(EXIT_FAILURE);
-    } else {
+    }
+    else {
       errno_exit("VIDIOC_REQBUFS");
     }
   }
@@ -225,7 +187,7 @@ void init_mmap(int fd, char *device_name) {
   }
 }
 
-void init_userp(unsigned int buffer_size, int fd, char *device_name) {
+void init_userp(unsigned int buffer_size, int fd, char* device_name) {
   struct v4l2_requestbuffers req;
   CLEAR(req);
   req.count = 4;
@@ -235,7 +197,8 @@ void init_userp(unsigned int buffer_size, int fd, char *device_name) {
     if (EINVAL == errno) {
       fprintf(stderr, "%s does not support user pointer i/o\n", device_name);
       exit(EXIT_FAILURE);
-    } else {
+    }
+    else {
       errno_exit("VIDIOC_REQBUFS");
     }
   }
@@ -254,85 +217,12 @@ void init_userp(unsigned int buffer_size, int fd, char *device_name) {
   }
 }
 
-int video_set_dv_timings(int fd) {
-  struct v4l2_dv_timings timings;
-  v4l2_std_id std;
-  int ret;
-  int fps = -1;
-
-  memset(&timings, 0, sizeof timings);
-  ret = xioctl(fd, VIDIOC_QUERY_DV_TIMINGS, &timings);
-  if (ret >= 0) {
-    fprintf(stderr, "QUERY_DV_TIMINGS returned %ux%u pixclk %llu\n", timings.bt.width, timings.bt.height, timings.bt.pixelclock);
-    // Can read DV timings, so set them.
-    ret = xioctl(fd, VIDIOC_S_DV_TIMINGS, &timings);
-    if (ret < 0) {
-      fprintf(stderr, "Failed to set DV timings\n");
-      return -1;
-    }
-    else {
-      double tot_height, tot_width;
-      const struct v4l2_bt_timings* bt = &timings.bt;
-
-      tot_height = bt->height + bt->vfrontporch + bt->vsync + bt->vbackporch + bt->il_vfrontporch + bt->il_vsync + bt->il_vbackporch;
-      tot_width = bt->width + bt->hfrontporch + bt->hsync + bt->hbackporch;
-      fps = (unsigned int)((double)bt->pixelclock / (tot_width * tot_height));
-      fprintf(stderr, "Framerate is %u\n", fps);
-    }
-  }
-  else {
-    memset(&std, 0, sizeof std);
-    ret = ioctl(fd, VIDIOC_QUERYSTD, &std);
-    if (ret >= 0) {
-      // Can read standard, so set it.
-      ret = xioctl(fd, VIDIOC_S_STD, &std);
-      if (ret < 0) {
-        fprintf(stderr, "Failed to set standard\n");
-        return -1;
-      }
-      else {
-        // SD video - assume 50Hz / 25fps
-        fps = 25;
-      }
-    }
-  }
-  return fps;
-}
-
-void set_framerate(int fd) {
-  struct v4l2_fract* tpf;
-  struct v4l2_streamparm streamparm;
-  memset(&streamparm, 0, sizeof(streamparm));
-  streamparm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  if (xioctl(fd, VIDIOC_G_PARM, &streamparm) != 0) {
-    // Error
-    fprintf(stderr, "IOCTL ERROR!\n");
-  }
-  if (streamparm.parm.capture.capability & V4L2_CAP_TIMEPERFRAME) {
-    //streamparm.parm.capture.capturemode |= V4L2_CAP_TIMEPERFRAME;
-    tpf = &streamparm.parm.capture.timeperframe;
-    int num = 1, denom = 30;
-    fprintf(stderr, "Setting time per frame to %d/%d from %d/%d\n", denom, num, tpf->denominator, tpf->numerator);
-    tpf->denominator = denom;
-    tpf->numerator = num;
-  }
-  if (xioctl(fd, VIDIOC_S_PARM, &streamparm) != 0) {
-    fprintf(stderr, "Failed to set custom frame rate\n");
-  }
-}
-
-int start_main(char *device_name) {
+int start_main(char *device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 3 = RGB24 - Do not use RGB24 as it will cause high CPU usage, YUYV/UYVY should be used instead */) {
   int fd = -1;
   unsigned int i;
   enum v4l2_buf_type type;
   memset(outputFrame, 0, startingWidth * startingHeight * sizeof(unsigned char));
-  memset(outputFrame2, 0, startingWidth * startingHeight * sizeof(unsigned char));
   memset(outputFrameGreyscale, 0, startingWidth * startingHeight * sizeof(unsigned char));
-  memset(outputFrameGreyscale1, 0, startingWidth * startingHeight * sizeof(unsigned char));
-  memset(outputFrameGreyscale2, 0, startingWidth * startingHeight * sizeof(unsigned char));
-  memset(outputFrameGreyscale3, 0, startingWidth * startingHeight * sizeof(unsigned char));
-  memset(outputFrameGreyscale4, 0, startingWidth * startingHeight * sizeof(unsigned char));
-  memset(outputFrameGreyscale5, 0, startingWidth * startingHeight * sizeof(unsigned char));
   fprintf(stderr, "Starting V4L2 capture testing program with the following V4L2 device: %s\n", device_name);
 
   void* handle;
@@ -476,10 +366,46 @@ int start_main(char *device_name) {
     init_userp(fmt.fmt.pix.sizeimage, fd, device_name);
     break;
   }
+  
   // TODO: Have some way of passing flags from main() so we can handle settings in this area
-  //set_framerate(fd);
-  video_set_dv_timings(fd);
-  //get_framerate(fd);
+  struct v4l2_dv_timings timings;
+  v4l2_std_id std;
+  int ret;
+  int fps = -1;
+
+  memset(&timings, 0, sizeof timings);
+  ret = xioctl(fd, VIDIOC_QUERY_DV_TIMINGS, &timings);
+  if (ret >= 0) {
+    fprintf(stderr, "QUERY_DV_TIMINGS returned %ux%u pixclk %llu\n", timings.bt.width, timings.bt.height, timings.bt.pixelclock);
+    // Can read DV timings, so set them.
+    ret = xioctl(fd, VIDIOC_S_DV_TIMINGS, &timings);
+    if (ret < 0) {
+      fprintf(stderr, "Failed to set DV timings\n");
+      return -1;
+    } else {
+      double tot_height, tot_width;
+      const struct v4l2_bt_timings* bt = &timings.bt;
+
+      tot_height = bt->height + bt->vfrontporch + bt->vsync + bt->vbackporch + bt->il_vfrontporch + bt->il_vsync + bt->il_vbackporch;
+      tot_width = bt->width + bt->hfrontporch + bt->hsync + bt->hbackporch;
+      fps = (unsigned int)((double)bt->pixelclock / (tot_width * tot_height));
+      fprintf(stderr, "Framerate is %u\n", fps);
+    }
+  } else {
+    memset(&std, 0, sizeof std);
+    ret = ioctl(fd, VIDIOC_QUERYSTD, &std);
+    if (ret >= 0) {
+      // Can read standard, so set it.
+      ret = xioctl(fd, VIDIOC_S_STD, &std);
+      if (ret < 0) {
+        fprintf(stderr, "Failed to set standard\n");
+        return -1;
+      } else {
+        // SD video - assume 50Hz / 25fps
+        fps = 25;
+      }
+    }
+  }
   fprintf(stderr, "Initialized V4L2 device: %s\n", device_name);
 
   switch (io) {
