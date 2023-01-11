@@ -794,7 +794,7 @@ int video_set_dv_timings(int fdnum) {
   memset(&timings, 0, sizeof timings);
   ret = xioctl(fdnum, VIDIOC_QUERY_DV_TIMINGS, &timings);
   if (ret >= 0) {
-    print("QUERY_DV_TIMINGS returned %ux%u pixclk %llu\n", timings.bt.width, timings.bt.height, timings.bt.pixelclock);
+    fprintf(stderr, "QUERY_DV_TIMINGS returned %ux%u pixclk %llu\n", timings.bt.width, timings.bt.height, timings.bt.pixelclock);
     // Can read DV timings, so set them.
     ret = xioctl(fdnum, VIDIOC_S_DV_TIMINGS, &timings);
     if (ret < 0) {
