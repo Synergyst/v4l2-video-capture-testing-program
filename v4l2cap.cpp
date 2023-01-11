@@ -44,7 +44,8 @@ enum io_method io = IO_METHOD_MMAP;
 struct buffer* buffers;
 unsigned int n_buffers;
 
-const int startingWidth = 1280, startingHeight = 720, scaledOutWidth = 640, scaledOutHeight = 360; // The width and height of the input video and any downscaled output video
+const int startingWidth = 1280, startingHeight = 720, scaledOutWidth = 640, scaledOutHeight = 360, targetFramerate = 15; // The width and height of the input video and any downscaled output video
+int frame_number = 0, framerate = -1, framerateDivisor = 1;
 // Allocate memory for the input and output frames
 unsigned char* outputFrame = new unsigned char[startingWidth * startingHeight * 2];
 unsigned char* outputFrameGreyscale = new unsigned char[startingWidth * startingHeight];
@@ -66,13 +67,16 @@ std::vector<double> computeGaussianKernel(int kernelSize, double sigma);
 void (*invert_greyscale)(unsigned char* input, unsigned char* output, int width, int height);
 
 void process_image(const void* p, int size) {
-  unsigned char* preP = (unsigned char*)p;
-  //frame_to_stdout(preP, size);
-  rescale_bilinear_from_yuyv(preP, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-  gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-  // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-  //frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
-  memset(outputFrameGreyscale, 0, startingWidth * startingHeight * sizeof(unsigned char));
+  if (frame_number % framerateDivisor == 0) {
+    unsigned char* preP = (unsigned char*)p;
+    //frame_to_stdout(preP, size);
+    rescale_bilinear_from_yuyv(preP, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+    gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+    // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
+    frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
+    memset(outputFrameGreyscale, 0, startingWidth * startingHeight * sizeof(unsigned char));
+  }
+  frame_number++;
   //croppedWidth = 0, croppedHeight = 0;
 }
 
@@ -411,7 +415,6 @@ int start_main(char *device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 
   struct v4l2_dv_timings timings;
   v4l2_std_id std;
   int ret;
-  int fps = -1;
 
   memset(&timings, 0, sizeof timings);
   ret = xioctl(fd, VIDIOC_QUERY_DV_TIMINGS, &timings);
@@ -428,8 +431,8 @@ int start_main(char *device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 
 
       tot_height = bt->height + bt->vfrontporch + bt->vsync + bt->vbackporch + bt->il_vfrontporch + bt->il_vsync + bt->il_vbackporch;
       tot_width = bt->width + bt->hfrontporch + bt->hsync + bt->hbackporch;
-      fps = (unsigned int)((double)bt->pixelclock / (tot_width * tot_height));
-      fprintf(stderr, "Framerate is %u\n", fps);
+      framerate = (unsigned int)((double)bt->pixelclock / (tot_width * tot_height));
+      fprintf(stderr, "Framerate is %u\n", framerate);
     }
   } else {
     memset(&std, 0, sizeof std);
@@ -442,10 +445,11 @@ int start_main(char *device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 
         return -1;
       } else {
         // SD video - assume 50Hz / 25fps
-        fps = 25;
+        framerate = 25;
       }
     }
   }
+  framerateDivisor = (framerate / targetFramerate);
   fprintf(stderr, "Initialized V4L2 device: %s\n", device_name);
 
   switch (io) {
