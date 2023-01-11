@@ -6,13 +6,21 @@
 
 mkdir -p ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/
 #g++ -shared -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libv4l2edid.so -fPIC -O3 -std=c++20 -lv4l2 v4l2edid.cpp
+#if [[ $? -eq 0 ]]; then
+#  echo "Successfully compiled EDID library"
+#else
+#  echo "Build failed (v4l2edid.cpp)"
+#  exit 1
+#fi
+#g++ -shared -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libimgproc.so -fPIC -O3 -std=c++20 -fopenmp imgproc.cpp
+g++ -shared -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libimgproc.so -O3 -std=c++20 -fopenmp imgproc.cpp
 if [[ $? -eq 0 ]]; then
-  echo "Successfully compiled EDID library"
+  echo "Successfully compiled shared library"
 else
-  echo "Build failed (v4l2edid.cpp)"
+  echo "Build failed (libimgproc.so)"
   exit 1
 fi
-g++ -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/v4l2-video-capture-testing-program -O3 -std=c++20 -lv4l2 -fopenmp v4l2-video-capture-testing-program.cpp v4l2cap.cpp
+g++ -fPIC -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/v4l2-video-capture-testing-program -O3 -std=c++20 -fopenmp v4l2-video-capture-testing-program.cpp v4l2cap.cpp -ldl -limgproc -lv4l2
 if [[ $? -eq 0 ]]; then
   echo "Successfully compiled capture test program"
 else
@@ -20,9 +28,9 @@ else
   exit 1
 fi
 #rustc -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/v4l2-video-capture-testing-program-porting v4l2-video-capture-testing-program.rs
-if [[ $? -eq 0 ]]; then
-  echo "Successfully compiled Rust program (WIP, no functionality yet)"
-else
-  echo "Build failed (v4l2-video-capture-testing-program.rs)"
-  exit 1
-fi
+#if [[ $? -eq 0 ]]; then
+#  echo "Successfully compiled Rust program (WIP, no functionality yet)"
+#else
+#  echo "Build failed (v4l2-video-capture-testing-program.rs)"
+#  exit 1
+#fi

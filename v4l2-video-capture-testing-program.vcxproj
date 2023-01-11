@@ -88,6 +88,12 @@
   <ItemGroup>
     <None Include="v4l2edid.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="imgproc.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="imgproc.h" />
+  </ItemGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">
     <RemotePostBuildEvent>
       <Command>chmod +x ~/projects/v4l2-video-capture-testing-program/build.sh ; dos2unix ~/projects/v4l2-video-capture-testing-program/build.sh ; ~/projects/v4l2-video-capture-testing-program/build.sh</Command>
