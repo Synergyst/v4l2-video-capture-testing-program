@@ -12,7 +12,7 @@
  *    Usage: ./build.sh
  *    This will attempt to build the source once uploaded by Visual Studio 2022 to the Raspberry Pi
  * 
- *    Usage: ./v4l2-capture-test-program | ffplay -hide_banner -loglevel error -f rawvideo -pixel_format gray -video_size 640x360 -i pipe:0
+ *    Usage: ./v4l2-capture-test | ffplay -hide_banner -loglevel error -f rawvideo -pixel_format gray -video_size 640x360 -i pipe:0
  *    This will run the main program and then output the processed video data to FFPlay to test the processed frames
  *
  */
@@ -44,8 +44,8 @@
 #include <omp.h>
 #include <dlfcn.h>
 
-void (*start_main)(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale);
-void (*start_alt)(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale);
+void (*start_main)(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale, bool isTC358743, bool isThermalCamera);
+void (*start_alt)(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale, bool isTC358743, bool isThermalCamera);
 
 int main(int argc, char **argv) {
   int fd = -1, fdAlt = -1;
@@ -61,12 +61,12 @@ int main(int argc, char **argv) {
   }
   fprintf(stderr, "Successfully loaded: libv4l2cap.so\n");
   dlerror(); // Clear any existing error
-  start_main = (void(*)(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale)) dlsym(handle, "start_main");
+  start_main = (void(*)(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale, bool isTC358743, bool isThermalCamera)) dlsym(handle, "start_main");
   if ((error = dlerror()) != NULL) {
     fprintf(stderr, "%s\n", error);
     exit(1);
   }
-  start_alt = (void(*)(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale)) dlsym(handle, "start_main");
+  start_alt = (void(*)(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale, bool isTC358743, bool isThermalCamera)) dlsym(handle, "start_main");
   if ((error = dlerror()) != NULL) {
     fprintf(stderr, "%s\n", error);
     exit(1);
@@ -77,10 +77,10 @@ int main(int argc, char **argv) {
   device = (char*)calloc(64, sizeof(char));
   strcpy(device, "/dev/video2");
   deviceAlt = (char*)calloc(64, sizeof(char));
-  strcpy(deviceAlt, "/dev/video0");
+  strcpy(deviceAlt, "/dev/video2");
   // Start streaming thread(s)
-  start_main(fd, device, 2, 640, 360, 15, outputFrameGreyscale);
-  start_alt(fdAlt, deviceAlt, 2, 640, 360, 15, outputFrameGreyscaleAlt);
+  start_main(fd, device, 2, 640, 360, 6, outputFrameGreyscale, true, true);
+  start_alt(fdAlt, deviceAlt, 2, 640, 360, 6, outputFrameGreyscaleAlt, true, false);
   // Cleanup imported shared library
   dlclose(handle);
   return 0;

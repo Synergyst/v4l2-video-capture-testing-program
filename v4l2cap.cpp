@@ -57,7 +57,7 @@ int xioctl(int fh, int request, void* arg) {
 }
 
 void yuyv_to_greyscale(const unsigned char* input, unsigned char* grey, int width, int height) {
-#pragma omp parallel for
+#pragma omp parallel for simd
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       int index = y * width + x;
@@ -70,7 +70,7 @@ void yuyv_to_greyscale(const unsigned char* input, unsigned char* grey, int widt
 }
 
 void replace_pixels_below_val(const unsigned char* input, unsigned char* output, int width, int height, const int val) {
-#pragma omp parallel for num_threads(4)
+#pragma omp parallel for simd
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       // Get the pixel value at the current position
@@ -89,7 +89,7 @@ void replace_pixels_below_val(const unsigned char* input, unsigned char* output,
 }
 
 void replace_pixels_above_val(const unsigned char* input, unsigned char* output, int width, int height, const int val) {
-#pragma omp parallel for num_threads(4)
+#pragma omp parallel for simd
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       // Get the pixel value at the current position
@@ -109,7 +109,7 @@ void replace_pixels_above_val(const unsigned char* input, unsigned char* output,
 
 void uyvy_to_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
   // Iterate over each pixel in the input image
-#pragma omp parallel for
+#pragma omp parallel for simd
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       // Calculate the offset into the input buffer for the current pixel
@@ -127,7 +127,7 @@ void greyscale_to_sobel(const unsigned char* input, unsigned char* output, int w
   const int sobelX[3][3] = { {-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1} };
   const int sobelY[3][3] = { {-1, -2, -1}, {0, 0, 0}, {1, 2, 1} };
   // Iterate over each pixel in the image
-#pragma omp parallel for
+#pragma omp parallel for simd
   for (int y = 0; y < height; ++y) {
     for (int x = 0; x < width; ++x) {
       // Apply the Sobel kernel in the x and y directions
@@ -139,45 +139,9 @@ void greyscale_to_sobel(const unsigned char* input, unsigned char* output, int w
   }
 }
 
-void uyvy_sobel(unsigned char* input, unsigned char* output, int width, int height) {
-  // Create buffers to hold the intermediate images
-  unsigned char* greyscale = new unsigned char[width * height];
-  short* gradient_x = new short[width * height];
-  short* gradient_y = new short[width * height];
-  // Convert the input frame to greyscale
-  uyvy_to_greyscale(input, greyscale, width, height);
-  // Iterate over each pixel in the greyscale image
-  for (int y = 1; y < height - 1; y++) {
-    for (int x = 1; x < width - 1; x++) {
-      // Calculate the gradient in the X and Y directions using Sobel filters
-      gradient_x[y * width + x] = greyscale[(y - 1) * width + x - 1] + 2 * greyscale[y * width + x - 1] + greyscale[(y + 1) * width + x - 1] - greyscale[(y - 1) * width + x + 1] - 2 * greyscale[y * width + x + 1] - greyscale[(y + 1) * width + x + 1];
-      gradient_y[y * width + x] = greyscale[(y - 1) * width + x - 1] + 2 * greyscale[(y - 1) * width + x] + greyscale[(y - 1) * width + x + 1] - greyscale[(y + 1) * width + x - 1] - 2 * greyscale[(y + 1) * width + x] - greyscale[(y + 1) * width + x + 1];
-    }
-  }
-  // Iterate over each pixel in the output image
-  for (int y = 0; y < height; y++) {
-    for (int x = 0; x < width; x++) {
-      // Calculate the offset into the output buffer for the current pixel
-      int offset = (y * width + x) * 2;
-      // Calculate the magnitude of the gradient using the X and Y gradients
-      int gradient = abs(gradient_x[y * width + x]) + abs(gradient_y[y * width + x]);
-      // Clamp the gradient to the range [0, 255]
-      gradient = std::max(0, std::min(255, gradient));
-      // Set the Y component of the output pixel to the gradient magnitude
-      output[offset] = gradient;
-      // Set the U and V components of the output pixel to 128 (neutral color)
-      output[offset + 1] = 128;
-    }
-  }
-  // Free the intermediate buffers
-  delete[] greyscale;
-  delete[] gradient_x;
-  delete[] gradient_y;
-}
-
 void uyvy_to_yuyv(unsigned char* input, unsigned char* output, int width, int height) {
   // Iterate over each pixel in the input image
-#pragma omp parallel for
+#pragma omp parallel for simd
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       // Calculate the offset into the input buffer for the current pixel
@@ -198,7 +162,7 @@ void uyvy_to_yuyv(unsigned char* input, unsigned char* output, int width, int he
 
 void yuyv_to_uyvy(unsigned char* input, unsigned char* output, int width, int height) {
   // Iterate over each pixel in the input image
-#pragma omp parallel for
+#pragma omp parallel for simd
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       // Calculate the offset into the input buffer for the current pixel
@@ -341,7 +305,7 @@ void gaussianBlur(unsigned char* input, int inputWidth, int inputHeight, unsigne
 }
 
 void invert_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
-#pragma omp parallel for
+#pragma omp parallel for simd
   for (int i = 0; i < width * height; i++) {
     output[i] = 255 - input[i];
   }
@@ -374,7 +338,7 @@ void frame_to_stdout(unsigned char* input, int size) {
   }
 }*/
 
-void start_main(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale) {
+void start_main(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale, bool isTC358743, bool isThermalCamera) {
   int frame_number = 0, framerate = -1, framerateDivisor = 1, startingWidth = -1, startingHeight = -1, startingSize = -1, scaledOutSize = -1;
   unsigned int i;
   enum v4l2_buf_type type;
@@ -592,13 +556,13 @@ void start_main(int fd, char* device_name, const int force_format, const int sca
       if (ret < 0) {
         fprintf(stderr, "Failed to set standard\n");
         exit(1);
-      }
-      else {
+      } else {
         // SD video - assume 50Hz / 25fps
         framerate = 25;
       }
     }
   }
+  // TODO: Have some way of passing flags from main() so we can handle settings in this area above
   fprintf(stderr, "Initialized V4L2 device: %s\n", device_name);
   for (i = 0; i < n_buffers; ++i) {
     struct v4l2_buffer buf;
@@ -652,14 +616,26 @@ void start_main(int fd, char* device_name, const int force_format, const int sca
       }
     }
     assert(buf.index < n_buffers);
-    if (frame_number % framerateDivisor == 0) {
-      rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-      gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-      // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-      frame_to_stdout(outputFrameGreyscale, scaledOutSize);
-      memset(outputFrameGreyscale, 0, startingSize);
+    if (isThermalCamera) {
+      if (frame_number % framerateDivisor == 0) {
+        rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+        gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+        // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
+        frame_to_stdout(outputFrameGreyscale, scaledOutSize);
+        memset(outputFrameGreyscale, 0, startingSize);
+      }
+      frame_number++;
+    } else {
+      if (frame_number % framerateDivisor == 0) {
+        rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+        gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+        // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
+        invert_greyscale(outputFrameGreyscale, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+        frame_to_stdout(outputFrameGreyscale, scaledOutSize);
+        memset(outputFrameGreyscale, 0, startingSize);
+      }
+      frame_number++;
     }
-    frame_number++;
     if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
       errno_exit("VIDIOC_QBUF");
     // EAGAIN - continue select loop
