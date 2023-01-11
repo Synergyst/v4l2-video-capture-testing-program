@@ -79,7 +79,7 @@
     <None Include="v4l2-video-capture-testing-program.cpp">
       <CppLanguageStandard Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">gnu++20</CppLanguageStandard>
     </None>
-    <None Include="v4l2-video-capture-testing-program.rs" />
+    <None Include="v4l2-video-capture-testing-program-porting.rs" />
     <None Include="v4l2cap.cpp" />
   </ItemGroup>
   <ItemGroup>
