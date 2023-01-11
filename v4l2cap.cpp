@@ -12,72 +12,6 @@ void process_image(const void* p, int size) {
   frame_number++;
 }
 
-int read_frame(int fd) {
-  struct v4l2_buffer buf;
-  unsigned int i;
-  switch (io) {
-  case IO_METHOD_READ:
-    if (-1 == read(fd, buffers[0].start, buffers[0].length)) {
-      switch (errno) {
-      case EAGAIN:
-        return 0;
-      case EIO:
-        // Could ignore EIO, see spec.
-        // fall through
-      default:
-        errno_exit("read");
-      }
-    }
-    process_image(buffers[0].start, buffers[0].length);
-    break;
-  case IO_METHOD_MMAP:
-    CLEAR(buf);
-    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    buf.memory = V4L2_MEMORY_MMAP;
-    if (-1 == xioctl(fd, VIDIOC_DQBUF, &buf)) {
-      switch (errno) {
-      case EAGAIN:
-        return 0;
-      case EIO:
-        // Could ignore EIO, see spec.
-        // fall through
-      default:
-        errno_exit("VIDIOC_DQBUF");
-      }
-    }
-    assert(buf.index < n_buffers);
-    process_image(buffers[buf.index].start, buf.bytesused);
-    if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
-      errno_exit("VIDIOC_QBUF");
-    break;
-  case IO_METHOD_USERPTR:
-    CLEAR(buf);
-    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    buf.memory = V4L2_MEMORY_USERPTR;
-    if (-1 == xioctl(fd, VIDIOC_DQBUF, &buf)) {
-      switch (errno) {
-      case EAGAIN:
-        return 0;
-      case EIO:
-        // Could ignore EIO, see spec.
-        // fall through
-      default:
-        errno_exit("VIDIOC_DQBUF");
-      }
-    }
-    for (i = 0; i < n_buffers; ++i)
-      if (buf.m.userptr == (unsigned long)buffers[i].start && buf.length == buffers[i].length)
-        break;
-    assert(i < n_buffers);
-    process_image((void*)buf.m.userptr, buf.bytesused);
-    if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
-      errno_exit("VIDIOC_QBUF");
-    break;
-  }
-  //frame_to_stdout(outputFrameGreyscale, (startingWidth * startingHeight));
-  return 1;
-}
-
 int start_main(char *device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 3 = RGB24 - Do not use RGB24 as it will cause high CPU usage, YUYV/UYVY should be used instead */) {
   int fd = -1;
   unsigned int i;
@@ -235,16 +169,41 @@ int start_main(char *device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 
   min = fmt.fmt.pix.bytesperline * fmt.fmt.pix.height;
   if (fmt.fmt.pix.sizeimage < min)
     fmt.fmt.pix.sizeimage = min;
-  switch (io) {
-  case IO_METHOD_READ:
-    init_read(fmt.fmt.pix.sizeimage);
-    break;
-  case IO_METHOD_MMAP:
-    init_mmap(fd, device_name);
-    break;
-  case IO_METHOD_USERPTR:
-    init_userp(fmt.fmt.pix.sizeimage, fd, device_name);
-    break;
+  struct v4l2_requestbuffers req;
+  CLEAR(req);
+  req.count = 4;
+  req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  req.memory = V4L2_MEMORY_MMAP;
+  if (-1 == xioctl(fd, VIDIOC_REQBUFS, &req)) {
+    if (EINVAL == errno) {
+      fprintf(stderr, "%s does not support memory mapping\n", device_name);
+      exit(EXIT_FAILURE);
+    }
+    else {
+      errno_exit("VIDIOC_REQBUFS");
+    }
+  }
+  if (req.count < 2) {
+    fprintf(stderr, "Insufficient buffer memory on %s\n", device_name);
+    exit(EXIT_FAILURE);
+  }
+  buffers = (buffer*)calloc(req.count, sizeof(*buffers));
+  if (!buffers) {
+    fprintf(stderr, "Out of memory\n");
+    exit(EXIT_FAILURE);
+  }
+  for (n_buffers = 0; n_buffers < req.count; ++n_buffers) {
+    struct v4l2_buffer buf;
+    CLEAR(buf);
+    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory = V4L2_MEMORY_MMAP;
+    buf.index = n_buffers;
+    if (-1 == xioctl(fd, VIDIOC_QUERYBUF, &buf))
+      errno_exit("VIDIOC_QUERYBUF");
+    buffers[n_buffers].length = buf.length;
+    buffers[n_buffers].start = mmap(NULL /* start anywhere */, buf.length, PROT_READ | PROT_WRITE /* required */, MAP_SHARED /* recommended */, fd, buf.m.offset);
+    if (MAP_FAILED == buffers[n_buffers].start)
+      errno_exit("mmap");
   }
   
   // TODO: Have some way of passing flags from main() so we can handle settings in this area
@@ -346,7 +305,26 @@ int start_main(char *device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 
       fprintf(stderr, "select timeout\n");
       exit(EXIT_FAILURE);
     }
-    read_frame(fd);
+    struct v4l2_buffer buf;
+    unsigned int i;
+    CLEAR(buf);
+    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory = V4L2_MEMORY_MMAP;
+    if (-1 == xioctl(fd, VIDIOC_DQBUF, &buf)) {
+      switch (errno) {
+      case EAGAIN:
+        return 0;
+      case EIO:
+        // Could ignore EIO, see spec.
+        // fall through
+      default:
+        errno_exit("VIDIOC_DQBUF");
+      }
+    }
+    assert(buf.index < n_buffers);
+    process_image(buffers[buf.index].start, buf.bytesused);
+    if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
+      errno_exit("VIDIOC_QBUF");
     //if (read_frame())
     //  break;
     // EAGAIN - continue select loop
