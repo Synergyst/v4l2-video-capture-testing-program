@@ -47,21 +47,17 @@
 #include <dlfcn.h>
 
 using namespace std;
-int fd = -1, fdAlt = -1;
-char *device, *deviceAlt;
-unsigned char *outputFrameGreyscale, *outputFrameGreyscaleAlt;
 //std::atomic<bool> running;
 
 void (*start_main)(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale, bool isTC358743, bool isThermalCamera, void* mut);
 void (*start_alt)(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale, bool isTC358743, bool isThermalCamera, void* mut);
 
-void frame_to_stdout(unsigned char* input, int size) {
-  int status = write(1, input, size);
-  if (status == -1)
-    perror("write");
-}
-
 int main(int argc, char **argv) {
+  int fd = -1, fdAlt = -1;
+  char *device, *deviceAlt;
+  unsigned char *outputGreyscale, *outputGreyscaleAlt;
+  outputGreyscale = (unsigned char*)malloc(1280 * 720 * sizeof(unsigned char));
+  memset(outputGreyscale, 0, (1280 * 720));
   void *handle;
   fprintf(stderr, "[main] Attempting to load: libv4l2cap.so\n");
   char* error;
@@ -92,9 +88,9 @@ int main(int argc, char **argv) {
   // Start streaming thread(s)
   std::mutex data_mutex;
   //std::mutex data_mutex_alt;
-  std::thread thread1(start_main, fd, device, 2, 640, 360, 15, outputFrameGreyscale, true, true, (void*)&data_mutex);
-  usleep(25 * 10000);
-  std::thread thread2(start_alt, fdAlt, deviceAlt, 2, 640, 360, 15, outputFrameGreyscaleAlt, true, false, (void*)&data_mutex);
+  std::thread thread1(start_main, fd, device, 2, 640, 360, 15, outputGreyscale, true, true, (void*)&data_mutex);
+  usleep(50 * 10000);
+  std::thread thread2(start_alt, fdAlt, deviceAlt, 2, 640, 360, 15, outputGreyscaleAlt, true, false, (void*)&data_mutex);
   thread1.detach();
   thread2.detach();
   usleep(50 * 10000);
@@ -102,8 +98,10 @@ int main(int argc, char **argv) {
   while (true) {
     std::unique_lock<std::mutex> lock(data_mutex);
     // access the modified data
-    //frame_to_stdout(outputFrameGreyscale, (640 * 360));
-    usleep(500 * 10000);
+    int status = write(1, outputGreyscale, (640 * 360));
+    if (status == -1)
+      perror("write");
+    usleep(250 * 10000);
     fprintf(stderr, "\n[main] looping..\n");
   }
   // Cleanup imported shared library
