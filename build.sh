@@ -33,7 +33,7 @@ else
   echo "Build failed (libv4l2cap.so)"
   exit 1
 fi
-g++ -fPIC -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/v4l2-capture-test -O3 -std=c++20 -fopenmp v4l2-capture-test.cpp -ldl -lv4l2cap -lv4l2
+g++ -fPIC -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/v4l2-capture-test -O3 -std=c++20 -fopenmp v4l2-capture-test.cpp -ldl -lv4l2cap -lv4l2 -lpthread
 if [[ $? -eq 0 ]]; then
   echo "Successfully compiled capture test program"
 else

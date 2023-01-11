@@ -216,7 +216,7 @@ void rescale_bilinear(const unsigned char* input, int input_width, int input_hei
 }
 
 void rescale_bilinear_from_yuyv(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
-#pragma omp parallel for simd
+#pragma omp parallel for simd num_threads(4)
   for (int y = 0; y < output_height; y++) {
     for (int x = 0; x < output_width; x++) {
       // Calculate the corresponding pixel coordinates in the input image.
@@ -273,7 +273,7 @@ std::vector<double> computeGaussianKernel(int kernelSize, double sigma) {
 void gaussianBlur(unsigned char* input, int inputWidth, int inputHeight, unsigned char* output, int outputWidth, int outputHeight) {
   std::vector<double> kernel = computeGaussianKernel(KERNEL_SIZE, SIGMA);
   // Perform the blur in the horizontal direction
-#pragma omp parallel for simd
+#pragma omp parallel for simd num_threads(4)
   for (int y = 0; y < inputHeight; y++) {
     for (int x = 0; x < inputWidth; x++) {
       double sumY = 0.0;
@@ -288,7 +288,7 @@ void gaussianBlur(unsigned char* input, int inputWidth, int inputHeight, unsigne
     }
   }
   // Perform the blur in the vertical direction
-#pragma omp parallel for simd
+#pragma omp parallel for simd num_threads(4)
   for (int x = 0; x < inputWidth; x++) {
     for (int y = 0; y < inputHeight; y++) {
       double sumY = 0.0;
@@ -305,7 +305,7 @@ void gaussianBlur(unsigned char* input, int inputWidth, int inputHeight, unsigne
 }
 
 void invert_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
-#pragma omp parallel for simd
+#pragma omp parallel for simd num_threads(4)
   for (int i = 0; i < width * height; i++) {
     output[i] = 255 - input[i];
   }
@@ -338,11 +338,12 @@ void frame_to_stdout(unsigned char* input, int size) {
   }
 }*/
 
-void start_main(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale, bool isTC358743, bool isThermalCamera) {
+void start_main(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale, bool isTC358743, bool isThermalCamera, void* mut) {
+  std::mutex* data_mutex = (std::mutex*)mut;
   int frame_number = 0, framerate = -1, framerateDivisor = 1, startingWidth = -1, startingHeight = -1, startingSize = -1, scaledOutSize = -1;
   unsigned int i;
   enum v4l2_buf_type type;
-  fprintf(stderr, "Starting V4L2 capture testing program with the following V4L2 device: %s\n", device_name);
+  fprintf(stderr, "\n[cap] Starting V4L2 capture testing program with the following V4L2 device: %s\n", device_name);
 
   /*void* handle;
   fprintf(stderr, "Attempting to load: libimgproc.so\n");
@@ -401,7 +402,7 @@ void start_main(int fd, char* device_name, const int force_format, const int sca
     fprintf(stderr, "Cannot open '%s': %d, %s\n", device_name, errno, strerror(errno));
     exit(EXIT_FAILURE);
   }
-  fprintf(stderr, "Opened V4L2 device: %s\n", device_name);
+  fprintf(stderr, "[cap] Opened V4L2 device: %s\n", device_name);
 
   struct v4l2_capability cap;
   struct v4l2_cropcap cropcap;
@@ -443,7 +444,7 @@ void start_main(int fd, char* device_name, const int force_format, const int sca
   }
   CLEAR(fmt);
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  fprintf(stderr, "Forcing format for %s to: %d\n", device_name, force_format);
+  fprintf(stderr, "[cap] Forcing format for %s to: %d\n", device_name, force_format);
   if (force_format) {
     if (force_format == 3) {
       fmt.fmt.pix.width = startingWidth;
@@ -524,7 +525,7 @@ void start_main(int fd, char* device_name, const int force_format, const int sca
   memset(&timings, 0, sizeof timings);
   ret = xioctl(fd, VIDIOC_QUERY_DV_TIMINGS, &timings);
   if (ret >= 0) {
-    fprintf(stderr, "QUERY_DV_TIMINGS returned %ux%u pixclk %llu\n", timings.bt.width, timings.bt.height, timings.bt.pixelclock);
+    fprintf(stderr, "[cap] QUERY_DV_TIMINGS for %s: %ux%u pixclk %llu\n", device_name, timings.bt.width, timings.bt.height, timings.bt.pixelclock);
     startingWidth = timings.bt.width;
     startingHeight = timings.bt.height;
     startingSize = startingWidth * startingHeight * sizeof(unsigned char);
@@ -534,7 +535,7 @@ void start_main(int fd, char* device_name, const int force_format, const int sca
     // Can read DV timings, so set them.
     ret = xioctl(fd, VIDIOC_S_DV_TIMINGS, &timings);
     if (ret < 0) {
-      fprintf(stderr, "Failed to set DV timings\n");
+      fprintf(stderr, "[cap] Failed to set DV timings\n");
       exit(1);
     } else {
       double tot_height, tot_width;
@@ -545,7 +546,7 @@ void start_main(int fd, char* device_name, const int force_format, const int sca
       framerateDivisor = (framerate / targetFramerate);
       int rawInputThroughput = (float)((float)(framerate * startingSize * 2.0F) / 125000.0F); // Measured in megabits/sec based on input framerate
       int rawOutputThroughput = (float)((((float)framerate / framerateDivisor) * scaledOutSize) / 125000.0F); // Measured in megabits/sec based on output framerate
-      fprintf(stderr, "startingWidth: %d, startingHeight: %d, startingSize: %d, scaledOutWidth: %d, scaledOutHeight: %d, scaledOutSize: %d, framerate: %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", startingWidth, startingHeight, startingSize, scaledOutWidth, scaledOutHeight, scaledOutSize, framerate, framerateDivisor, targetFramerate, rawInputThroughput, rawOutputThroughput);
+      fprintf(stderr, "[cap] device_name: %s, isTC358743: %d, isThermalCamera: %d, startingWidth: %d, startingHeight: %d, startingSize: %d, scaledOutWidth: %d, scaledOutHeight: %d, scaledOutSize: %d, framerate: %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", device_name, isTC358743, isThermalCamera, startingWidth, startingHeight, startingSize, scaledOutWidth, scaledOutHeight, scaledOutSize, framerate, framerateDivisor, targetFramerate, rawInputThroughput, rawOutputThroughput);
     }
   } else {
     memset(&std, 0, sizeof std);
@@ -554,7 +555,7 @@ void start_main(int fd, char* device_name, const int force_format, const int sca
       // Can read standard, so set it.
       ret = xioctl(fd, VIDIOC_S_STD, &std);
       if (ret < 0) {
-        fprintf(stderr, "Failed to set standard\n");
+        fprintf(stderr, "[cap] Failed to set standard\n");
         exit(1);
       } else {
         // SD video - assume 50Hz / 25fps
@@ -563,7 +564,7 @@ void start_main(int fd, char* device_name, const int force_format, const int sca
     }
   }
   // TODO: Have some way of passing flags from main() so we can handle settings in this area above
-  fprintf(stderr, "Initialized V4L2 device: %s\n", device_name);
+  fprintf(stderr, "[cap] Initialized V4L2 device: %s\n", device_name);
   for (i = 0; i < n_buffers; ++i) {
     struct v4l2_buffer buf;
     CLEAR(buf);
@@ -576,9 +577,9 @@ void start_main(int fd, char* device_name, const int force_format, const int sca
   type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   if (-1 == xioctl(fd, VIDIOC_STREAMON, &type))
     errno_exit("VIDIOC_STREAMON");
-  fprintf(stderr, "Started capturing from V4L2 device: %s\n", device_name);
+  fprintf(stderr, "[cap] Started capturing from V4L2 device: %s\n", device_name);
 
-  fprintf(stderr, "Starting loop for V4L2 device: %s\n", device_name);
+  fprintf(stderr, "[cap] Starting loop for V4L2 device: %s\n\n", device_name);
   while (true) {
     fd_set fds;
     struct timeval tv;
@@ -616,12 +617,14 @@ void start_main(int fd, char* device_name, const int force_format, const int sca
       }
     }
     assert(buf.index < n_buffers);
+    std::unique_lock<std::mutex> lock(*data_mutex);
+    // modify data using the length variable
     if (isThermalCamera) {
       if (frame_number % framerateDivisor == 0) {
         rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
         gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
         // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-        frame_to_stdout(outputFrameGreyscale, scaledOutSize);
+        //frame_to_stdout(outputFrameGreyscale, scaledOutSize);
         memset(outputFrameGreyscale, 0, startingSize);
       }
       frame_number++;
@@ -631,7 +634,7 @@ void start_main(int fd, char* device_name, const int force_format, const int sca
         gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
         // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
         invert_greyscale(outputFrameGreyscale, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-        frame_to_stdout(outputFrameGreyscale, scaledOutSize);
+        //frame_to_stdout(outputFrameGreyscale, scaledOutSize);
         memset(outputFrameGreyscale, 0, startingSize);
       }
       frame_number++;
@@ -640,19 +643,18 @@ void start_main(int fd, char* device_name, const int force_format, const int sca
       errno_exit("VIDIOC_QBUF");
     // EAGAIN - continue select loop
   }
-  fprintf(stderr, "Stopped capturing from V4L2 device: %s\n", device_name);
+  fprintf(stderr, "[cap] Stopped capturing from V4L2 device: %s\n", device_name);
 
   for (unsigned int i = 0; i < n_buffers; ++i)
     if (-1 == munmap(buffers[i].start, buffers[i].length))
       errno_exit("munmap");
   free(buffers);
-  fprintf(stderr, "Uninitialized V4L2 device: %s\n", device_name);
+  fprintf(stderr, "[cap] Uninitialized V4L2 device: %s\n", device_name);
 
   if (-1 == close(fd))
     errno_exit("close");
   fd = -1;
-  fprintf(stderr, "Closed V4L2 device: %s\n", device_name);
+  fprintf(stderr, "[cap] Closed V4L2 device: %s\n", device_name);
   fprintf(stderr, "\n");
-  //dlclose(handle);
   exit(0);
 }
