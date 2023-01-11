@@ -76,7 +76,7 @@ void (*frame_to_stdout)(unsigned char* input, int size);
 void (*rescale_bilinear_from_yuyv)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height);
 void (*yuyv_to_greyscale)(const unsigned char* input, unsigned char* grey, int width, int height);
 void (*uyvy_to_greyscale)(const unsigned char* input, unsigned char* grey, int width, int height);
-//void (*scale_from_yuyv)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height);
+void (*gaussianBlur)(unsigned char* input, int inputWidth, int inputHeight, unsigned char* output, int outputWidth, int outputHeight);
 //void (*scale_from_yuyv)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height);
 
 void errno_exit(const char* s) {
@@ -110,9 +110,9 @@ unsigned char* outputFrameGreyscale5 = new unsigned char[startingWidth * startin
 void process_image(const void* p, int size) {
   unsigned char* preP = (unsigned char*)p;
   //frame_to_stdout(preP, size);
-  uyvy_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
+  //uyvy_to_greyscale(preP, outputFrameGreyscale, startingWidth, startingHeight);
   rescale_bilinear_from_yuyv(preP, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-  //gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
+  gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale1, scaledOutWidth, scaledOutHeight);
   // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
   frame_to_stdout(outputFrameGreyscale1, (scaledOutWidth * scaledOutHeight));
   //croppedWidth = 0, croppedHeight = 0;
@@ -360,7 +360,7 @@ int start_main(char *device_name) {
   rescale_bilinear_from_yuyv = (void(*)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height)) dlsym(handle, "rescale_bilinear_from_yuyv");
   yuyv_to_greyscale = (void(*)(const unsigned char* input, unsigned char* grey, int width, int height)) dlsym(handle, "yuyv_to_greyscale");
   uyvy_to_greyscale = (void(*)(const unsigned char* input, unsigned char* grey, int width, int height)) dlsym(handle, "uyvy_to_greyscale");
-  //send_framestdout = (void(*)(unsigned char* input, int size)) dlsym(handle, "frame_to_stdout");
+  gaussianBlur = (void(*)(unsigned char* input, int inputWidth, int inputHeight, unsigned char* output, int outputWidth, int outputHeight)) dlsym(handle, "gaussianBlur");
   //send_framestdout = (void(*)(unsigned char* input, int size)) dlsym(handle, "frame_to_stdout");
   if ((error = dlerror()) != NULL) {
     fprintf(stderr, "%s\n", error);
