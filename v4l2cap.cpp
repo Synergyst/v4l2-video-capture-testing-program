@@ -1,4 +1,21 @@
 #include "v4l2cap.h"
+#include <condition_variable>
+#include <iostream>
+#include <mutex>
+#include <thread>
+
+void process_frame(const void* p, unsigned char* outputFrameGreyscale, const int startingWidth, const int startingHeight, const int scaledOutWidth, const int scaledOutHeight, int frame_number, int framerateDivisor) {
+  if (frame_number % framerateDivisor == 0) {
+    unsigned char* preP = (unsigned char*)p;
+    rescale_bilinear_from_yuyv(preP, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+    gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+    // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
+    // 
+    //frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
+    memset(outputFrameGreyscale, 0, startingWidth * startingHeight * sizeof(unsigned char));
+  }
+  frame_number++;
+}
 
 int start_main(int fd, void* handle, char* device_name, const int force_format, const int startingWidth, const int startingHeight, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale) {
   int frame_number = 0, framerate = -1, framerateDivisor = 1;
@@ -243,7 +260,7 @@ int start_main(int fd, void* handle, char* device_name, const int force_format, 
     int r;
     FD_ZERO(&fds);
     FD_SET(fd, &fds);
-    // Timeout.
+    // Timeout period to wait for device to respond
     tv.tv_sec = 2;
     tv.tv_usec = 0;
     r = select(fd + 1, &fds, NULL, NULL, &tv);
@@ -273,14 +290,7 @@ int start_main(int fd, void* handle, char* device_name, const int force_format, 
       }
     }
     assert(buf.index < n_buffers);
-    if (frame_number % framerateDivisor == 0) {
-      rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-      gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-      // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-      frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
-      memset(outputFrameGreyscale, 0, startingWidth * startingHeight * sizeof(unsigned char));
-    }
-    frame_number++;
+    process_frame(buffers[buf.index].start, outputFrameGreyscale, startingWidth, startingHeight, scaledOutWidth, scaledOutHeight, frame_number, framerateDivisor);
     if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
       errno_exit("VIDIOC_QBUF");
     // EAGAIN - continue select loop

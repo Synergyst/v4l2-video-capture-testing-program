@@ -22,6 +22,9 @@
 #include <cstdint>
 #include <algorithm>
 #include <vector>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
