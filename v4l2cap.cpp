@@ -4,22 +4,20 @@
 #include <mutex>
 #include <thread>
 
-int start_main(int fd, void* handle, char* device_name, const int force_format, const int startingWidth, const int startingHeight, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale) {
-  int frame_number = 0, framerate = -1, framerateDivisor = 1;
+int start_main(int fd, void* handle, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale) {
+  int frame_number = 0, framerate = -1, framerateDivisor = 1, startingWidth = -1, startingHeight = -1, startingSize = -1, scaledOutSize = -1;
   unsigned int i;
   enum v4l2_buf_type type;
-  outputFrameGreyscale = (unsigned char*)malloc(startingWidth * startingHeight * sizeof(unsigned char));
-  memset(outputFrameGreyscale, 0, startingWidth * startingHeight * sizeof(unsigned char));
   fprintf(stderr, "Starting V4L2 capture testing program with the following V4L2 device: %s\n", device_name);
 
-  fprintf(stderr, "Attempting to load libimgproc.so\n");
+  fprintf(stderr, "Attempting to load: libimgproc.so\n");
   char* error;
   handle = dlopen("libimgproc.so", RTLD_LAZY);
   if (!handle) {
     fprintf(stderr, "%s\n", dlerror());
     exit(1);
   } else {
-    fprintf(stderr, "Loaded libimgproc.so successfully\n");
+    fprintf(stderr, "Successfully loaded: libimgproc.so\n");
   }
   dlerror(); // Clear any existing error
   frame_to_stdout = (void(*)(unsigned char* input, int size)) dlsym(handle, "frame_to_stdout");
@@ -110,7 +108,7 @@ int start_main(int fd, void* handle, char* device_name, const int force_format, 
   }
   CLEAR(fmt);
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  fprintf(stderr, "Forced format for main (%s) to: %d\n", device_name, force_format);
+  fprintf(stderr, "Forcing format for %s to: %d\n", device_name, force_format);
   if (force_format) {
     if (force_format == 3) {
       fmt.fmt.pix.width = startingWidth;
@@ -192,23 +190,27 @@ int start_main(int fd, void* handle, char* device_name, const int force_format, 
   ret = xioctl(fd, VIDIOC_QUERY_DV_TIMINGS, &timings);
   if (ret >= 0) {
     fprintf(stderr, "QUERY_DV_TIMINGS returned %ux%u pixclk %llu\n", timings.bt.width, timings.bt.height, timings.bt.pixelclock);
+    startingWidth = timings.bt.width;
+    startingHeight = timings.bt.height;
+    startingSize = startingWidth * startingHeight * sizeof(unsigned char);
+    scaledOutSize = scaledOutWidth * scaledOutHeight;
+    outputFrameGreyscale = (unsigned char*)malloc(startingSize);
+    memset(outputFrameGreyscale, 0, startingSize);
     // Can read DV timings, so set them.
     ret = xioctl(fd, VIDIOC_S_DV_TIMINGS, &timings);
     if (ret < 0) {
       fprintf(stderr, "Failed to set DV timings\n");
       return -1;
-    }
-    else {
+    } else {
       double tot_height, tot_width;
       const struct v4l2_bt_timings* bt = &timings.bt;
-
       tot_height = bt->height + bt->vfrontporch + bt->vsync + bt->vbackporch + bt->il_vfrontporch + bt->il_vsync + bt->il_vbackporch;
       tot_width = bt->width + bt->hfrontporch + bt->hsync + bt->hbackporch;
       framerate = (unsigned int)((double)bt->pixelclock / (tot_width * tot_height));
-      fprintf(stderr, "Framerate is %u\n", framerate);
+      double rawInputThroughput = (double)((framerate * startingSize * 2) / 125000); // Measured in megabits/sec based on input framerate
+      fprintf(stderr, "startingWidth: %d, startingHeight: %d, startingSize: %d, scaledOutWidth: %d, scaledOutHeight: %d, scaledOutSize: %d, framerate: %u, rawInputThroughput: %.2fMb/sec\n", startingWidth, startingHeight, startingSize, scaledOutWidth, scaledOutHeight, scaledOutSize, framerate, rawInputThroughput);
     }
-  }
-  else {
+  } else {
     memset(&std, 0, sizeof std);
     ret = ioctl(fd, VIDIOC_QUERYSTD, &std);
     if (ret >= 0) {
@@ -282,8 +284,8 @@ int start_main(int fd, void* handle, char* device_name, const int force_format, 
       rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
       gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
       // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-      frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
-      memset(outputFrameGreyscale, 0, startingWidth * startingHeight * sizeof(unsigned char));
+      frame_to_stdout(outputFrameGreyscale, scaledOutSize);
+      memset(outputFrameGreyscale, 0, startingSize);
     }
     frame_number++;
     if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
