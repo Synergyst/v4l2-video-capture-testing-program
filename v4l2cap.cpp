@@ -22,7 +22,7 @@
 #include <libv4l2.h>
 #include <omp.h>
 #include <dlfcn.h>
-#include "imgproc.h"
+//#include "imgproc.h"
 
 #define V4L_ALLFORMATS  3
 #define V4L_RAWFORMATS  1
@@ -44,13 +44,34 @@ enum io_method io = IO_METHOD_MMAP;
 struct buffer* buffers;
 unsigned int n_buffers;
 
+const int startingWidth = 1280, startingHeight = 720, scaledOutWidth = 640, scaledOutHeight = 360; // The width and height of the input video and any downscaled output video
+// Allocate memory for the input and output frames
+unsigned char* outputFrame = new unsigned char[startingWidth * startingHeight * 2];
+unsigned char* outputFrameGreyscale = new unsigned char[startingWidth * startingHeight];
+
+void (*rescale_bilinear_from_yuyv)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height);
+void (*gaussianBlur)(unsigned char* input, int inputWidth, int inputHeight, unsigned char* output, int outputWidth, int outputHeight);
+void (*frame_to_stdout)(unsigned char* input, int size);
+void (*yuyv_to_greyscale)(const unsigned char* input, unsigned char* grey, int width, int height);
+void (*uyvy_to_greyscale)(const unsigned char* input, unsigned char* grey, int width, int height);
+void (*crop_greyscale)(unsigned char* image, int width, int height, int* crops, unsigned char* croppedImage);
+void (*replace_pixels_below_val)(const unsigned char* input, unsigned char* output, int width, int height, const int val);
+void (*replace_pixels_above_val)(const unsigned char* input, unsigned char* output, int width, int height, const int val);
+void (*greyscale_to_sobel)(const unsigned char* input, unsigned char* output, int width, int height);
+void (*uyvy_sobel)(unsigned char* input, unsigned char* output, int width, int height);
+void (*uyvy_to_yuyv)(unsigned char* input, unsigned char* output, int width, int height);
+void (*yuyv_to_uyvy)(unsigned char* input, unsigned char* output, int width, int height);
+void (*rescale_bilinear)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height);
+std::vector<double> computeGaussianKernel(int kernelSize, double sigma);
+void (*invert_greyscale)(unsigned char* input, unsigned char* output, int width, int height);
+
 void process_image(const void* p, int size) {
   unsigned char* preP = (unsigned char*)p;
   //frame_to_stdout(preP, size);
   rescale_bilinear_from_yuyv(preP, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
   gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
   // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-  frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
+  //frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
   memset(outputFrameGreyscale, 0, startingWidth * startingHeight * sizeof(unsigned char));
   //croppedWidth = 0, croppedHeight = 0;
 }
@@ -236,17 +257,36 @@ int start_main(char *device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 
   }
   dlerror(); // Clear any existing error
   frame_to_stdout = (void(*)(unsigned char* input, int size)) dlsym(handle, "frame_to_stdout");
+  if ((error = dlerror()) != NULL) {
+    fprintf(stderr, "%s\n", error);
+    exit(1);
+  }
   rescale_bilinear_from_yuyv = (void(*)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height)) dlsym(handle, "rescale_bilinear_from_yuyv");
-  yuyv_to_greyscale = (void(*)(const unsigned char* input, unsigned char* grey, int width, int height)) dlsym(handle, "yuyv_to_greyscale");
-  uyvy_to_greyscale = (void(*)(const unsigned char* input, unsigned char* grey, int width, int height)) dlsym(handle, "uyvy_to_greyscale");
+  if ((error = dlerror()) != NULL) {
+    fprintf(stderr, "%s\n", error);
+    exit(1);
+  }
   gaussianBlur = (void(*)(unsigned char* input, int inputWidth, int inputHeight, unsigned char* output, int outputWidth, int outputHeight)) dlsym(handle, "gaussianBlur");
+  if ((error = dlerror()) != NULL) {
+    fprintf(stderr, "%s\n", error);
+    exit(1);
+  }
+  yuyv_to_greyscale = (void(*)(const unsigned char* input, unsigned char* grey, int width, int height)) dlsym(handle, "yuyv_to_greyscale");
+  if ((error = dlerror()) != NULL) {
+    fprintf(stderr, "%s\n", error);
+    exit(1);
+  }
+  uyvy_to_greyscale = (void(*)(const unsigned char* input, unsigned char* grey, int width, int height)) dlsym(handle, "uyvy_to_greyscale");
+  if ((error = dlerror()) != NULL) {
+    fprintf(stderr, "%s\n", error);
+    exit(1);
+  }
   crop_greyscale = (void(*)(unsigned char* image, int width, int height, int* crops, unsigned char* croppedImage)) dlsym(handle, "crop_greyscale");
   if ((error = dlerror()) != NULL) {
     fprintf(stderr, "%s\n", error);
     exit(1);
-  } else {
-    fprintf(stderr, "Successfully imported functions from libimgproc.so\n");
   }
+  fprintf(stderr, "Successfully imported functions from: libimgproc.so\n");
 
   struct stat st;
   if (-1 == stat(device_name, &st)) {

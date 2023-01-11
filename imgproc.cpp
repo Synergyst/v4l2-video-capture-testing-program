@@ -21,7 +21,7 @@
 #include <linux/videodev2.h>
 #include <libv4l2.h>
 #include <omp.h>
-//#include "imgproc.h"
+#include "imgproc.h"
 
 using namespace std;
 

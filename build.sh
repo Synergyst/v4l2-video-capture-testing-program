@@ -8,14 +8,18 @@ mkdir -p ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/
 #g++ -shared -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libv4l2edid.so -fPIC -O3 -std=c++20 -lv4l2 v4l2edid.cpp
 #if [[ $? -eq 0 ]]; then
 #  echo "Successfully compiled EDID library"
+#  echo "We need to copy the libv4l2edid.so library file to /usr/local/lib/ and then run ldconfig"
+#  sudo cp ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libv4l2edid.so /usr/local/lib/ && sudo ldconfig
 #else
 #  echo "Build failed (v4l2edid.cpp)"
 #  exit 1
 #fi
-#g++ -shared -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libimgproc.so -fPIC -O3 -std=c++20 -fopenmp imgproc.cpp
-g++ -shared -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libimgproc.so -O3 -std=c++20 -fopenmp imgproc.cpp
+g++ -shared -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libimgproc.so -fPIC -O3 -std=c++20 -fopenmp imgproc.cpp
+#g++ -shared -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libimgproc.so -O3 -std=c++20 -fopenmp imgproc.cpp
 if [[ $? -eq 0 ]]; then
   echo "Successfully compiled shared library"
+  echo "We need to copy the libimgproc.so library file to /usr/local/lib/ and then run ldconfig"
+  sudo cp ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libimgproc.so /usr/local/lib/ && sudo ldconfig
 else
   echo "Build failed (libimgproc.so)"
   exit 1
