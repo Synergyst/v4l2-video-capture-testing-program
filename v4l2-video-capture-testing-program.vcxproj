@@ -89,12 +89,6 @@
     <None Include="v4l2edid.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="imgproc.cpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="imgproc.h" />
-  </ItemGroup>
-  <ItemGroup>
     <ClInclude Include="v4l2cap.h" />
   </ItemGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">

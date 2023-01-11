@@ -15,16 +15,25 @@ else
   exit 1
 fi
 #g++ -shared -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libimgproc.so -O3 -std=c++20 -fopenmp imgproc.cpp
-g++ -shared -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libimgproc.so -fPIC -O3 -std=c++20 -fopenmp imgproc.cpp
+#g++ -shared -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libimgproc.so -fPIC -O3 -std=c++20 -fopenmp imgproc.cpp
+#if [[ $? -eq 0 ]]; then
+#  echo "Successfully compiled shared library"
+#  echo "We need to copy the libimgproc.so library file to /usr/local/lib/ and then run ldconfig"
+#  sudo cp ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libimgproc.so /usr/local/lib/ && sudo ldconfig
+#else
+#  echo "Build failed (libimgproc.so)"
+#  exit 1
+#fi
+g++ -shared -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libv4l2cap.so -fPIC -O3 -std=c++20 -fopenmp v4l2cap.cpp -ldl -lv4l2
 if [[ $? -eq 0 ]]; then
   echo "Successfully compiled shared library"
-  echo "We need to copy the libimgproc.so library file to /usr/local/lib/ and then run ldconfig"
-  sudo cp ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libimgproc.so /usr/local/lib/ && sudo ldconfig
+  echo "We need to copy the libv4l2cap.so library file to /usr/local/lib/ and then run ldconfig"
+  sudo cp ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libv4l2cap.so /usr/local/lib/ && sudo ldconfig
 else
-  echo "Build failed (libimgproc.so)"
+  echo "Build failed (libv4l2cap.so)"
   exit 1
 fi
-g++ -fPIC -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/v4l2-video-capture-testing-program -O3 -std=c++20 -fopenmp v4l2-video-capture-testing-program.cpp v4l2cap.cpp -ldl -limgproc -lv4l2
+g++ -fPIC -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/v4l2-video-capture-testing-program -O3 -std=c++20 -fopenmp v4l2-video-capture-testing-program.cpp -ldl -lv4l2cap -lv4l2
 if [[ $? -eq 0 ]]; then
   echo "Successfully compiled capture test program"
 else

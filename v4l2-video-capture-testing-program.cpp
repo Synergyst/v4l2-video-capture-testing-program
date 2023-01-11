@@ -42,16 +42,34 @@
 #include <linux/videodev2.h>
 #include <libv4l2.h>
 #include <omp.h>
+#include <dlfcn.h>
 
-int fd = -1;
-void* handle;
-char* device;
-unsigned char* outputFrameGreyscale;
-int start_main(int fd, void* handle, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale);
+void (*start_main)(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale);
 
 int main(int argc, char **argv) {
+  int fd = -1;
+  void* handle;
+  char* device;
+  unsigned char* outputFrameGreyscale;
+  fprintf(stderr, "Attempting to load: libv4l2cap.so\n");
+  char* error;
+  handle = dlopen("libv4l2cap.so", RTLD_NOW);
+  if (!handle) {
+    fprintf(stderr, "%s\n", dlerror());
+    exit(1);
+  }
+  fprintf(stderr, "Successfully loaded: libv4l2cap.so\n");
+  dlerror(); // Clear any existing error
+  start_main = (void(*)(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale)) dlsym(handle, "start_main");
+  if ((error = dlerror()) != NULL) {
+    fprintf(stderr, "%s\n", error);
+    exit(1);
+  }
+  fprintf(stderr, "Successfully imported functions from: libv4l2cap.so\n");
+
   device = (char*)calloc(64, sizeof(char));
   strcpy(device, "/dev/video2");
-  start_main(fd, handle, device, 2, 640, 360, 15, outputFrameGreyscale);
+  start_main(fd, device, 2, 640, 360, 15, outputFrameGreyscale);
+  dlclose(handle);
   return 0;
 }
