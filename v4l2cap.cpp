@@ -83,7 +83,7 @@ struct device {
 int debug = 1;
 #define print(...) do { if (debug) printf(__VA_ARGS__); }  while (0)
 
-char* dev_name;
+//char* dev_name;
 char* dev_name_alt;
 enum io_method io = IO_METHOD_MMAP;
 enum io_methodAlt ioAlt = IO_METHOD_MMAPALT;
@@ -1272,7 +1272,7 @@ void crop_greyscale(unsigned char* image, int width, int height, int* crops, uns
   }
 }
 
-/*int read_frame(void) {
+int read_frame(int fd) {
     struct v4l2_buffer buf;
     unsigned int i;
     switch (io) {
@@ -1336,11 +1336,11 @@ void crop_greyscale(unsigned char* image, int width, int height, int* crops, uns
     }
     //frame_to_stdout(outputFrameGreyscale, (startingWidth * startingHeight));
     return 1;
-}*/
+}
 
-void mainloop(void) {
+void mainloop(int fd) {
   while (true) {
-    fd_set fdsAlt;
+    /*fd_set fdsAlt;
     struct timeval tvAlt;
     int rAlt;
     FD_ZERO(&fdsAlt);
@@ -1358,12 +1358,12 @@ void mainloop(void) {
       fprintf(stderr, "select timeout\n");
       exit(EXIT_FAILURE);
     }
-    read_frameAlt();
+    read_frameAlt();*/
     //if (read_frameAlt())
     //  break;
     // EAGAIN - continue select loop.
 
-    /*fd_set fds;
+    fd_set fds;
     struct timeval tv;
     int r;
     FD_ZERO(&fds);
@@ -1381,7 +1381,7 @@ void mainloop(void) {
       fprintf(stderr, "select timeout\n");
       exit(EXIT_FAILURE);
     }
-    read_frame();*/
+    read_frame(fd);
     //if (read_frame())
     //  break;
     // EAGAIN - continue select loop
@@ -1391,7 +1391,7 @@ void mainloop(void) {
   }
 }
 
-void stop_capturing(void) {
+void stop_capturing(int fd) {
     enum v4l2_buf_type type;
     switch (io) {
     case IO_METHOD_READ:
@@ -1406,12 +1406,12 @@ void stop_capturing(void) {
     }
 }
 
-void start_capturing(void) {
+void start_capturing(int fd) {
     unsigned int i;
     enum v4l2_buf_type type;
     switch (io) {
     case IO_METHOD_READ:
-        /* Nothing to do. */
+        // Nothing to do.
         break;
     case IO_METHOD_MMAP:
         for (i = 0; i < n_buffers; ++i) {
@@ -1479,7 +1479,7 @@ void init_read(unsigned int buffer_size) {
     }
 }
 
-void init_mmap(void) {
+void init_mmap(int fd, char *dev_name) {
     struct v4l2_requestbuffers req;
     CLEAR(req);
     req.count = 4;
@@ -1518,7 +1518,7 @@ void init_mmap(void) {
     }
 }
 
-void init_userp(unsigned int buffer_size) {
+void init_userp(unsigned int buffer_size, int fd, char *dev_name) {
     struct v4l2_requestbuffers req;
     CLEAR(req);
     req.count = 4;
@@ -1548,7 +1548,7 @@ void init_userp(unsigned int buffer_size) {
     }
 }
 
-void init_device(void) {
+void init_device(int fd, char* dev_name) {
     struct v4l2_capability cap;
     struct v4l2_cropcap cropcap;
     struct v4l2_crop crop;
@@ -1558,8 +1558,7 @@ void init_device(void) {
         if (EINVAL == errno) {
             fprintf(stderr, "%s is no V4L2 device\n", dev_name);
             exit(EXIT_FAILURE);
-        }
-        else {
+        } else {
             errno_exit("VIDIOC_QUERYCAP");
         }
     }
@@ -1582,16 +1581,16 @@ void init_device(void) {
         }
         break;
     }
-    /* Select video input, video standard and tune here. */
+    // Select video input, video standard and tune here.
     CLEAR(cropcap);
     cropcap.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (0 == xioctl(fd, VIDIOC_CROPCAP, &cropcap)) {
         crop.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        crop.c = cropcap.defrect; /* reset to default */
+        crop.c = cropcap.defrect; // reset to default
         if (-1 == xioctl(fd, VIDIOC_S_CROP, &crop)) {
             switch (errno) {
             case EINVAL:
-                /* Cropping not supported. */
+                // Cropping not supported.
                 break;
             default:
                 // Errors ignored.
@@ -1651,10 +1650,10 @@ void init_device(void) {
         init_read(fmt.fmt.pix.sizeimage);
         break;
     case IO_METHOD_MMAP:
-        init_mmap();
+        init_mmap(fd, dev_name);
         break;
     case IO_METHOD_USERPTR:
-        init_userp(fmt.fmt.pix.sizeimage);
+        init_userp(fmt.fmt.pix.sizeimage, fd, dev_name);
         break;
     }
     //set_framerate();
@@ -1662,13 +1661,13 @@ void init_device(void) {
     //get_framerate(fd);
 }
 
-void close_device(void) {
+void close_device(int fd) {
     if (-1 == close(fd))
         errno_exit("close");
     fd = -1;
 }
 
-void open_device(void) {
+void open_device(int fd, char *dev_name) {
     struct stat st;
     if (-1 == stat(dev_name, &st)) {
         fprintf(stderr, "Cannot identify '%s': %d, %s\n", dev_name, errno, strerror(errno));
@@ -1703,7 +1702,7 @@ int start_main(char *device_name, char* device_name_alt) {
     memset(outputFrameGreyscale3Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
     memset(outputFrameGreyscale4Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
     memset(outputFrameGreyscale5Alt, 0, startingWidthAlt * startingHeightAlt * sizeof(unsigned char));
-    dev_name = (char*)calloc(64, sizeof(char));
+    /*dev_name = (char*)calloc(64, sizeof(char));
     strcpy(dev_name, device_name);
     dev_name_alt = (char*)calloc(64, sizeof(char));
     strcpy(dev_name_alt, device_name_alt);
@@ -1724,18 +1723,18 @@ int start_main(char *device_name, char* device_name_alt) {
       tempCropAmtHeight = (tempCropAmtHeight - (cropMatrix[i][2] + cropMatrix[i][3]));
       fprintf(stderr, " >> %dx%d (L:%d,R:%d,T:%d,B:%d)", tempCropAmtWidth, tempCropAmtHeight, cropMatrix[i][0], cropMatrix[i][1], cropMatrix[i][2], cropMatrix[i][3]);
     }
-    fprintf(stderr, "\n");
-    open_deviceAlt();
+    fprintf(stderr, "\n");*/
+    /*open_deviceAlt();
     init_deviceAlt();
     start_capturingAlt();
-    fprintf(stderr, "Initialized alt (%s)..\n", dev_name_alt);
-    open_device();
-    init_device();
-    start_capturing();
-    fprintf(stderr, "Initialized main (%s)..\n", dev_name);
-    fprintf(stderr, "Starting loop with the following device(s): %s and %s\n", dev_name, dev_name_alt);
+    fprintf(stderr, "Initialized alt (%s)..\n", dev_name_alt);*/
+    open_device(fd, device_name);
+    init_device(fd, device_name);
+    start_capturing(fd);
+    fprintf(stderr, "Initialized main (%s)..\n", device_name);
+    //fprintf(stderr, "Starting loop with the following device(s): %s and %s\n", device_name, device_name_alt);
     //fprintf(stderr, "Starting loop with the following device(s): %s\n", dev_name);
-    mainloop();
+    mainloop(fd);
     /* main loop
     for (;;) {
       fd_set fdsAlt;
@@ -1809,13 +1808,13 @@ int start_main(char *device_name, char* device_name_alt) {
       // EAGAIN - continue select loop.
     }
     // alt loop end */
-    stop_capturingAlt();
+    /*stop_capturingAlt();
     uninit_deviceAlt();
     close_deviceAlt();
-    fprintf(stderr, "\n");
-    stop_capturing();
+    fprintf(stderr, "\n");*/
+    stop_capturing(fd);
     uninit_device();
-    close_device();
+    close_device(fd);
     fprintf(stderr, "\n");
     return 0;
 }
