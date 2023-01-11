@@ -24,22 +24,6 @@
 #include <dlfcn.h>
 #include "v4l2cap.h"
 
-/*void (*rescale_bilinear_from_yuyv)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height);
-void (*gaussianBlur)(unsigned char* input, int inputWidth, int inputHeight, unsigned char* output, int outputWidth, int outputHeight);
-void (*frame_to_stdout)(unsigned char* input, int size);
-void (*yuyv_to_greyscale)(const unsigned char* input, unsigned char* grey, int width, int height);
-void (*uyvy_to_greyscale)(const unsigned char* input, unsigned char* grey, int width, int height);
-void (*crop_greyscale)(unsigned char* image, int width, int height, int* crops, unsigned char* croppedImage);
-void (*replace_pixels_below_val)(const unsigned char* input, unsigned char* output, int width, int height, const int val);
-void (*replace_pixels_above_val)(const unsigned char* input, unsigned char* output, int width, int height, const int val);
-void (*greyscale_to_sobel)(const unsigned char* input, unsigned char* output, int width, int height);
-void (*uyvy_sobel)(unsigned char* input, unsigned char* output, int width, int height);
-void (*uyvy_to_yuyv)(unsigned char* input, unsigned char* output, int width, int height);
-void (*yuyv_to_uyvy)(unsigned char* input, unsigned char* output, int width, int height);
-void (*rescale_bilinear)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height);
-std::vector<double> computeGaussianKernel(int kernelSize, double sigma);
-void (*invert_greyscale)(unsigned char* input, unsigned char* output, int width, int height);*/
-
 #define V4L_ALLFORMATS  3
 #define V4L_RAWFORMATS  1
 #define V4L_COMPFORMATS 2
@@ -53,6 +37,12 @@ struct buffer {
 struct buffer* buffers;
 unsigned int n_buffers;
 
+using namespace std;
+
+const int cropMatrix[2][4] = { {11, 4, 4, 2}, {1, 1, 1, 1} }; // Crop size matrix (scale up or down as needed)
+const int KERNEL_SIZE = 3; // The kernel size of the Gaussian blur, default: 5
+const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
+
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
   exit(EXIT_FAILURE);
@@ -65,13 +55,6 @@ int xioctl(int fh, int request, void* arg) {
   } while (-1 == r && EINTR == errno);
   return r;
 }
-
-using namespace std;
-
-const int cropMatrix[2][4] = { {11, 4, 4, 2}, {1, 1, 1, 1} }; // Crop size matrix (scale up or down as needed)
-int croppedWidth = 0, croppedHeight = 0;
-const int KERNEL_SIZE = 3; // The kernel size of the Gaussian blur, default: 5
-const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
 
 void yuyv_to_greyscale(const unsigned char* input, unsigned char* grey, int width, int height) {
 #pragma omp parallel for
@@ -370,12 +353,12 @@ void frame_to_stdout(unsigned char* input, int size) {
     perror("write");
 }
 
-void crop_greyscale(unsigned char* image, int width, int height, int* crops, unsigned char* croppedImage) {
+/*void crop_greyscale(unsigned char* image, int width, int height, int* crops, unsigned char* croppedImage) {
+  //int croppedWidth = 0, croppedHeight = 0;
   if (croppedWidth > 0 || croppedHeight > 0) {
     croppedWidth = croppedWidth - crops[0] - crops[1];
     croppedHeight = croppedHeight - crops[2] - crops[3];
-  }
-  else {
+  } else {
     croppedWidth = width - crops[0] - crops[1];
     croppedHeight = height - crops[2] - crops[3];
   }
@@ -389,7 +372,7 @@ void crop_greyscale(unsigned char* image, int width, int height, int* crops, uns
       croppedImage[croppedIndex] = image[index];
     }
   }
-}
+}*/
 
 void start_main(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale) {
   int frame_number = 0, framerate = -1, framerateDivisor = 1, startingWidth = -1, startingHeight = -1, startingSize = -1, scaledOutSize = -1;
