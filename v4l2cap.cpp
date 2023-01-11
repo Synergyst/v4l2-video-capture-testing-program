@@ -354,8 +354,9 @@ int start_main(char *device_name) {
   if ((error = dlerror()) != NULL) {
     fprintf(stderr, "%s\n", error);
     exit(1);
+  } else {
+    fprintf(stderr, "Successfully imported functions from libimgproc.so\n");
   }
-  //printf("%f\n", (*cosine)(2.0));
 
   struct stat st;
   if (-1 == stat(device_name, &st)) {
