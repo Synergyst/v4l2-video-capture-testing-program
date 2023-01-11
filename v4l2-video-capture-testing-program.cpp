@@ -40,12 +40,18 @@
 #include <libv4l2.h>
 #include <omp.h>
 
+int fd = -1;
+void* handle;
 char* device;
-int start_main(char *device_name, const int);
+int start_main(int fd, void* handle, char *device_name, const int);
+int run_loop(int fd, void* handle, char* device_name);
+int stop_main(int fd, void* handle, char* device_name);
 
 int main(int argc, char **argv) {
   device = (char*)calloc(64, sizeof(char));
   strcpy(device, "/dev/video2");
-  start_main(device, 2);
+  start_main(fd, handle, device, 2);
+  run_loop(fd, handle, device);
+  stop_main(fd, handle, device);
   return 0;
 }

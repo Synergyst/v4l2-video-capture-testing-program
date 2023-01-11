@@ -1,32 +1,20 @@
 #include "v4l2cap.h"
 
-void process_image(const void* p, int size) {
-  if (frame_number % framerateDivisor == 0) {
-    unsigned char* preP = (unsigned char*)p;
-    rescale_bilinear_from_yuyv(preP, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-    gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-    // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-    frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
-    memset(outputFrameGreyscale, 0, startingWidth * startingHeight * sizeof(unsigned char));
-  }
-  frame_number++;
-}
-
-int start_main(char *device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 3 = RGB24 - Do not use RGB24 as it will cause high CPU usage, YUYV/UYVY should be used instead */) {
-  int fd = -1;
+int start_main(int fd, void* handle, char* device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 3 = RGB24 - Do not use RGB24 as it will cause high CPU usage, YUYV/UYVY should be used instead */) {
   unsigned int i;
   enum v4l2_buf_type type;
   memset(outputFrame, 0, startingWidth * startingHeight * sizeof(unsigned char));
   memset(outputFrameGreyscale, 0, startingWidth * startingHeight * sizeof(unsigned char));
   fprintf(stderr, "Starting V4L2 capture testing program with the following V4L2 device: %s\n", device_name);
 
-  void* handle;
+  //void* handle;
   char* error;
   handle = dlopen("libimgproc.so", RTLD_LAZY);
   if (!handle) {
     fprintf(stderr, "%s\n", dlerror());
     exit(1);
-  } else {
+  }
+  else {
     fprintf(stderr, "Loaded libimgproc.so successfully\n");
   }
   dlerror(); // Clear any existing error
@@ -95,21 +83,6 @@ int start_main(char *device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 
   if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) {
     fprintf(stderr, "%s is no video capture device\n", device_name);
     exit(EXIT_FAILURE);
-  }
-  switch (io) {
-  case IO_METHOD_READ:
-    if (!(cap.capabilities & V4L2_CAP_READWRITE)) {
-      fprintf(stderr, "%s does not support read i/o\n", device_name);
-      exit(EXIT_FAILURE);
-    }
-    break;
-  case IO_METHOD_MMAP:
-  case IO_METHOD_USERPTR:
-    if (!(cap.capabilities & V4L2_CAP_STREAMING)) {
-      fprintf(stderr, "%s does not support streaming i/o\n", device_name);
-      exit(EXIT_FAILURE);
-    }
-    break;
   }
   // Select video input, video standard and tune here.
   CLEAR(cropcap);
@@ -205,7 +178,7 @@ int start_main(char *device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 
     if (MAP_FAILED == buffers[n_buffers].start)
       errno_exit("mmap");
   }
-  
+
   // TODO: Have some way of passing flags from main() so we can handle settings in this area
   struct v4l2_dv_timings timings;
   v4l2_std_id std;
@@ -220,7 +193,8 @@ int start_main(char *device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 
     if (ret < 0) {
       fprintf(stderr, "Failed to set DV timings\n");
       return -1;
-    } else {
+    }
+    else {
       double tot_height, tot_width;
       const struct v4l2_bt_timings* bt = &timings.bt;
 
@@ -229,7 +203,8 @@ int start_main(char *device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 
       framerate = (unsigned int)((double)bt->pixelclock / (tot_width * tot_height));
       fprintf(stderr, "Framerate is %u\n", framerate);
     }
-  } else {
+  }
+  else {
     memset(&std, 0, sizeof std);
     ret = ioctl(fd, VIDIOC_QUERYSTD, &std);
     if (ret >= 0) {
@@ -238,7 +213,8 @@ int start_main(char *device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 
       if (ret < 0) {
         fprintf(stderr, "Failed to set standard\n");
         return -1;
-      } else {
+      }
+      else {
         // SD video - assume 50Hz / 25fps
         framerate = 25;
       }
@@ -246,45 +222,23 @@ int start_main(char *device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 
   }
   framerateDivisor = (framerate / targetFramerate);
   fprintf(stderr, "Initialized V4L2 device: %s\n", device_name);
-
-  switch (io) {
-  case IO_METHOD_READ:
-    // Nothing to do.
-    break;
-  case IO_METHOD_MMAP:
-    for (i = 0; i < n_buffers; ++i) {
-      struct v4l2_buffer buf;
-      CLEAR(buf);
-      buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-      buf.memory = V4L2_MEMORY_MMAP;
-      buf.index = i;
-      if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
-        errno_exit("VIDIOC_QBUF");
-    }
-    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (-1 == xioctl(fd, VIDIOC_STREAMON, &type))
-      errno_exit("VIDIOC_STREAMON");
-    break;
-  case IO_METHOD_USERPTR:
-    for (i = 0; i < n_buffers; ++i) {
-      struct v4l2_buffer buf;
-      CLEAR(buf);
-      buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-      buf.memory = V4L2_MEMORY_USERPTR;
-      buf.index = i;
-      buf.m.userptr = (unsigned long)buffers[i].start;
-      buf.length = buffers[i].length;
-      if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
-        errno_exit("VIDIOC_QBUF");
-    }
-    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (-1 == xioctl(fd, VIDIOC_STREAMON, &type))
-      errno_exit("VIDIOC_STREAMON");
-    break;
+  for (i = 0; i < n_buffers; ++i) {
+    struct v4l2_buffer buf;
+    CLEAR(buf);
+    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory = V4L2_MEMORY_MMAP;
+    buf.index = i;
+    if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
+      errno_exit("VIDIOC_QBUF");
   }
-  i = 0;
+  type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  if (-1 == xioctl(fd, VIDIOC_STREAMON, &type))
+    errno_exit("VIDIOC_STREAMON");
   fprintf(stderr, "Started capturing from V4L2 device: %s\n", device_name);
+  return 0;
+}
 
+int run_loop(int fd, void* handle, char* device_name) {
   fprintf(stderr, "Starting loop for V4L2 device: %s\n", device_name);
   while (true) {
     fd_set fds;
@@ -325,41 +279,17 @@ int start_main(char *device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 
     process_image(buffers[buf.index].start, buf.bytesused);
     if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
       errno_exit("VIDIOC_QBUF");
-    //if (read_frame())
-    //  break;
     // EAGAIN - continue select loop
+  }
+  return 0;
+}
 
-    //frame_to_stdout(outputFrameGreyscale, (startingWidth * startingHeight));
-  }
-  //enum v4l2_buf_type type;
-  switch (io) {
-  case IO_METHOD_READ:
-    // Nothing to do.
-    break;
-  case IO_METHOD_MMAP:
-  case IO_METHOD_USERPTR:
-    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (-1 == xioctl(fd, VIDIOC_STREAMOFF, &type))
-      errno_exit("VIDIOC_STREAMOFF");
-    break;
-  }
+int stop_main(int fd, void* handle, char* device_name) {
   fprintf(stderr, "Stopped capturing from V4L2 device: %s\n", device_name);
 
-  //unsigned int i;
-  switch (io) {
-  case IO_METHOD_READ:
-    free(buffers[0].start);
-    break;
-  case IO_METHOD_MMAP:
-    for (i = 0; i < n_buffers; ++i)
-      if (-1 == munmap(buffers[i].start, buffers[i].length))
-        errno_exit("munmap");
-    break;
-  case IO_METHOD_USERPTR:
-    for (i = 0; i < n_buffers; ++i)
-      free(buffers[i].start);
-    break;
-  }
+  for (unsigned int i = 0; i < n_buffers; ++i)
+    if (-1 == munmap(buffers[i].start, buffers[i].length))
+      errno_exit("munmap");
   free(buffers);
   fprintf(stderr, "Uninitialized V4L2 device: %s\n", device_name);
 
