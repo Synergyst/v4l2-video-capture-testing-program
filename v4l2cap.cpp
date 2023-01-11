@@ -1,8 +1,30 @@
 #include "v4l2cap.h"
-#include <condition_variable>
-#include <iostream>
-#include <mutex>
-#include <thread>
+
+#define V4L_ALLFORMATS  3
+#define V4L_RAWFORMATS  1
+#define V4L_COMPFORMATS 2
+#define CLEAR(x) memset(&(x), 0, sizeof(x))
+
+struct buffer {
+  void* start;
+  size_t length;
+};
+
+struct buffer* buffers;
+unsigned int n_buffers;
+
+void errno_exit(const char* s) {
+  fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
+  exit(EXIT_FAILURE);
+}
+
+int xioctl(int fh, int request, void* arg) {
+  int r;
+  do {
+    r = ioctl(fh, request, arg);
+  } while (-1 == r && EINTR == errno);
+  return r;
+}
 
 int start_main(int fd, void* handle, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale) {
   int frame_number = 0, framerate = -1, framerateDivisor = 1, startingWidth = -1, startingHeight = -1, startingSize = -1, scaledOutSize = -1;
@@ -280,12 +302,11 @@ int start_main(int fd, void* handle, char* device_name, const int force_format, 
       }
     }
     assert(buf.index < n_buffers);
-    //process_frame(buffers[buf.index].start, outputFrameGreyscale, startingWidth, startingHeight, scaledOutWidth, scaledOutHeight, frame_number, framerateDivisor);
     if (frame_number % framerateDivisor == 0) {
       rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
       gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
       // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-      frame_to_stdout(outputFrameGreyscale, scaledOutSize);
+      //frame_to_stdout(outputFrameGreyscale, scaledOutSize);
       memset(outputFrameGreyscale, 0, startingSize);
     }
     frame_number++;

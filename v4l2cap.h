@@ -23,19 +23,6 @@
 #include <omp.h>
 #include <dlfcn.h>
 
-#define V4L_ALLFORMATS  3
-#define V4L_RAWFORMATS  1
-#define V4L_COMPFORMATS 2
-#define CLEAR(x) memset(&(x), 0, sizeof(x))
-
-struct buffer {
-  void* start;
-  size_t length;
-};
-
-struct buffer* buffers;
-unsigned int n_buffers;
-
 void (*rescale_bilinear_from_yuyv)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height);
 void (*gaussianBlur)(unsigned char* input, int inputWidth, int inputHeight, unsigned char* output, int outputWidth, int outputHeight);
 void (*frame_to_stdout)(unsigned char* input, int size);
@@ -51,16 +38,3 @@ void (*yuyv_to_uyvy)(unsigned char* input, unsigned char* output, int width, int
 void (*rescale_bilinear)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height);
 std::vector<double> computeGaussianKernel(int kernelSize, double sigma);
 void (*invert_greyscale)(unsigned char* input, unsigned char* output, int width, int height);
-
-void errno_exit(const char* s) {
-  fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
-  exit(EXIT_FAILURE);
-}
-
-int xioctl(int fh, int request, void* arg) {
-  int r;
-  do {
-    r = ioctl(fh, request, arg);
-  } while (-1 == r && EINTR == errno);
-  return r;
-}
