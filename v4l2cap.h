@@ -36,10 +36,6 @@ struct buffer {
 struct buffer* buffers;
 unsigned int n_buffers;
 
-int startingWidth, startingHeight, scaledOutWidth, scaledOutHeight, targetFramerate; // The width and height of the input video and any downscaled output video
-int frame_number = 0, framerate = -1, framerateDivisor = 1;
-unsigned char *outputFrame, *outputFrameGreyscale;
-
 void (*rescale_bilinear_from_yuyv)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height);
 void (*gaussianBlur)(unsigned char* input, int inputWidth, int inputHeight, unsigned char* output, int outputWidth, int outputHeight);
 void (*frame_to_stdout)(unsigned char* input, int size);
@@ -55,18 +51,6 @@ void (*yuyv_to_uyvy)(unsigned char* input, unsigned char* output, int width, int
 void (*rescale_bilinear)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height);
 std::vector<double> computeGaussianKernel(int kernelSize, double sigma);
 void (*invert_greyscale)(unsigned char* input, unsigned char* output, int width, int height);
-
-void process_image(const void* p, int size) {
-  if (frame_number % framerateDivisor == 0) {
-    unsigned char* preP = (unsigned char*)p;
-    rescale_bilinear_from_yuyv(preP, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-    gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-    // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-    frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
-    memset(outputFrameGreyscale, 0, startingWidth * startingHeight * sizeof(unsigned char));
-  }
-  frame_number++;
-}
 
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));

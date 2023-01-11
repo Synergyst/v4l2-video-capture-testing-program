@@ -43,11 +43,12 @@
 int fd = -1;
 void* handle;
 char* device;
-int start_main(int fd, void* handle, char *device_name, const int, const int startingWidth, const int startingHeight, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate);
+unsigned char* outputFrameGreyscale;
+int start_main(int fd, void* handle, char *device_name, const int, const int startingWidth, const int startingHeight, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale);
 
 int main(int argc, char **argv) {
   device = (char*)calloc(64, sizeof(char));
   strcpy(device, "/dev/video2");
-  start_main(fd, handle, device, 2, 1280, 720, 640, 360, 15);
+  start_main(fd, handle, device, 2, 1280, 720, 640, 360, 15, outputFrameGreyscale);
   return 0;
 }

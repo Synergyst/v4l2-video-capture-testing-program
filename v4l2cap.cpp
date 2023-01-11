@@ -1,11 +1,10 @@
 #include "v4l2cap.h"
 
-int start_main(int fd, void* handle, char* device_name, const int force_format, const int startingWidth, const int startingHeight, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate) {
+int start_main(int fd, void* handle, char* device_name, const int force_format, const int startingWidth, const int startingHeight, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale) {
+  int frame_number = 0, framerate = -1, framerateDivisor = 1;
   unsigned int i;
   enum v4l2_buf_type type;
-  outputFrame = (unsigned char*)malloc(startingWidth * startingHeight * 2 * sizeof(unsigned char));
   outputFrameGreyscale = (unsigned char*)malloc(startingWidth * startingHeight * sizeof(unsigned char));
-  memset(outputFrame, 0, startingWidth * startingHeight * sizeof(unsigned char));
   memset(outputFrameGreyscale, 0, startingWidth * startingHeight * sizeof(unsigned char));
   fprintf(stderr, "Starting V4L2 capture testing program with the following V4L2 device: %s\n", device_name);
 
@@ -274,12 +273,18 @@ int start_main(int fd, void* handle, char* device_name, const int force_format, 
       }
     }
     assert(buf.index < n_buffers);
-    process_image(buffers[buf.index].start, buf.bytesused);
+    if (frame_number % framerateDivisor == 0) {
+      rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+      gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+      // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
+      frame_to_stdout(outputFrameGreyscale, (scaledOutWidth * scaledOutHeight));
+      memset(outputFrameGreyscale, 0, startingWidth * startingHeight * sizeof(unsigned char));
+    }
+    frame_number++;
     if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
       errno_exit("VIDIOC_QBUF");
     // EAGAIN - continue select loop
   }
-
   fprintf(stderr, "Stopped capturing from V4L2 device: %s\n", device_name);
 
   for (unsigned int i = 0; i < n_buffers; ++i)
