@@ -207,8 +207,10 @@ int start_main(int fd, void* handle, char* device_name, const int force_format, 
       tot_height = bt->height + bt->vfrontporch + bt->vsync + bt->vbackporch + bt->il_vfrontporch + bt->il_vsync + bt->il_vbackporch;
       tot_width = bt->width + bt->hfrontporch + bt->hsync + bt->hbackporch;
       framerate = (unsigned int)((double)bt->pixelclock / (tot_width * tot_height));
+      framerateDivisor = (framerate / targetFramerate);
       double rawInputThroughput = (double)((framerate * startingSize * 2) / 125000); // Measured in megabits/sec based on input framerate
-      fprintf(stderr, "startingWidth: %d, startingHeight: %d, startingSize: %d, scaledOutWidth: %d, scaledOutHeight: %d, scaledOutSize: %d, framerate: %u, rawInputThroughput: %.2fMb/sec\n", startingWidth, startingHeight, startingSize, scaledOutWidth, scaledOutHeight, scaledOutSize, framerate, rawInputThroughput);
+      double rawOutputThroughput = (double)(((framerate / framerateDivisor) * scaledOutSize) / 125000); // Measured in megabits/sec based on output framerate
+      fprintf(stderr, "startingWidth: %d, startingHeight: %d, startingSize: %d, scaledOutWidth: %d, scaledOutHeight: %d, scaledOutSize: %d, framerate: %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: %.2fMb/sec, rawOutputThroughput: %.2fMb/sec\n", startingWidth, startingHeight, startingSize, scaledOutWidth, scaledOutHeight, scaledOutSize, framerate, framerateDivisor, targetFramerate, rawInputThroughput, rawOutputThroughput);
     }
   } else {
     memset(&std, 0, sizeof std);
@@ -226,7 +228,6 @@ int start_main(int fd, void* handle, char* device_name, const int force_format, 
       }
     }
   }
-  framerateDivisor = (framerate / targetFramerate);
   fprintf(stderr, "Initialized V4L2 device: %s\n", device_name);
   for (i = 0; i < n_buffers; ++i) {
     struct v4l2_buffer buf;
