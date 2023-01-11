@@ -43,15 +43,11 @@
 int fd = -1;
 void* handle;
 char* device;
-int start_main(int fd, void* handle, char *device_name, const int);
-int run_loop(int fd, void* handle, char* device_name);
-int stop_main(int fd, void* handle, char* device_name);
+int start_main(int fd, void* handle, char *device_name, const int, const int startingWidth, const int startingHeight, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate);
 
 int main(int argc, char **argv) {
   device = (char*)calloc(64, sizeof(char));
   strcpy(device, "/dev/video2");
-  start_main(fd, handle, device, 2);
-  run_loop(fd, handle, device);
-  stop_main(fd, handle, device);
+  start_main(fd, handle, device, 2, 1280, 720, 640, 360, 15);
   return 0;
 }

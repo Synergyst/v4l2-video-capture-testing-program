@@ -36,12 +36,9 @@ struct buffer {
 struct buffer* buffers;
 unsigned int n_buffers;
 
-const int startingWidth = 1280, startingHeight = 720, scaledOutWidth = 640, scaledOutHeight = 360, targetFramerate = 15; // The width and height of the input video and any downscaled output video
+int startingWidth, startingHeight, scaledOutWidth, scaledOutHeight, targetFramerate; // The width and height of the input video and any downscaled output video
 int frame_number = 0, framerate = -1, framerateDivisor = 1;
-
-// Allocate memory for the input and output frames
-unsigned char* outputFrame = new unsigned char[startingWidth * startingHeight * 2];
-unsigned char* outputFrameGreyscale = new unsigned char[startingWidth * startingHeight];
+unsigned char *outputFrame, *outputFrameGreyscale;
 
 void (*rescale_bilinear_from_yuyv)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height);
 void (*gaussianBlur)(unsigned char* input, int inputWidth, int inputHeight, unsigned char* output, int outputWidth, int outputHeight);

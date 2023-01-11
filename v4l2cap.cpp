@@ -1,20 +1,21 @@
 #include "v4l2cap.h"
 
-int start_main(int fd, void* handle, char* device_name, const int force_format /* 1 = YUYV, 2 = UYVY, 3 = RGB24 - Do not use RGB24 as it will cause high CPU usage, YUYV/UYVY should be used instead */) {
+int start_main(int fd, void* handle, char* device_name, const int force_format, const int startingWidth, const int startingHeight, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate) {
   unsigned int i;
   enum v4l2_buf_type type;
+  outputFrame = (unsigned char*)malloc(startingWidth * startingHeight * 2 * sizeof(unsigned char));
+  outputFrameGreyscale = (unsigned char*)malloc(startingWidth * startingHeight * sizeof(unsigned char));
   memset(outputFrame, 0, startingWidth * startingHeight * sizeof(unsigned char));
   memset(outputFrameGreyscale, 0, startingWidth * startingHeight * sizeof(unsigned char));
   fprintf(stderr, "Starting V4L2 capture testing program with the following V4L2 device: %s\n", device_name);
 
-  //void* handle;
+  fprintf(stderr, "Attempting to load libimgproc.so\n");
   char* error;
   handle = dlopen("libimgproc.so", RTLD_LAZY);
   if (!handle) {
     fprintf(stderr, "%s\n", dlerror());
     exit(1);
-  }
-  else {
+  } else {
     fprintf(stderr, "Loaded libimgproc.so successfully\n");
   }
   dlerror(); // Clear any existing error
@@ -235,10 +236,7 @@ int start_main(int fd, void* handle, char* device_name, const int force_format /
   if (-1 == xioctl(fd, VIDIOC_STREAMON, &type))
     errno_exit("VIDIOC_STREAMON");
   fprintf(stderr, "Started capturing from V4L2 device: %s\n", device_name);
-  return 0;
-}
 
-int run_loop(int fd, void* handle, char* device_name) {
   fprintf(stderr, "Starting loop for V4L2 device: %s\n", device_name);
   while (true) {
     fd_set fds;
@@ -281,10 +279,7 @@ int run_loop(int fd, void* handle, char* device_name) {
       errno_exit("VIDIOC_QBUF");
     // EAGAIN - continue select loop
   }
-  return 0;
-}
 
-int stop_main(int fd, void* handle, char* device_name) {
   fprintf(stderr, "Stopped capturing from V4L2 device: %s\n", device_name);
 
   for (unsigned int i = 0; i < n_buffers; ++i)
