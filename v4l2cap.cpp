@@ -22,7 +22,7 @@
 #include <libv4l2.h>
 #include <omp.h>
 #include <dlfcn.h>
-//#include "imgproc.h"
+#include "imgproc.h"
 
 #define V4L_ALLFORMATS  3
 #define V4L_RAWFORMATS  1
@@ -71,31 +71,7 @@ enum io_method io = IO_METHOD_MMAP;
 struct buffer* buffers;
 unsigned int n_buffers;
 const int force_format = 2; // 1 = YUYV, 2 = UYVY, 3 = RGB24 - Do not use RGB24 as it will cause high CPU usage, YUYV/UYVY should be used instead
-
-void (*frame_to_stdout)(unsigned char* input, int size);
-void (*rescale_bilinear_from_yuyv)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height);
-void (*yuyv_to_greyscale)(const unsigned char* input, unsigned char* grey, int width, int height);
-void (*uyvy_to_greyscale)(const unsigned char* input, unsigned char* grey, int width, int height);
-void (*gaussianBlur)(unsigned char* input, int inputWidth, int inputHeight, unsigned char* output, int outputWidth, int outputHeight);
-//void (*scale_from_yuyv)(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height);
-
-void errno_exit(const char* s) {
-  fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
-  exit(EXIT_FAILURE);
-}
-
-int xioctl(int fh, int request, void* arg) {
-  int r;
-  do {
-    r = ioctl(fh, request, arg);
-  } while (-1 == r && EINTR == errno);
-  return r;
-}
-
-// The width and height of the input video and any downscaled output video
-const int startingWidth = 1280, startingHeight = 720;
-const int scaledOutWidth = 640, scaledOutHeight = 360;
-
+const int startingWidth = 1280, startingHeight = 720, scaledOutWidth = 640, scaledOutHeight = 360; // The width and height of the input video and any downscaled output video
 // Allocate memory for the input and output frames
 unsigned char* outputFrame = new unsigned char[startingWidth * startingHeight * 2];
 unsigned char* outputFrame2 = new unsigned char[startingWidth * startingHeight * 2];
@@ -116,6 +92,19 @@ void process_image(const void* p, int size) {
   // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
   frame_to_stdout(outputFrameGreyscale1, (scaledOutWidth * scaledOutHeight));
   //croppedWidth = 0, croppedHeight = 0;
+}
+
+void errno_exit(const char* s) {
+  fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
+  exit(EXIT_FAILURE);
+}
+
+int xioctl(int fh, int request, void* arg) {
+  int r;
+  do {
+    r = ioctl(fh, request, arg);
+  } while (-1 == r && EINTR == errno);
+  return r;
 }
 
 int read_frame(int fd) {
@@ -361,7 +350,7 @@ int start_main(char *device_name) {
   yuyv_to_greyscale = (void(*)(const unsigned char* input, unsigned char* grey, int width, int height)) dlsym(handle, "yuyv_to_greyscale");
   uyvy_to_greyscale = (void(*)(const unsigned char* input, unsigned char* grey, int width, int height)) dlsym(handle, "uyvy_to_greyscale");
   gaussianBlur = (void(*)(unsigned char* input, int inputWidth, int inputHeight, unsigned char* output, int outputWidth, int outputHeight)) dlsym(handle, "gaussianBlur");
-  //send_framestdout = (void(*)(unsigned char* input, int size)) dlsym(handle, "frame_to_stdout");
+  crop_greyscale = (void(*)(unsigned char* image, int width, int height, int* crops, unsigned char* croppedImage)) dlsym(handle, "crop_greyscale");
   if ((error = dlerror()) != NULL) {
     fprintf(stderr, "%s\n", error);
     exit(1);
