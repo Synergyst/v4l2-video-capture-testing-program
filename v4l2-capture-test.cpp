@@ -47,20 +47,22 @@
 #include <dlfcn.h>
 
 using namespace std;
-//std::atomic<bool> running;
 extern unsigned char *outputFrameGreyscale, *outputFrameGreyscaleAlt;
-std::mutex data_mutex;
+/*std::mutex data_mutex;
 std::condition_variable cv;
 bool ready = false;
+std::atomic<bool> running;*/
 
 void (*start_main)(int fd, const char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera);
 void (*start_alt)(int fd, const char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera);
 
 int main(int argc, char **argv) {
+  // Any console printouts will have a [main] prefix if sent from this binary
   int fd = -1, fdAlt = -1;
   char *device, *deviceAlt, *error;
   void *handle;
   fprintf(stderr, "[main] Attempting to load: libv4l2cap.so\n");
+  // Load the libv4l2cap.so dynamic shared library file, any console printouts will have a [cap] prefix if sent from the library function(s)
   handle = dlopen("libv4l2cap.so", RTLD_NOW);
   if (!handle) {
     fprintf(stderr, "[main] %s\n", dlerror());
@@ -91,18 +93,18 @@ int main(int argc, char **argv) {
   strcpy(deviceAlt, "/dev/video3");
   // Start the [cap] streaming thread(s) and run it/them in the background (TODO: have a way to choose between dual and single-camera modes, for now we will assume stereo is preferred so we start both)
   std::thread thread1(start_main, fd, device, 2, 640, 360, 6, true, true);
-  // thread1 has started
+  // thread1 has started, again, any console printouts will have a [cap] prefix if sent from the library function(s)
   std::this_thread::sleep_for(std::chrono::milliseconds(250));
   thread1.detach();
   std::thread thread2(start_alt, fdAlt, deviceAlt, 2, 640, 360, 6, true, false);
-  // thread2 has started
+  // thread2 has started, again, any console printouts will have a [cap] prefix if sent from the library function(s)
   std::this_thread::sleep_for(std::chrono::milliseconds(250));
   thread2.detach();
   fprintf(stderr, "\n[main] Started threads for [cap] devices, starting loop in [main] now..\n");
   // The [main] loop where we will eventually process the frame data from [cap] thread(s)
   while (true) {
     /* 
-     * TODO: Wait for and then pause the background loop(s) so we can access the data they stored into outputFrameGreyscale
+     * TODO: Wait for and then pause the background loop(s) so we can access the data they stored into outputFrameGreyscale and outputFrameGreyscaleAlt
      * 
      * Psuedo-code: 
      * waitForThenPause.thread1();
@@ -126,7 +128,10 @@ int main(int argc, char **argv) {
      * TODO: write a more detailed comment area for this section later when it becomes the priority. ;)
      */
     
-    // Write the scaled down contents of outputFrameGreyscale to stdout, this variable can hold up to the full resolution (which is a known-value of 1280x720 during development), though we scale this down in the [cap] thread to save on resources
+    /*
+     * Write the scaled down contents of outputFrameGreyscale to stdout as a temporary test to see if thread waiting/pausing works, this variable can hold
+     * up to the full resolution (which is a known-value of 1280x720 during development), though we scale this down in the [cap] thread to save on resources
+     */
     int status = write(1, outputFrameGreyscale, (640 * 360));
     if (status == -1)
       perror("write");

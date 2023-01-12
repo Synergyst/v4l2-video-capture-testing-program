@@ -45,9 +45,9 @@ const int KERNEL_SIZE = 3; // The kernel size of the Gaussian blur, default: 5
 const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
 //using namespace std;
 unsigned char *outputFrameGreyscale, *outputFrameGreyscaleAlt;
-extern std::mutex data_mutex;
+/*extern std::mutex data_mutex;
 extern std::condition_variable cv;
-extern bool ready;
+extern bool ready;*/
 
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
@@ -622,8 +622,8 @@ void start_main(int fd, const char* device_name, const int force_format, const i
       }
     }
     assert(buf.index < n_buffers);
-    std::unique_lock<std::mutex> lock(data_mutex);
-    cv.wait(lock, []{return ready;});
+    /*std::unique_lock<std::mutex> lock(data_mutex);
+    cv.wait(lock, []{return ready;});*/
     fprintf(stderr, "\n[cap] looping..\n");
     // modify data using the length variable
     if (isThermalCamera) {
@@ -646,9 +646,9 @@ void start_main(int fd, const char* device_name, const int force_format, const i
       }
       frame_number++;
     }*/
-    ready = false;
+    /*ready = false;
     lock.unlock();
-    cv.notify_one();
+    cv.notify_one();*/
     if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
       errno_exit("VIDIOC_QBUF");
     // EAGAIN - continue select loop
