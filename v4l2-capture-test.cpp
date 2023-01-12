@@ -25,6 +25,8 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <chrono>
+#include <atomic>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -42,8 +44,6 @@
 #include <linux/videodev2.h>
 #include <libv4l2.h>
 #include <omp.h>
-#include <thread>
-#include <atomic>
 #include <dlfcn.h>
 
 using namespace std;
@@ -51,6 +51,8 @@ using namespace std;
 //unsigned char *outputFrameGreyscale, *outputGreyscaleAlt;
 extern unsigned char* outputFrameGreyscale;
 extern std::mutex data_mutex;
+extern std::condition_variable cv;
+extern bool ready;
 
 void (*start_main)(int fd, const char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera);
 void (*start_alt)(int fd, const char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera);
@@ -97,18 +99,19 @@ int main(int argc, char **argv) {
   // Pass the address of the variable to the function
   //update_variable(&outputGreyscale);
   // outputFrameGreyscale
-  std::thread thread1(start_main, fd, device, 2, 640, 360, 15, true, true);
-  usleep(50 * 10000);
-  std::thread thread2(start_alt, fdAlt, deviceAlt, 2, 640, 360, 15, true, false);
+  std::thread thread1(start_main, fd, device, 2, 640, 360, 6, true, true);
+  std::this_thread::sleep_for(std::chrono::milliseconds(250));
   thread1.detach();
+  std::thread thread2(start_alt, fdAlt, deviceAlt, 2, 640, 360, 6, true, false);
+  std::this_thread::sleep_for(std::chrono::milliseconds(250));
   thread2.detach();
-  usleep(50 * 10000);
   fprintf(stderr, "\n[main] Started threads for devices\n");
   while (true) {
-    //usleep(250 * 10000);
     std::unique_lock<std::mutex> lock(data_mutex);
+    ready = true;
+    cv.notify_one();
+    cv.wait(lock, []{return !ready;});
     // access the modified data
-    //update_variable(&outputGreyscale);
     int status = write(1, outputFrameGreyscale, (640 * 360));
     if (status == -1)
       perror("write");

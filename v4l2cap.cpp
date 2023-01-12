@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <algorithm>
 #include <vector>
+#include <mutex>
+#include <condition_variable>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -38,9 +40,11 @@ unsigned int n_buffers;
 const int cropMatrix[2][4] = { {11, 4, 4, 2}, {1, 1, 1, 1} }; // Crop size matrix (scale up or down as needed)
 const int KERNEL_SIZE = 3; // The kernel size of the Gaussian blur, default: 5
 const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
-using namespace std;
+//using namespace std;
 unsigned char* outputFrameGreyscale;
 std::mutex data_mutex;
+std::condition_variable cv;
+bool ready = false;
 
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
@@ -616,28 +620,31 @@ void start_main(int fd, const char* device_name, const int force_format, const i
     }
     assert(buf.index < n_buffers);
     std::unique_lock<std::mutex> lock(data_mutex);
+    cv.wait(lock, []{return ready;});
     // modify data using the length variable
-    if (outputFrameGreyscale != NULL)
-      if (isThermalCamera) {
-        if (frame_number % framerateDivisor == 0) {
-          rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-          gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-          // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-          //frame_to_stdout(outputFrameGreyscale, scaledOutSize);
-          memset(outputFrameGreyscale, 0, startingSize);
-        }
-        frame_number++;
-      } else {
-        if (frame_number % framerateDivisor == 0) {
-          rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-          gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-          // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-          invert_greyscale(outputFrameGreyscale, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-          //frame_to_stdout(outputFrameGreyscale, scaledOutSize);
-          memset(outputFrameGreyscale, 0, startingSize);
-        }
-        frame_number++;
+    if (isThermalCamera) {
+      if (frame_number % framerateDivisor == 0) {
+        rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+        gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+        // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
+        //frame_to_stdout(outputFrameGreyscale, scaledOutSize);
+        //memset(outputFrameGreyscale, 0, startingSize);
       }
+      frame_number++;
+    } /*else {
+      if (frame_number % framerateDivisor == 0) {
+        rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+        gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+        // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
+        invert_greyscale(outputFrameGreyscale, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+        //frame_to_stdout(outputFrameGreyscale, scaledOutSize);
+        memset(outputFrameGreyscale, 0, startingSize);
+      }
+      frame_number++;
+    }*/
+    ready = false;
+    lock.unlock();
+    cv.notify_one();
     if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
       errno_exit("VIDIOC_QBUF");
     // EAGAIN - continue select loop
