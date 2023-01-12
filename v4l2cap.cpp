@@ -33,15 +33,14 @@ struct buffer {
   void* start;
   size_t length;
 };
-
 struct buffer* buffers;
 unsigned int n_buffers;
-
-using namespace std;
-
 const int cropMatrix[2][4] = { {11, 4, 4, 2}, {1, 1, 1, 1} }; // Crop size matrix (scale up or down as needed)
 const int KERNEL_SIZE = 3; // The kernel size of the Gaussian blur, default: 5
 const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
+using namespace std;
+unsigned char* outputFrameGreyscale;
+std::mutex data_mutex;
 
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
@@ -338,8 +337,7 @@ void frame_to_stdout(unsigned char* input, int size) {
   }
 }*/
 
-void start_main(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale, bool isTC358743, bool isThermalCamera, void* mut) {
-  std::mutex* data_mutex = (std::mutex*)mut;
+void start_main(int fd, const char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera) {
   int frame_number = 0, framerate = -1, framerateDivisor = 1, startingWidth = -1, startingHeight = -1, startingSize = -1, scaledOutSize = -1;
   unsigned int i;
   enum v4l2_buf_type type;
@@ -617,28 +615,29 @@ void start_main(int fd, char* device_name, const int force_format, const int sca
       }
     }
     assert(buf.index < n_buffers);
-    std::unique_lock<std::mutex> lock(*data_mutex);
+    std::unique_lock<std::mutex> lock(data_mutex);
     // modify data using the length variable
-    if (isThermalCamera) {
-      if (frame_number % framerateDivisor == 0) {
-        rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-        gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-        // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-        //frame_to_stdout(outputFrameGreyscale, scaledOutSize);
-        memset(outputFrameGreyscale, 0, startingSize);
+    if (outputFrameGreyscale != NULL)
+      if (isThermalCamera) {
+        if (frame_number % framerateDivisor == 0) {
+          rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+          gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+          // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
+          //frame_to_stdout(outputFrameGreyscale, scaledOutSize);
+          memset(outputFrameGreyscale, 0, startingSize);
+        }
+        frame_number++;
+      } else {
+        if (frame_number % framerateDivisor == 0) {
+          rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+          gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+          // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
+          invert_greyscale(outputFrameGreyscale, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
+          //frame_to_stdout(outputFrameGreyscale, scaledOutSize);
+          memset(outputFrameGreyscale, 0, startingSize);
+        }
+        frame_number++;
       }
-      frame_number++;
-    } else {
-      if (frame_number % framerateDivisor == 0) {
-        rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-        gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-        // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-        invert_greyscale(outputFrameGreyscale, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-        //frame_to_stdout(outputFrameGreyscale, scaledOutSize);
-        memset(outputFrameGreyscale, 0, startingSize);
-      }
-      frame_number++;
-    }
     if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
       errno_exit("VIDIOC_QBUF");
     // EAGAIN - continue select loop

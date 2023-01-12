@@ -48,16 +48,22 @@
 
 using namespace std;
 //std::atomic<bool> running;
+//unsigned char *outputFrameGreyscale, *outputGreyscaleAlt;
+extern unsigned char* outputFrameGreyscale;
+extern std::mutex data_mutex;
 
-void (*start_main)(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale, bool isTC358743, bool isThermalCamera, void* mut);
-void (*start_alt)(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale, bool isTC358743, bool isThermalCamera, void* mut);
+void (*start_main)(int fd, const char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera);
+void (*start_alt)(int fd, const char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera);
+
+// Declare the function in the shared library
+//extern "C" void update_variable(unsigned char** variable_address);
+
 
 int main(int argc, char **argv) {
   int fd = -1, fdAlt = -1;
   char *device, *deviceAlt;
-  unsigned char *outputGreyscale, *outputGreyscaleAlt;
-  outputGreyscale = (unsigned char*)malloc(1280 * 720 * sizeof(unsigned char));
-  memset(outputGreyscale, 0, (1280 * 720));
+  outputFrameGreyscale = (unsigned char*)malloc(1280 * 720 * sizeof(unsigned char));
+  memset(outputFrameGreyscale, 0, (1280 * 720));
   void *handle;
   fprintf(stderr, "[main] Attempting to load: libv4l2cap.so\n");
   char* error;
@@ -68,12 +74,12 @@ int main(int argc, char **argv) {
   }
   fprintf(stderr, "[main] Successfully loaded: libv4l2cap.so\n");
   dlerror(); // Clear any existing error
-  start_main = (void(*)(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale, bool isTC358743, bool isThermalCamera, void* mut)) dlsym(handle, "start_main");
+  start_main = (void(*)(int fd, const char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera)) dlsym(handle, "start_main");
   if ((error = dlerror()) != NULL) {
     fprintf(stderr, "[main] %s\n", error);
     exit(1);
   }
-  start_alt = (void(*)(int fd, char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, unsigned char* outputFrameGreyscale, bool isTC358743, bool isThermalCamera, void* mut)) dlsym(handle, "start_main");
+  start_alt = (void(*)(int fd, const char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera)) dlsym(handle, "start_main");
   if ((error = dlerror()) != NULL) {
     fprintf(stderr, "[main] %s\n", error);
     exit(1);
@@ -86,23 +92,27 @@ int main(int argc, char **argv) {
   deviceAlt = (char*)calloc(64, sizeof(char));
   strcpy(deviceAlt, "/dev/video3");
   // Start streaming thread(s)
-  std::mutex data_mutex;
+  //std::mutex data_mutex;
   //std::mutex data_mutex_alt;
-  std::thread thread1(start_main, fd, device, 2, 640, 360, 15, outputGreyscale, true, true, (void*)&data_mutex);
+  // Pass the address of the variable to the function
+  //update_variable(&outputGreyscale);
+  // outputFrameGreyscale
+  std::thread thread1(start_main, fd, device, 2, 640, 360, 15, true, true);
   usleep(50 * 10000);
-  std::thread thread2(start_alt, fdAlt, deviceAlt, 2, 640, 360, 15, outputGreyscaleAlt, true, false, (void*)&data_mutex);
+  std::thread thread2(start_alt, fdAlt, deviceAlt, 2, 640, 360, 15, true, false);
   thread1.detach();
   thread2.detach();
   usleep(50 * 10000);
   fprintf(stderr, "\n[main] Started threads for devices\n");
   while (true) {
+    //usleep(250 * 10000);
     std::unique_lock<std::mutex> lock(data_mutex);
     // access the modified data
-    int status = write(1, outputGreyscale, (640 * 360));
+    //update_variable(&outputGreyscale);
+    int status = write(1, outputFrameGreyscale, (640 * 360));
     if (status == -1)
       perror("write");
-    usleep(250 * 10000);
-    fprintf(stderr, "\n[main] looping..\n");
+    //fprintf(stderr, "\n[main] looping..\n");
   }
   // Cleanup imported shared library
   dlclose(handle);
