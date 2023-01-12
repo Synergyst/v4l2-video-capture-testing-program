@@ -25,6 +25,9 @@
 #include <omp.h>
 #include <dlfcn.h>
 #include "v4l2cap.h"
+//#include <semaphore>
+
+//std::unique_ptr<std::semaphore> sem(new std::semaphore(1));
 
 #define V4L_ALLFORMATS  3
 #define V4L_RAWFORMATS  1
@@ -41,7 +44,7 @@ const int cropMatrix[2][4] = { {11, 4, 4, 2}, {1, 1, 1, 1} }; // Crop size matri
 const int KERNEL_SIZE = 3; // The kernel size of the Gaussian blur, default: 5
 const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
 //using namespace std;
-unsigned char* outputFrameGreyscale;
+unsigned char *outputFrameGreyscale, *outputFrameGreyscaleAlt;
 extern std::mutex data_mutex;
 extern std::condition_variable cv;
 extern bool ready;

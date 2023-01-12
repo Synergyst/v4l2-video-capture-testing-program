@@ -6,7 +6,7 @@
 
 export LD_LIBRARY_PATH=/usr/local/lib/:$LD_LIBRARY_PATH
 mkdir -p ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/
-g++ -shared -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libv4l2edid.so -fPIC -O3 -std=c++20 -lv4l2 v4l2edid.cpp
+g++ -shared -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libv4l2edid.so -fPIC -O3 -std=gnu++20 -lv4l2 v4l2edid.cpp
 if [[ $? -eq 0 ]]; then
   echo "Successfully compiled EDID library"
   echo "We need to copy the libv4l2edid.so library file to /usr/local/lib/ and then run ldconfig"
@@ -25,7 +25,7 @@ fi
 #  echo "Build failed (libimgproc.so)"
 #  exit 1
 #fi
-g++ -shared -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libv4l2cap.so -fPIC -O3 -std=c++20 -fopenmp v4l2cap.cpp -ldl -lv4l2
+g++ -shared -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/libv4l2cap.so -fPIC -O3 -std=gnu++20 -fopenmp v4l2cap.cpp -ldl -lv4l2
 if [[ $? -eq 0 ]]; then
   echo "Successfully compiled shared library"
   echo "We need to copy the libv4l2cap.so library file to /usr/local/lib/ and then run ldconfig"
@@ -34,7 +34,7 @@ else
   echo "Build failed (libv4l2cap.so)"
   exit 1
 fi
-g++ -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/v4l2-capture-test -O3 -std=c++20 -fopenmp v4l2-capture-test.cpp -ldl -lv4l2 -lpthread -lv4l2cap
+g++ -o ~/projects/v4l2-video-capture-testing-program/bin/ARM/Debug/v4l2-capture-test -O3 -std=gnu++20 -fopenmp v4l2-capture-test.cpp -ldl -lv4l2 -lpthread -lv4l2cap
 if [[ $? -eq 0 ]]; then
   echo "Successfully compiled capture test program"
 else
