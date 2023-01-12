@@ -42,9 +42,9 @@ const int KERNEL_SIZE = 3; // The kernel size of the Gaussian blur, default: 5
 const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
 //using namespace std;
 unsigned char* outputFrameGreyscale;
-std::mutex data_mutex;
-std::condition_variable cv;
-bool ready = false;
+extern std::mutex data_mutex;
+extern std::condition_variable cv;
+extern bool ready;
 
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
@@ -621,6 +621,7 @@ void start_main(int fd, const char* device_name, const int force_format, const i
     assert(buf.index < n_buffers);
     std::unique_lock<std::mutex> lock(data_mutex);
     cv.wait(lock, []{return ready;});
+    fprintf(stderr, "\n[cap] looping..\n");
     // modify data using the length variable
     if (isThermalCamera) {
       if (frame_number % framerateDivisor == 0) {

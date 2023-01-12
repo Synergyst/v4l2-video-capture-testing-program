@@ -50,16 +50,12 @@ using namespace std;
 //std::atomic<bool> running;
 //unsigned char *outputFrameGreyscale, *outputGreyscaleAlt;
 extern unsigned char* outputFrameGreyscale;
-extern std::mutex data_mutex;
-extern std::condition_variable cv;
-extern bool ready;
+std::mutex data_mutex;
+std::condition_variable cv;
+bool ready = false;
 
 void (*start_main)(int fd, const char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera);
 void (*start_alt)(int fd, const char* device_name, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera);
-
-// Declare the function in the shared library
-//extern "C" void update_variable(unsigned char** variable_address);
-
 
 int main(int argc, char **argv) {
   int fd = -1, fdAlt = -1;
@@ -115,7 +111,8 @@ int main(int argc, char **argv) {
     int status = write(1, outputFrameGreyscale, (640 * 360));
     if (status == -1)
       perror("write");
-    //fprintf(stderr, "\n[main] looping..\n");
+    fprintf(stderr, "\n[main] looping..\n");
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
   }
   // Cleanup imported shared library
   dlclose(handle);
