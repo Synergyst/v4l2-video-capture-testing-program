@@ -61,6 +61,10 @@ int main(int argc, char **argv) {
   int fd = -1, fdAlt = -1;
   char *device, *deviceAlt, *error;
   void *handle;
+  outputFrameGreyscale = (unsigned char*)malloc(1280 * 720 * sizeof(unsigned char));
+  memset(outputFrameGreyscale, 0, (1280 * 720));
+  outputFrameGreyscaleAlt = (unsigned char*)malloc(1280 * 720 * sizeof(unsigned char));
+  memset(outputFrameGreyscaleAlt, 0, (1280 * 720));
   fprintf(stderr, "[main] Attempting to load: libv4l2cap.so\n");
   // Load the libv4l2cap.so dynamic shared library file, any console printouts will have a [cap] prefix if sent from the library function(s)
   handle = dlopen("libv4l2cap.so", RTLD_NOW);
@@ -107,16 +111,14 @@ int main(int argc, char **argv) {
      * TODO: Wait for and then pause the background loop(s) so we can access the data they stored into outputFrameGreyscale and outputFrameGreyscaleAlt
      * 
      * Psuedo-code: 
-     * waitForThenPause.thread1();
+     * waitForThenPause.thread1(mutex);
+     * waitForThenPause.thread2(mutexAlt);
      * 
      * thread1 is at the end of the loop and done storing the image frame to outputFrameGreyscale,
      * the [cap] loop in thread1 will pause. Frames in the [cap] loop are accessed from the capture hardware using DMA,
-     * so while [main] is working on processing the frame the [cap] loop should continue just fine once [main] resumes the [cap] thread which was paused.
+     * so while [main] is working on processing the frame the [cap] loop should continue later just fine once [main] resumes the [cap] thread(s) which are currently paused.
      * 
      * The same as described happens above with thread2, though with outputFrameGreyscaleAlt instead of outputFrameGreyscale of course.
-     * 
-     * Psuedo-code: 
-     * waitFor.thread2();
      */
     
     /*
@@ -135,9 +137,14 @@ int main(int argc, char **argv) {
     int status = write(1, outputFrameGreyscale, (640 * 360));
     if (status == -1)
       perror("write");
-    // Zero out frame buffers for the size of the original resolution (this can be improved of course later, the input resolution is a known-value of 1280x720 during development, so this is fine for now)
-    memset(outputFrameGreyscale, 0, (1280 * 720));
-    memset(outputFrameGreyscaleAlt, 0, (1280 * 720));
+    /*
+     * We are now done! We should now let the [cap] thread(s) resume with storing frame data into their respective frame buffer and start this
+     * loop all over again as it is probably close to our next frame by now as we are trying to acheive at least 10-30 frames/second depending on what effect we want :)
+     * 
+     * Psuedo-code:
+     * resume.thread1(mutex);
+     * resume.thread2(mutexAlt);
+     */
   }
   // Cleanup imported shared library
   dlclose(handle);

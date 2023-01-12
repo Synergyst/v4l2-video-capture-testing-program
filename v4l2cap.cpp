@@ -612,6 +612,7 @@ void start_main(int fd, const char* device_name, const int force_format, const i
     if (-1 == xioctl(fd, VIDIOC_DQBUF, &buf)) {
       switch (errno) {
       case EAGAIN:
+        fprintf(stderr, "[cap] EAGAIN\n");
         exit(0);
         //return 0;
       case EIO:
@@ -622,33 +623,43 @@ void start_main(int fd, const char* device_name, const int force_format, const i
       }
     }
     assert(buf.index < n_buffers);
-    /*std::unique_lock<std::mutex> lock(data_mutex);
-    cv.wait(lock, []{return ready;});*/
-    fprintf(stderr, "\n[cap] looping..\n");
-    // modify data using the length variable
     if (isThermalCamera) {
+      // thread1 / outputFrameGreyscale
       if (frame_number % framerateDivisor == 0) {
         rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
         gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-        // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-        //frame_to_stdout(outputFrameGreyscale, scaledOutSize);
         //memset(outputFrameGreyscale, 0, startingSize);
       }
       frame_number++;
-    } /*else {
+      /*
+       * We need to signal we are done and will pause until we get a resume signal from [main] via the mutex variable
+       *
+       * Psuedo-code:
+       * signalDoneAndWaitForResumeSignal(mutex);
+       *
+       * We got the signal to resume from [main] via the mutex variable, now we need to clear the contents of outputFrameGreyscale
+       *
+       */
+      memset(outputFrameGreyscale, 0, startingSize);
+    } else {
+      // thread2 / outputFrameGreyscaleAlt
       if (frame_number % framerateDivisor == 0) {
-        rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-        gaussianBlur(outputFrameGreyscale, scaledOutWidth, scaledOutHeight, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-        // Values from 0 to 125 gets set to 0. Then ramp 125 through to 130 to 255. Finally we should set 131 to 255 to a value of 0
-        invert_greyscale(outputFrameGreyscale, outputFrameGreyscale, scaledOutWidth, scaledOutHeight);
-        //frame_to_stdout(outputFrameGreyscale, scaledOutSize);
-        memset(outputFrameGreyscale, 0, startingSize);
+        rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, startingWidth, startingHeight, outputFrameGreyscaleAlt, scaledOutWidth, scaledOutHeight);
+        gaussianBlur(outputFrameGreyscaleAlt, scaledOutWidth, scaledOutHeight, outputFrameGreyscaleAlt, scaledOutWidth, scaledOutHeight);
+        invert_greyscale(outputFrameGreyscaleAlt, outputFrameGreyscaleAlt, scaledOutWidth, scaledOutHeight);
       }
       frame_number++;
-    }*/
-    /*ready = false;
-    lock.unlock();
-    cv.notify_one();*/
+      /*
+       * We need to signal we are done and will pause until we get a resume signal from [main] via the mutexAlt variable
+       * 
+       * Psuedo-code:
+       * signalDoneAndWaitForResumeSignal(mutexAlt);
+       * 
+       * We got the signal to resume from [main] via the mutexAlt variable, now we need to clear the contents of outputFrameGreyscaleAlt
+       * 
+       */
+      memset(outputFrameGreyscaleAlt, 0, startingSize);
+    }
     if (-1 == xioctl(fd, VIDIOC_QBUF, &buf))
       errno_exit("VIDIOC_QBUF");
     // EAGAIN - continue select loop
