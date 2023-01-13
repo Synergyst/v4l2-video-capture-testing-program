@@ -72,16 +72,18 @@ struct devInfo {
   unsigned int n_buffers;
   bool isTC358743 = true,
     isThermalCamera = true;
-  unsigned char* outputFrameGreyscale;
+  unsigned char *outputFrameGreyscale;
+  char *device;
 };
+
 struct buffer* buffersMain;
 struct buffer* buffersAlt;
 struct devInfo* devInfoMain;
 struct devInfo* devInfoAlt;
+
 const int cropMatrix[2][4] = { {11, 4, 4, 2}, {1, 1, 1, 1} }; // Crop size matrix (scale up or down as needed)
 const int KERNEL_SIZE = 3; // The kernel size of the Gaussian blur, default: 5
 const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
-char *device, *deviceAlt;
 
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
@@ -357,27 +359,27 @@ void frame_to_stdout(unsigned char* input, int size) {
     perror("write");
 }
 
-int init_dev(const char* device_name, struct buffer* buffers, struct devInfo *devInfos) {
+int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
   devInfos = (devInfo*)calloc(1, sizeof(*devInfos));
   unsigned int i;
   enum v4l2_buf_type type;
-  fprintf(stderr, "\n[cap] Starting V4L2 capture testing program with the following V4L2 device: %s\n", device_name);
+  fprintf(stderr, "\n[cap] Starting V4L2 capture testing program with the following V4L2 device: %s\n", devInfos->device);
 
   struct stat st;
-  if (-1 == stat(device_name, &st)) {
-    fprintf(stderr, "Cannot identify '%s': %d, %s\n", device_name, errno, strerror(errno));
+  if (-1 == stat(devInfos->device, &st)) {
+    fprintf(stderr, "Cannot identify '%s': %d, %s\n", devInfos->device, errno, strerror(errno));
     exit(EXIT_FAILURE);
   }
   if (!S_ISCHR(st.st_mode)) {
-    fprintf(stderr, "%s is no device\n", device_name);
+    fprintf(stderr, "%s is no device\n", devInfos->device);
     exit(EXIT_FAILURE);
   }
-  devInfos->fd = open(device_name, O_RDWR | O_NONBLOCK, 0);
+  devInfos->fd = open(devInfos->device, O_RDWR | O_NONBLOCK, 0);
   if (-1 == devInfos->fd) {
-    fprintf(stderr, "Cannot open '%s': %d, %s\n", device_name, errno, strerror(errno));
+    fprintf(stderr, "Cannot open '%s': %d, %s\n", devInfos->device, errno, strerror(errno));
     exit(EXIT_FAILURE);
   }
-  fprintf(stderr, "[cap] Opened V4L2 device: %s\n", device_name);
+  fprintf(stderr, "[cap] Opened V4L2 device: %s\n", devInfos->device);
 
   struct v4l2_capability cap;
   struct v4l2_cropcap cropcap;
@@ -386,14 +388,14 @@ int init_dev(const char* device_name, struct buffer* buffers, struct devInfo *de
   unsigned int min;
   if (-1 == xioctl(devInfos->fd, VIDIOC_QUERYCAP, &cap)) {
     if (EINVAL == errno) {
-      fprintf(stderr, "%s is no V4L2 device\n", device_name);
+      fprintf(stderr, "%s is no V4L2 device\n", devInfos->device);
       exit(EXIT_FAILURE);
     } else {
       errno_exit("VIDIOC_QUERYCAP");
     }
   }
   if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) {
-    fprintf(stderr, "%s is no video capture device\n", device_name);
+    fprintf(stderr, "%s is no video capture device\n", devInfos->device);
     exit(EXIT_FAILURE);
   }
   // Select video input, video standard and tune here.
@@ -417,7 +419,7 @@ int init_dev(const char* device_name, struct buffer* buffers, struct devInfo *de
   }
   CLEAR(fmt);
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  fprintf(stderr, "[cap] Forcing format for %s to: %d\n", device_name, devInfos->force_format);
+  fprintf(stderr, "[cap] Forcing format for %s to: %d\n", devInfos->device, devInfos->force_format);
   if (devInfos->force_format) {
     if (devInfos->force_format == 3) {
       fmt.fmt.pix.width = devInfos->startingWidth;
@@ -457,14 +459,14 @@ int init_dev(const char* device_name, struct buffer* buffers, struct devInfo *de
   req.memory = V4L2_MEMORY_MMAP;
   if (-1 == xioctl(devInfos->fd, VIDIOC_REQBUFS, &req)) {
     if (EINVAL == errno) {
-      fprintf(stderr, "%s does not support memory mapping\n", device_name);
+      fprintf(stderr, "%s does not support memory mapping\n", devInfos->device);
       exit(EXIT_FAILURE);
     } else {
       errno_exit("VIDIOC_REQBUFS");
     }
   }
   if (req.count < 2) {
-    fprintf(stderr, "Insufficient buffer memory on %s\n", device_name);
+    fprintf(stderr, "Insufficient buffer memory on %s\n", devInfos->device);
     exit(EXIT_FAILURE);
   }
   buffers = (buffer*)calloc(req.count, sizeof(*buffers));
@@ -494,7 +496,7 @@ int init_dev(const char* device_name, struct buffer* buffers, struct devInfo *de
   memset(&timings, 0, sizeof timings);
   ret = xioctl(devInfos->fd, VIDIOC_QUERY_DV_TIMINGS, &timings);
   if (ret >= 0) {
-    fprintf(stderr, "[cap] QUERY_DV_TIMINGS for %s: %ux%u pixclk %llu\n", device_name, timings.bt.width, timings.bt.height, timings.bt.pixelclock);
+    fprintf(stderr, "[cap] QUERY_DV_TIMINGS for %s: %ux%u pixclk %llu\n", devInfos->device, timings.bt.width, timings.bt.height, timings.bt.pixelclock);
     devInfos->startingWidth = timings.bt.width;
     devInfos->startingHeight = timings.bt.height;
     devInfos->startingSize = devInfos->startingWidth * devInfos->startingHeight * sizeof(unsigned char);
@@ -515,7 +517,7 @@ int init_dev(const char* device_name, struct buffer* buffers, struct devInfo *de
       devInfos->framerateDivisor = (devInfos->framerate / devInfos->targetFramerate);
       int rawInputThroughput = (float)((float)(devInfos->framerate * devInfos->startingSize * 2.0F) / 125000.0F); // Measured in megabits/sec based on input framerate
       int rawOutputThroughput = (float)((((float)devInfos->framerate / devInfos->framerateDivisor) * devInfos->scaledOutSize) / 125000.0F); // Measured in megabits/sec based on output framerate
-      fprintf(stderr, "[cap] device_name: %s, isTC358743: %d, isThermalCamera: %d, startingWidth: %d, startingHeight: %d, startingSize: %d, scaledOutWidth: %d, scaledOutHeight: %d, scaledOutSize: %d, framerate: %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", device_name, devInfos->isTC358743, devInfos->isThermalCamera, devInfos->startingWidth, devInfos->startingHeight, devInfos->startingSize, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->scaledOutSize, devInfos->framerate, devInfos->framerateDivisor, devInfos->targetFramerate, rawInputThroughput, rawOutputThroughput);
+      fprintf(stderr, "[cap] device_name: %s, isTC358743: %d, isThermalCamera: %d, startingWidth: %d, startingHeight: %d, startingSize: %d, scaledOutWidth: %d, scaledOutHeight: %d, scaledOutSize: %d, framerate: %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", devInfos->device, devInfos->isTC358743, devInfos->isThermalCamera, devInfos->startingWidth, devInfos->startingHeight, devInfos->startingSize, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->scaledOutSize, devInfos->framerate, devInfos->framerateDivisor, devInfos->targetFramerate, rawInputThroughput, rawOutputThroughput);
     }
   } else {
     memset(&std, 0, sizeof std);
@@ -533,7 +535,7 @@ int init_dev(const char* device_name, struct buffer* buffers, struct devInfo *de
     }
   }
   // TODO: Have some way of passing flags from main() so we can handle settings in this area above
-  fprintf(stderr, "[cap] Initialized V4L2 device: %s\n", device_name);
+  fprintf(stderr, "[cap] Initialized V4L2 device: %s\n", devInfos->device);
   for (i = 0; i < devInfos->n_buffers; ++i) {
     struct v4l2_buffer buf;
     CLEAR(buf);
@@ -546,11 +548,11 @@ int init_dev(const char* device_name, struct buffer* buffers, struct devInfo *de
   type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   if (-1 == xioctl(devInfos->fd, VIDIOC_STREAMON, &type))
     errno_exit("VIDIOC_STREAMON");
-  fprintf(stderr, "[cap] Started capturing from V4L2 device: %s\n", device_name);
+  fprintf(stderr, "[cap] Started capturing from V4L2 device: %s\n", devInfos->device);
   return 0;
 }
 
-int get_frame(const char* device_name, struct buffer *buffers, struct devInfo *devInfos, enum captureType) {
+int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capType) {
   fd_set fds;
   struct timeval tv;
   int r;
@@ -588,7 +590,6 @@ int get_frame(const char* device_name, struct buffer *buffers, struct devInfo *d
     }
   }
   assert(buf.index < devInfos->n_buffers);
-  captureType capType;
   switch (capType) {
   case CHEAP_CONVERTER_BOX:
     if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
@@ -610,34 +611,35 @@ int get_frame(const char* device_name, struct buffer *buffers, struct devInfo *d
   return 0;
 }
 
-int deinit_bufs(const char* device_name, struct buffer *buffers, struct devInfo *devInfos) {
+int deinit_bufs(struct buffer *buffers, struct devInfo *devInfos) {
   for (unsigned int i = 0; i < devInfos->n_buffers; ++i)
     if (-1 == munmap(buffers[i].start, buffers[i].length))
       errno_exit("munmap");
   free(buffers);
-  fprintf(stderr, "[cap] Uninitialized V4L2 device: %s\n", device_name);
+  fprintf(stderr, "[cap] Uninitialized V4L2 device: %s\n", devInfos->device);
 
   if (-1 == close(devInfos->fd))
     errno_exit("close");
   devInfos->fd = -1;
-  fprintf(stderr, "[cap] Closed V4L2 device: %s\n", device_name);
+  fprintf(stderr, "[cap] Closed V4L2 device: %s\n", devInfos->device);
   fprintf(stderr, "\n");
   return 0;
 }
 
 int main(int argc, char **argv) {
-  device = (char*)calloc(64, sizeof(char));
-  strcpy(device, "/dev/video2");
-  deviceAlt = (char*)calloc(64, sizeof(char));
-  strcpy(deviceAlt, "/dev/video3");
-  init_dev(device, buffersMain, devInfoMain);
-  init_dev(deviceAlt, buffersAlt, devInfoAlt);
+  devInfoMain->device = (char*)calloc(64, sizeof(char));
+  strcpy(devInfoMain->device, "/dev/video2");
+  devInfoAlt->device = (char*)calloc(64, sizeof(char));
+  strcpy(devInfoAlt->device, "/dev/video3");
+  init_dev(buffersMain, devInfoMain);
+  init_dev(buffersAlt, devInfoAlt);
   while (true) {
-    int status = write(1, devInfoMain->outputFrameGreyscale, (640 * 360));
-    if (status == -1)
-      perror("write");
+    get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
+    //get_frame(buffersMain, devInfoMain, EXPENSIVE_CONVERTER_BOX);
+    //get_frame(buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
+    //get_frame(buffersAlt, devInfoAlt, EXPENSIVE_CONVERTER_BOX);
   }
-  deinit_bufs(device, buffersMain, devInfoMain);
-  deinit_bufs(deviceAlt, buffersAlt, devInfoAlt);
+  deinit_bufs(buffersMain, devInfoMain);
+  deinit_bufs(buffersAlt, devInfoAlt);
   return 0;
 }
