@@ -49,6 +49,10 @@
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 
 enum captureType {
+  /*
+   * TODO: Handle framerate divisor value differences between the two different models of
+   * analog (CVBS) to HDMI converter boxes where this enum is passed later in the program
+   */
   CHEAP_CONVERTER_BOX,
   EXPENSIVE_CONVERTER_BOX
 };
@@ -653,17 +657,16 @@ int main(int argc, char **argv) {
   }
   init_vars(devInfoMain, 2, 640, 360, 10, true, true, argv[1]);
   init_vars(devInfoAlt, 2, 640, 360, 10, true, true, argv[2]);
-  // CHANGEME
   fprintf(stderr, "Starting V4L2 capture program using device(s): %s %s\n", devInfoMain->device, devInfoAlt->device);
   init_dev(buffersMain, devInfoMain);
   init_dev(buffersAlt, devInfoAlt);
   while (true) {
-    //get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
+    get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
     //get_frame(buffersMain, devInfoMain, EXPENSIVE_CONVERTER_BOX);
     //get_frame(buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
     //get_frame(buffersAlt, devInfoAlt, EXPENSIVE_CONVERTER_BOX);
   }
   deinit_bufs(buffersMain, devInfoMain);
-  //deinit_bufs(buffersAlt, devInfoAlt);
+  deinit_bufs(buffersAlt, devInfoAlt);
   return 0;
 }
