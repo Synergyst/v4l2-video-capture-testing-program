@@ -7,14 +7,14 @@
 export LD_LIBRARY_PATH=/usr/local/lib/:$LD_LIBRARY_PATH
 mkdir -p ~/projects/v4l2-capture-test/bin/ARM/Debug/
 g++ -shared -o ~/projects/v4l2-capture-test/bin/ARM/Debug/libv4l2edid.so -fPIC -O3 -std=gnu++20 -lv4l2 v4l2edid.cpp
-if [[ $? -eq 0 ]]; then
-  echo "Successfully built: libv4l2edid.so"
-  #echo "We need to copy the libv4l2edid.so library file to /usr/local/lib/ and then run ldconfig"
-  sudo cp ~/projects/v4l2-capture-test/bin/ARM/Debug/libv4l2edid.so /usr/local/lib/ && sudo ldconfig
-else
-  echo "Build failed (libv4l2edid.so)"
-  exit 1
-fi
+#if [[ $? -eq 0 ]]; then
+#  echo "Successfully built: libv4l2edid.so"
+#  #echo "We need to copy the libv4l2edid.so library file to /usr/local/lib/ and then run ldconfig"
+#  sudo cp ~/projects/v4l2-capture-test/bin/ARM/Debug/libv4l2edid.so /usr/local/lib/ && sudo ldconfig
+#else
+#  echo "Build failed (libv4l2edid.so)"
+#  exit 1
+#fi
 g++ -o ~/projects/v4l2-capture-test/bin/ARM/Debug/v4l2-capture-test -O3 -std=gnu++20 -fopenmp v4l2-capture-test.cpp -ldl -lv4l2 -lpthread
 if [[ $? -eq 0 ]]; then
   echo "Successfully built: v4l2-capture-test"

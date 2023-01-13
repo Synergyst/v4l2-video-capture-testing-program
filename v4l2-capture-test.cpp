@@ -57,18 +57,18 @@ struct buffer {
   size_t length;
 };
 struct devInfo {
-  int frame_number = 0,
-    framerate = -1,
-    framerateDivisor = 1,
-    startingWidth = -1,
-    startingHeight = -1,
-    startingSize = -1,
-    scaledOutSize = -1,
-    force_format = 2,
-    scaledOutWidth = 640,
-    scaledOutHeight = 360,
-    targetFramerate = 10,
-    fd = -1;
+  int frame_number,
+    framerate,
+    framerateDivisor,
+    startingWidth,
+    startingHeight,
+    startingSize,
+    scaledOutSize,
+    force_format,
+    scaledOutWidth,
+    scaledOutHeight,
+    targetFramerate,
+    fd;
   unsigned int n_buffers;
   bool isTC358743 = true,
     isThermalCamera = true;
@@ -360,23 +360,23 @@ void frame_to_stdout(unsigned char* input, int size) {
 }
 
 int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
-  devInfos = (devInfo*)calloc(1, sizeof(*devInfos));
+  // We need to initialize our device and then configure our TC358743 if we are even using one
   unsigned int i;
   enum v4l2_buf_type type;
   fprintf(stderr, "\n[cap] Starting V4L2 capture testing program with the following V4L2 device: %s\n", devInfos->device);
 
   struct stat st;
   if (-1 == stat(devInfos->device, &st)) {
-    fprintf(stderr, "Cannot identify '%s': %d, %s\n", devInfos->device, errno, strerror(errno));
+    fprintf(stderr, "[cap] Cannot identify '%s': %d, %s\n", devInfos->device, errno, strerror(errno));
     exit(EXIT_FAILURE);
   }
   if (!S_ISCHR(st.st_mode)) {
-    fprintf(stderr, "%s is no device\n", devInfos->device);
+    fprintf(stderr, "[cap] %s is no device\n", devInfos->device);
     exit(EXIT_FAILURE);
   }
   devInfos->fd = open(devInfos->device, O_RDWR | O_NONBLOCK, 0);
   if (-1 == devInfos->fd) {
-    fprintf(stderr, "Cannot open '%s': %d, %s\n", devInfos->device, errno, strerror(errno));
+    fprintf(stderr, "[cap] Cannot open '%s': %d, %s\n", devInfos->device, errno, strerror(errno));
     exit(EXIT_FAILURE);
   }
   fprintf(stderr, "[cap] Opened V4L2 device: %s\n", devInfos->device);
@@ -388,14 +388,14 @@ int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
   unsigned int min;
   if (-1 == xioctl(devInfos->fd, VIDIOC_QUERYCAP, &cap)) {
     if (EINVAL == errno) {
-      fprintf(stderr, "%s is no V4L2 device\n", devInfos->device);
+      fprintf(stderr, "[cap] %s is no V4L2 device\n", devInfos->device);
       exit(EXIT_FAILURE);
     } else {
       errno_exit("VIDIOC_QUERYCAP");
     }
   }
   if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) {
-    fprintf(stderr, "%s is no video capture device\n", devInfos->device);
+    fprintf(stderr, "[cap] %s is no video capture device\n", devInfos->device);
     exit(EXIT_FAILURE);
   }
   // Select video input, video standard and tune here.
@@ -459,19 +459,19 @@ int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
   req.memory = V4L2_MEMORY_MMAP;
   if (-1 == xioctl(devInfos->fd, VIDIOC_REQBUFS, &req)) {
     if (EINVAL == errno) {
-      fprintf(stderr, "%s does not support memory mapping\n", devInfos->device);
+      fprintf(stderr, "[cap] %s does not support memory mapping\n", devInfos->device);
       exit(EXIT_FAILURE);
     } else {
       errno_exit("VIDIOC_REQBUFS");
     }
   }
   if (req.count < 2) {
-    fprintf(stderr, "Insufficient buffer memory on %s\n", devInfos->device);
+    fprintf(stderr, "[cap] Insufficient buffer memory on %s\n", devInfos->device);
     exit(EXIT_FAILURE);
   }
   buffers = (buffer*)calloc(req.count, sizeof(*buffers));
   if (!buffers) {
-    fprintf(stderr, "Out of memory\n");
+    fprintf(stderr, "[cap] Out of memory\n");
     exit(EXIT_FAILURE);
   }
   for (devInfos->n_buffers = 0; devInfos->n_buffers < req.count; ++devInfos->n_buffers) {
@@ -507,14 +507,16 @@ int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
     ret = xioctl(devInfos->fd, VIDIOC_S_DV_TIMINGS, &timings);
     if (ret < 0) {
       fprintf(stderr, "[cap] Failed to set DV timings\n");
-      exit(1);
+      return 1;
     } else {
       double tot_height, tot_width;
       const struct v4l2_bt_timings* bt = &timings.bt;
       tot_height = bt->height + bt->vfrontporch + bt->vsync + bt->vbackporch + bt->il_vfrontporch + bt->il_vsync + bt->il_vbackporch;
       tot_width = bt->width + bt->hfrontporch + bt->hsync + bt->hbackporch;
       devInfos->framerate = (unsigned int)((double)bt->pixelclock / (tot_width * tot_height));
+      fprintf(stderr, "[cap] Test\n");
       devInfos->framerateDivisor = (devInfos->framerate / devInfos->targetFramerate);
+      fprintf(stderr, "[cap] Test\n");
       int rawInputThroughput = (float)((float)(devInfos->framerate * devInfos->startingSize * 2.0F) / 125000.0F); // Measured in megabits/sec based on input framerate
       int rawOutputThroughput = (float)((((float)devInfos->framerate / devInfos->framerateDivisor) * devInfos->scaledOutSize) / 125000.0F); // Measured in megabits/sec based on output framerate
       fprintf(stderr, "[cap] device_name: %s, isTC358743: %d, isThermalCamera: %d, startingWidth: %d, startingHeight: %d, startingSize: %d, scaledOutWidth: %d, scaledOutHeight: %d, scaledOutSize: %d, framerate: %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", devInfos->device, devInfos->isTC358743, devInfos->isThermalCamera, devInfos->startingWidth, devInfos->startingHeight, devInfos->startingSize, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->scaledOutSize, devInfos->framerate, devInfos->framerateDivisor, devInfos->targetFramerate, rawInputThroughput, rawOutputThroughput);
@@ -527,7 +529,7 @@ int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
       ret = xioctl(devInfos->fd, VIDIOC_S_STD, &std);
       if (ret < 0) {
         fprintf(stderr, "[cap] Failed to set standard\n");
-        exit(1);
+        return 1;
       } else {
         // SD video - assume 50Hz / 25fps
         devInfos->framerate = 25;
@@ -590,21 +592,18 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
     }
   }
   assert(buf.index < devInfos->n_buffers);
-  switch (capType) {
-  case CHEAP_CONVERTER_BOX:
-    if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
-      rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
-      gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
-    }
-    devInfos->frame_number++;
-  case EXPENSIVE_CONVERTER_BOX:
-    if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
-      rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
-      gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
-      invert_greyscale(devInfos->outputFrameGreyscale, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
-    }
-    devInfos->frame_number++;
+  if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
+    rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
+    gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
+    frame_to_stdout(devInfos->outputFrameGreyscale, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
   }
+  devInfos->frame_number++;
+  /*if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
+    rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
+    gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
+    invert_greyscale(devInfos->outputFrameGreyscale, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
+    devInfos->frame_number++;
+  }*/
   if (-1 == xioctl(devInfos->fd, VIDIOC_QBUF, &buf))
     errno_exit("VIDIOC_QBUF");
   // EAGAIN - continue select loop
@@ -612,6 +611,7 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
 }
 
 int deinit_bufs(struct buffer *buffers, struct devInfo *devInfos) {
+  // We are using DMA (Direct-Memory-Access), so we shouldn't have much to cleanup
   for (unsigned int i = 0; i < devInfos->n_buffers; ++i)
     if (-1 == munmap(buffers[i].start, buffers[i].length))
       errno_exit("munmap");
@@ -626,20 +626,40 @@ int deinit_bufs(struct buffer *buffers, struct devInfo *devInfos) {
   return 0;
 }
 
+int init_vars(struct devInfo* devInfos, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera, const char *dev_name) {
+  devInfos = (devInfo*)calloc(1, sizeof(*devInfos));
+  devInfos->device = (char*)calloc(64, sizeof(char));
+  strcpy(devInfos->device, dev_name);
+  devInfos->frame_number = 0,
+    devInfos->framerate = -1,
+    devInfos->framerateDivisor = 1,
+    devInfos->startingWidth = -1,
+    devInfos->startingHeight = -1,
+    devInfos->startingSize = -1,
+    devInfos->scaledOutSize = (scaledOutWidth * scaledOutHeight),
+    devInfos->force_format = force_format,
+    devInfos->scaledOutWidth = scaledOutWidth,
+    devInfos->scaledOutHeight = scaledOutHeight,
+    devInfos->targetFramerate = targetFramerate,
+    devInfos->fd = -1,
+    devInfos->isTC358743 = isTC358743,
+    devInfos->isThermalCamera = isThermalCamera;
+  return 0;
+}
+
 int main(int argc, char **argv) {
-  devInfoMain->device = (char*)calloc(64, sizeof(char));
-  strcpy(devInfoMain->device, "/dev/video2");
-  devInfoAlt->device = (char*)calloc(64, sizeof(char));
-  strcpy(devInfoAlt->device, "/dev/video3");
+  fprintf(stderr, "Starting V4L2 capture program..\n");
+  init_vars(devInfoMain, 2, 640, 360, 10, true, true, "/dev/video2");
+  init_vars(devInfoAlt, 2, 640, 360, 10, true, true, "/dev/video3");
   init_dev(buffersMain, devInfoMain);
-  init_dev(buffersAlt, devInfoAlt);
+  //init_dev(buffersAlt, devInfoAlt);
   while (true) {
-    get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
+    //get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
     //get_frame(buffersMain, devInfoMain, EXPENSIVE_CONVERTER_BOX);
     //get_frame(buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
     //get_frame(buffersAlt, devInfoAlt, EXPENSIVE_CONVERTER_BOX);
   }
   deinit_bufs(buffersMain, devInfoMain);
-  deinit_bufs(buffersAlt, devInfoAlt);
+  //deinit_bufs(buffersAlt, devInfoAlt);
   return 0;
 }
