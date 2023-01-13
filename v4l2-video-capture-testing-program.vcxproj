@@ -81,7 +81,6 @@
       <CppLanguageStandard Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">gnu++20</CppLanguageStandard>
     </None>
     <None Include="v4l2-video-capture-testing-program-porting.rs" />
-    <None Include="v4l2cap.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="v4l2-ctl.h" />
@@ -89,12 +88,9 @@
   <ItemGroup>
     <None Include="v4l2edid.cpp" />
   </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="v4l2cap.h" />
-  </ItemGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">
     <RemotePostBuildEvent>
-      <Command>chmod +x ~/projects/v4l2-video-capture-testing-program/build.sh ; dos2unix ~/projects/v4l2-video-capture-testing-program/build.sh ; ~/projects/v4l2-video-capture-testing-program/build.sh</Command>
+      <Command>chmod +x ~/projects/$(ProjectName)/build.sh ; dos2unix ~/projects/$(ProjectName)/build.sh ; ~/projects/$(ProjectName)/build.sh</Command>
     </RemotePostBuildEvent>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
