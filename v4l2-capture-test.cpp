@@ -514,9 +514,7 @@ int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
       tot_height = bt->height + bt->vfrontporch + bt->vsync + bt->vbackporch + bt->il_vfrontporch + bt->il_vsync + bt->il_vbackporch;
       tot_width = bt->width + bt->hfrontporch + bt->hsync + bt->hbackporch;
       devInfos->framerate = (unsigned int)((double)bt->pixelclock / (tot_width * tot_height));
-      fprintf(stderr, "[cap] Test\n");
       devInfos->framerateDivisor = (devInfos->framerate / devInfos->targetFramerate);
-      fprintf(stderr, "[cap] Test\n");
       int rawInputThroughput = (float)((float)(devInfos->framerate * devInfos->startingSize * 2.0F) / 125000.0F); // Measured in megabits/sec based on input framerate
       int rawOutputThroughput = (float)((((float)devInfos->framerate / devInfos->framerateDivisor) * devInfos->scaledOutSize) / 125000.0F); // Measured in megabits/sec based on output framerate
       fprintf(stderr, "[cap] device_name: %s, isTC358743: %d, isThermalCamera: %d, startingWidth: %d, startingHeight: %d, startingSize: %d, scaledOutWidth: %d, scaledOutHeight: %d, scaledOutSize: %d, framerate: %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", devInfos->device, devInfos->isTC358743, devInfos->isThermalCamera, devInfos->startingWidth, devInfos->startingHeight, devInfos->startingSize, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->scaledOutSize, devInfos->framerate, devInfos->framerateDivisor, devInfos->targetFramerate, rawInputThroughput, rawOutputThroughput);
@@ -598,12 +596,12 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
     frame_to_stdout(devInfos->outputFrameGreyscale, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
   }
   devInfos->frame_number++;
-  /*if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
+  if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
     rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
     gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
     invert_greyscale(devInfos->outputFrameGreyscale, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
     devInfos->frame_number++;
-  }*/
+  }
   if (-1 == xioctl(devInfos->fd, VIDIOC_QBUF, &buf))
     errno_exit("VIDIOC_QBUF");
   // EAGAIN - continue select loop
@@ -626,8 +624,7 @@ int deinit_bufs(struct buffer *buffers, struct devInfo *devInfos) {
   return 0;
 }
 
-int init_vars(struct devInfo* devInfos, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera, const char *dev_name) {
-  devInfos = (devInfo*)calloc(1, sizeof(*devInfos));
+int init_vars(struct devInfo* devInfos, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera, char *dev_name) {
   devInfos->device = (char*)calloc(64, sizeof(char));
   strcpy(devInfos->device, dev_name);
   devInfos->frame_number = 0,
@@ -648,11 +645,18 @@ int init_vars(struct devInfo* devInfos, const int force_format, const int scaled
 }
 
 int main(int argc, char **argv) {
-  fprintf(stderr, "Starting V4L2 capture program..\n");
-  init_vars(devInfoMain, 2, 640, 360, 10, true, true, "/dev/video2");
-  init_vars(devInfoAlt, 2, 640, 360, 10, true, true, "/dev/video3");
+  devInfoMain = (devInfo*)calloc(1, sizeof(*devInfoMain));
+  devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
+  if (argc < 3) {
+    fprintf(stderr, "Usage: %s <V4L2 main device> <V4L2 alt device>\n\nExample: %s /dev/video0 /dev/video1\n", argv[0], argv[0]);
+    return 1;
+  }
+  init_vars(devInfoMain, 2, 640, 360, 10, true, true, argv[1]);
+  init_vars(devInfoAlt, 2, 640, 360, 10, true, true, argv[2]);
+  // CHANGEME
+  fprintf(stderr, "Starting V4L2 capture program using device(s): %s %s\n", devInfoMain->device, devInfoAlt->device);
   init_dev(buffersMain, devInfoMain);
-  //init_dev(buffersAlt, devInfoAlt);
+  init_dev(buffersAlt, devInfoAlt);
   while (true) {
     //get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
     //get_frame(buffersMain, devInfoMain, EXPENSIVE_CONVERTER_BOX);
