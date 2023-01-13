@@ -473,6 +473,7 @@ int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
     fprintf(stderr, "[cap] Insufficient buffer memory on %s\n", devInfos->device);
     exit(EXIT_FAILURE);
   }
+  // FIXME: Move this section to main()
   buffers = (buffer*)calloc(req.count, sizeof(*buffers));
   if (!buffers) {
     fprintf(stderr, "[cap] Out of memory\n");
@@ -492,7 +493,7 @@ int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
       errno_exit("mmap");
   }
 
-  // TODO: Have some way of passing flags from main() so we can handle settings in this area
+  // TODO: Have some way of passing flags from main() so we can handle settings in this area regarding if we really need DV timings to be set
   struct v4l2_dv_timings timings;
   v4l2_std_id std;
   int ret;
@@ -505,8 +506,6 @@ int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
     devInfos->startingHeight = timings.bt.height;
     devInfos->startingSize = devInfos->startingWidth * devInfos->startingHeight * sizeof(unsigned char);
     devInfos->scaledOutSize = devInfos->scaledOutWidth * devInfos->scaledOutHeight;
-    devInfos->outputFrameGreyscale = (unsigned char*)malloc(devInfos->startingSize);
-    memset(devInfos->outputFrameGreyscale, 0, devInfos->startingSize);
     // Can read DV timings, so set them.
     ret = xioctl(devInfos->fd, VIDIOC_S_DV_TIMINGS, &timings);
     if (ret < 0) {
@@ -557,6 +556,8 @@ int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
 }
 
 int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capType) {
+  devInfos->outputFrameGreyscale = (unsigned char*)malloc(devInfos->startingSize);
+  memset(devInfos->outputFrameGreyscale, 0, devInfos->startingSize);
   fd_set fds;
   struct timeval tv;
   int r;
@@ -595,17 +596,21 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
   }
   assert(buf.index < devInfos->n_buffers);
   if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
+    fprintf(stderr, "devInfos->startingWidth: %d, devInfos->startingHeight: %d, devInfos->scaledOutWidth: %d, devInfos->scaledOutHeight: %d\n", devInfos->startingWidth, devInfos->startingHeight, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
+    fprintf(stderr, "buf.memory: %d\n", buf.memory);
     rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
+    fprintf(stderr, "Test\n");
     gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
     frame_to_stdout(devInfos->outputFrameGreyscale, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
   }
   devInfos->frame_number++;
-  if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
+  /*if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
     rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
     gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
     invert_greyscale(devInfos->outputFrameGreyscale, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
-    devInfos->frame_number++;
+    frame_to_stdout(devInfos->outputFrameGreyscale, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
   }
+  devInfos->frame_number++;*/
   if (-1 == xioctl(devInfos->fd, VIDIOC_QBUF, &buf))
     errno_exit("VIDIOC_QBUF");
   // EAGAIN - continue select loop
@@ -657,7 +662,7 @@ int main(int argc, char **argv) {
   }
   init_vars(devInfoMain, 2, 640, 360, 10, true, true, argv[1]);
   init_vars(devInfoAlt, 2, 640, 360, 10, true, true, argv[2]);
-  fprintf(stderr, "Starting V4L2 capture program using device(s): %s %s\n", devInfoMain->device, devInfoAlt->device);
+  fprintf(stderr, "Starting V4L2 capture program\n\n[main-capture]: %s\n[alt-capture]: %s\n", devInfoMain->device, devInfoAlt->device);
   init_dev(buffersMain, devInfoMain);
   init_dev(buffersAlt, devInfoAlt);
   while (true) {
