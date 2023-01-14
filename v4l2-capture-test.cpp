@@ -681,11 +681,10 @@ int main(int argc, char **argv) {
     thread1.detach();
     std::thread thread2(get_frame, buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
     thread2.detach();
+    usleep((devInfoMain->frameDelayMicros * devInfoMain->framerateDivisor));
     //get_frame(buffersMain, devInfoMain, EXPENSIVE_CONVERTER_BOX);
     //get_frame(buffersAlt, devInfoAlt, EXPENSIVE_CONVERTER_BOX);
     frame_to_stdout(devInfoMain->outputFrameGreyscale, (devInfoMain->scaledOutSize));
-    //fprintf(stderr, "%f\n", (devInfoMain->frameDelayMicros * devInfoMain->framerateDivisor));
-    usleep((devInfoMain->frameDelayMicros * devInfoMain->framerateDivisor));
   }
   deinit_bufs(buffersMain, devInfoMain);
   deinit_bufs(buffersAlt, devInfoAlt);
