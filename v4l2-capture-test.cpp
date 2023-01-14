@@ -25,6 +25,7 @@
 #include <mutex>
 #include <thread>
 #include <condition_variable>
+#include <chrono>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -74,6 +75,8 @@ struct devInfo {
     targetFramerate,
     fd;
   unsigned int n_buffers;
+  double frameDelayMicros,
+    frameDelayMillis;
   bool isTC358743 = true,
     isThermalCamera = true;
   unsigned char *outputFrameGreyscale;
@@ -521,6 +524,8 @@ int init_dev_stage2(struct buffer* buffers, struct devInfo* devInfos) {
         tot_width = bt->width + bt->hfrontporch + bt->hsync + bt->hbackporch;
         devInfos->framerate = (unsigned int)((double)bt->pixelclock / (tot_width * tot_height));
         devInfos->framerateDivisor = (devInfos->framerate / devInfos->targetFramerate);
+        devInfos->frameDelayMicros = (1000000 / devInfos->framerate);
+        devInfos->frameDelayMillis = (1000 / devInfos->framerate);
         int rawInputThroughput = (float)((float)(devInfos->framerate * devInfos->startingSize * 2.0F) / 125000.0F); // Measured in megabits/sec based on input framerate
         int rawOutputThroughput = (float)((((float)devInfos->framerate / devInfos->framerateDivisor) * devInfos->scaledOutSize) / 125000.0F); // Measured in megabits/sec based on output framerate
         fprintf(stderr, "[cap] device_name: %s, isTC358743: %d, isThermalCamera: %d, startingWidth: %d, startingHeight: %d, startingSize: %d, scaledOutWidth: %d, scaledOutHeight: %d, scaledOutSize: %d, framerate: %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", devInfos->device, devInfos->isTC358743, devInfos->isThermalCamera, devInfos->startingWidth, devInfos->startingHeight, devInfos->startingSize, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->scaledOutSize, devInfos->framerate, devInfos->framerateDivisor, devInfos->targetFramerate, rawInputThroughput, rawOutputThroughput);
@@ -600,12 +605,8 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
     }
   }
   assert(buf.index < devInfos->n_buffers);
-  if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
-    rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
-    gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
-    //frame_to_stdout(devInfos->outputFrameGreyscale, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
-  }
-  devInfos->frame_number++;
+  rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
+  gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
   /*if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
     rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
     gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
@@ -676,13 +677,15 @@ int main(int argc, char **argv) {
   buffersAlt = (buffer*)calloc(devInfoAlt->req.count, sizeof(*buffersAlt));
   init_dev_stage2(buffersAlt, devInfoAlt);
   while (true) {
-    get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    frame_to_stdout(devInfoMain->outputFrameGreyscale, (devInfoMain->scaledOutSize));
-    //memset(devInfoMain->outputFrameGreyscale, 0, devInfoMain->startingSize);
+    std::thread thread1(get_frame, buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
+    thread1.detach();
+    std::thread thread2(get_frame, buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
+    thread2.detach();
     //get_frame(buffersMain, devInfoMain, EXPENSIVE_CONVERTER_BOX);
-    //get_frame(buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
     //get_frame(buffersAlt, devInfoAlt, EXPENSIVE_CONVERTER_BOX);
+    frame_to_stdout(devInfoMain->outputFrameGreyscale, (devInfoMain->scaledOutSize));
+    //fprintf(stderr, "%f\n", (devInfoMain->frameDelayMicros * devInfoMain->framerateDivisor));
+    usleep((devInfoMain->frameDelayMicros * devInfoMain->framerateDivisor));
   }
   deinit_bufs(buffersMain, devInfoMain);
   deinit_bufs(buffersAlt, devInfoAlt);
