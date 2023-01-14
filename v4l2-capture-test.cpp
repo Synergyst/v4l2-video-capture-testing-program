@@ -366,7 +366,6 @@ void frame_to_stdout(unsigned char* input, int size) {
 }
 
 int init_dev_stage1(struct buffer* buffers, struct devInfo* devInfos) {
-  // We need to initialize our device and then configure our TC358743 if we are even using one
   unsigned int i;
   fprintf(stderr, "\n[cap] Starting V4L2 capture testing program with the following V4L2 device: %s\n", devInfos->device);
 
@@ -497,51 +496,54 @@ int init_dev_stage2(struct buffer* buffers, struct devInfo* devInfos) {
       errno_exit("mmap");
   }
 
-  // TODO: Have some way of passing flags from main() so we can handle settings in this area regarding if we really need DV timings to be set
-  struct v4l2_dv_timings timings;
-  v4l2_std_id std;
-  int ret;
-
-  memset(&timings, 0, sizeof timings);
-  ret = xioctl(devInfos->fd, VIDIOC_QUERY_DV_TIMINGS, &timings);
-  if (ret >= 0) {
-    fprintf(stderr, "[cap] QUERY_DV_TIMINGS for %s: %ux%u pixclk %llu\n", devInfos->device, timings.bt.width, timings.bt.height, timings.bt.pixelclock);
-    devInfos->startingWidth = timings.bt.width;
-    devInfos->startingHeight = timings.bt.height;
-    devInfos->startingSize = devInfos->startingWidth * devInfos->startingHeight * sizeof(unsigned char);
-    devInfos->scaledOutSize = devInfos->scaledOutWidth * devInfos->scaledOutHeight;
-    // Can read DV timings, so set them.
-    ret = xioctl(devInfos->fd, VIDIOC_S_DV_TIMINGS, &timings);
-    if (ret < 0) {
-      fprintf(stderr, "[cap] Failed to set DV timings\n");
-      return 1;
-    } else {
-      double tot_height, tot_width;
-      const struct v4l2_bt_timings* bt = &timings.bt;
-      tot_height = bt->height + bt->vfrontporch + bt->vsync + bt->vbackporch + bt->il_vfrontporch + bt->il_vsync + bt->il_vbackporch;
-      tot_width = bt->width + bt->hfrontporch + bt->hsync + bt->hbackporch;
-      devInfos->framerate = (unsigned int)((double)bt->pixelclock / (tot_width * tot_height));
-      devInfos->framerateDivisor = (devInfos->framerate / devInfos->targetFramerate);
-      int rawInputThroughput = (float)((float)(devInfos->framerate * devInfos->startingSize * 2.0F) / 125000.0F); // Measured in megabits/sec based on input framerate
-      int rawOutputThroughput = (float)((((float)devInfos->framerate / devInfos->framerateDivisor) * devInfos->scaledOutSize) / 125000.0F); // Measured in megabits/sec based on output framerate
-      fprintf(stderr, "[cap] device_name: %s, isTC358743: %d, isThermalCamera: %d, startingWidth: %d, startingHeight: %d, startingSize: %d, scaledOutWidth: %d, scaledOutHeight: %d, scaledOutSize: %d, framerate: %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", devInfos->device, devInfos->isTC358743, devInfos->isThermalCamera, devInfos->startingWidth, devInfos->startingHeight, devInfos->startingSize, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->scaledOutSize, devInfos->framerate, devInfos->framerateDivisor, devInfos->targetFramerate, rawInputThroughput, rawOutputThroughput);
-    }
-  } else {
-    memset(&std, 0, sizeof std);
-    ret = ioctl(devInfos->fd, VIDIOC_QUERYSTD, &std);
+  // TODO: Implement a more proper way to handle settings in this area regarding if we really need DV timings to be set
+  if (devInfos->isTC358743) {
+    struct v4l2_dv_timings timings;
+    v4l2_std_id std;
+    int ret;
+    memset(&timings, 0, sizeof timings);
+    ret = xioctl(devInfos->fd, VIDIOC_QUERY_DV_TIMINGS, &timings);
     if (ret >= 0) {
-      // Can read standard, so set it.
-      ret = xioctl(devInfos->fd, VIDIOC_S_STD, &std);
+      fprintf(stderr, "[cap] QUERY_DV_TIMINGS for %s: %ux%u pixclk %llu\n", devInfos->device, timings.bt.width, timings.bt.height, timings.bt.pixelclock);
+      devInfos->startingWidth = timings.bt.width;
+      devInfos->startingHeight = timings.bt.height;
+      devInfos->startingSize = devInfos->startingWidth * devInfos->startingHeight * sizeof(unsigned char);
+      devInfos->scaledOutSize = devInfos->scaledOutWidth * devInfos->scaledOutHeight;
+      // Can read DV timings, so set them.
+      ret = xioctl(devInfos->fd, VIDIOC_S_DV_TIMINGS, &timings);
       if (ret < 0) {
-        fprintf(stderr, "[cap] Failed to set standard\n");
+        fprintf(stderr, "[cap] Failed to set DV timings\n");
         return 1;
       } else {
-        // SD video - assume 50Hz / 25fps
-        devInfos->framerate = 25;
+        double tot_height, tot_width;
+        const struct v4l2_bt_timings* bt = &timings.bt;
+        tot_height = bt->height + bt->vfrontporch + bt->vsync + bt->vbackporch + bt->il_vfrontporch + bt->il_vsync + bt->il_vbackporch;
+        tot_width = bt->width + bt->hfrontporch + bt->hsync + bt->hbackporch;
+        devInfos->framerate = (unsigned int)((double)bt->pixelclock / (tot_width * tot_height));
+        devInfos->framerateDivisor = (devInfos->framerate / devInfos->targetFramerate);
+        int rawInputThroughput = (float)((float)(devInfos->framerate * devInfos->startingSize * 2.0F) / 125000.0F); // Measured in megabits/sec based on input framerate
+        int rawOutputThroughput = (float)((((float)devInfos->framerate / devInfos->framerateDivisor) * devInfos->scaledOutSize) / 125000.0F); // Measured in megabits/sec based on output framerate
+        fprintf(stderr, "[cap] device_name: %s, isTC358743: %d, isThermalCamera: %d, startingWidth: %d, startingHeight: %d, startingSize: %d, scaledOutWidth: %d, scaledOutHeight: %d, scaledOutSize: %d, framerate: %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", devInfos->device, devInfos->isTC358743, devInfos->isThermalCamera, devInfos->startingWidth, devInfos->startingHeight, devInfos->startingSize, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->scaledOutSize, devInfos->framerate, devInfos->framerateDivisor, devInfos->targetFramerate, rawInputThroughput, rawOutputThroughput);
+      }
+    } else {
+      memset(&std, 0, sizeof std);
+      ret = ioctl(devInfos->fd, VIDIOC_QUERYSTD, &std);
+      if (ret >= 0) {
+        // Can read standard, so set it.
+        ret = xioctl(devInfos->fd, VIDIOC_S_STD, &std);
+        if (ret < 0) {
+          fprintf(stderr, "[cap] Failed to set standard\n");
+          return 1;
+        } else {
+          // SD video - assume 50Hz / 25fps
+          devInfos->framerate = 25;
+        }
       }
     }
+  } else {
+    fprintf(stderr, "For now only the TC358743 is supported, support for general camera inputs will need to be added in the future..\nExiting now.\n");
+    exit(1);
   }
-  fprintf(stderr, "[cap] Initialized V4L2 device: %s\n", devInfos->device);
   unsigned int i;
   for (i = 0; i < devInfos->n_buffers; ++i) {
     struct v4l2_buffer buf;
@@ -555,13 +557,12 @@ int init_dev_stage2(struct buffer* buffers, struct devInfo* devInfos) {
   devInfos->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   if (-1 == xioctl(devInfos->fd, VIDIOC_STREAMON, &devInfos->type))
     errno_exit("VIDIOC_STREAMON");
-  fprintf(stderr, "[cap] Started capturing from V4L2 device: %s\n", devInfos->device);
+  fprintf(stderr, "[cap] Initialized V4L2 device: %s\n", devInfos->device);
   return 0;
 }
 
 int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capType) {
-  devInfos->outputFrameGreyscale = (unsigned char*)malloc(devInfos->startingSize);
-  memset(devInfos->outputFrameGreyscale, 0, devInfos->startingSize);
+  //memset(devInfos->outputFrameGreyscale, 0, devInfos->startingSize);
   fd_set fds;
   struct timeval tv;
   int r;
@@ -602,7 +603,7 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
   if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
     rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
     gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
-    frame_to_stdout(devInfos->outputFrameGreyscale, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
+    //frame_to_stdout(devInfos->outputFrameGreyscale, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
   }
   devInfos->frame_number++;
   /*if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
@@ -655,15 +656,17 @@ int init_vars(struct devInfo* devInfos, const int force_format, const int scaled
 }
 
 int main(int argc, char **argv) {
-  devInfoMain = (devInfo*)calloc(1, sizeof(*devInfoMain));
-  devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
-  if (argc < 3) {
-    fprintf(stderr, "Usage: %s <V4L2 main device> <V4L2 alt device>\n\nExample: %s /dev/video0 /dev/video1\n", argv[0], argv[0]);
+  if (argc < 5) {
+    fprintf(stderr, "Usage: %s <V4L2 main device> <V4L2 alt device> <scaled down width> <scaled down height>\n\nExample: %s /dev/video0 /dev/video1 640 360\n", argv[0], argv[0]);
     return 1;
   }
-  init_vars(devInfoMain, 2, 640, 360, 10, true, true, argv[1]);
-  init_vars(devInfoAlt, 2, 640, 360, 10, true, true, argv[2]);
-  fprintf(stderr, "Starting V4L2 capture program\n\n[main-capture]: %s\n[alt-capture]: %s\n", devInfoMain->device, devInfoAlt->device);
+  devInfoMain = (devInfo*)calloc(1, sizeof(*devInfoMain));
+  devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
+  init_vars(devInfoMain, 2, atoi(argv[3]), atoi(argv[4]), 10, true, true, argv[1]);
+  init_vars(devInfoAlt, 2, atoi(argv[3]), atoi(argv[4]), 10, true, true, argv[2]);
+  devInfoMain->outputFrameGreyscale = (unsigned char*)malloc(devInfoMain->scaledOutSize);
+  devInfoAlt->outputFrameGreyscale = (unsigned char*)malloc(devInfoAlt->scaledOutSize);
+  fprintf(stderr, "[main] Starting V4L2 capture program\n\n[cap0]: %s\n[cap1]: %s\n[main] scaling resolution to: %dx%d\n", devInfoMain->device, devInfoAlt->device, atoi(argv[3]), atoi(argv[4]));
   // [main-cap]
   init_dev_stage1(buffersMain, devInfoMain);
   buffersMain = (buffer*)calloc(devInfoMain->req.count, sizeof(*buffersMain));
@@ -674,6 +677,9 @@ int main(int argc, char **argv) {
   init_dev_stage2(buffersAlt, devInfoAlt);
   while (true) {
     get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    frame_to_stdout(devInfoMain->outputFrameGreyscale, (devInfoMain->scaledOutSize));
+    //memset(devInfoMain->outputFrameGreyscale, 0, devInfoMain->startingSize);
     //get_frame(buffersMain, devInfoMain, EXPENSIVE_CONVERTER_BOX);
     //get_frame(buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
     //get_frame(buffersAlt, devInfoAlt, EXPENSIVE_CONVERTER_BOX);
