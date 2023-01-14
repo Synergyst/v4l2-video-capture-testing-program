@@ -78,6 +78,8 @@ struct devInfo {
     isThermalCamera = true;
   unsigned char *outputFrameGreyscale;
   char *device;
+  struct v4l2_requestbuffers req;
+  enum v4l2_buf_type type;
 };
 
 struct buffer* buffersMain;
@@ -363,10 +365,9 @@ void frame_to_stdout(unsigned char* input, int size) {
     perror("write");
 }
 
-int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
+int init_dev_stage1(struct buffer* buffers, struct devInfo* devInfos) {
   // We need to initialize our device and then configure our TC358743 if we are even using one
   unsigned int i;
-  enum v4l2_buf_type type;
   fprintf(stderr, "\n[cap] Starting V4L2 capture testing program with the following V4L2 device: %s\n", devInfos->device);
 
   struct stat st;
@@ -394,7 +395,8 @@ int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
     if (EINVAL == errno) {
       fprintf(stderr, "[cap] %s is no V4L2 device\n", devInfos->device);
       exit(EXIT_FAILURE);
-    } else {
+    }
+    else {
       errno_exit("VIDIOC_QUERYCAP");
     }
   }
@@ -456,12 +458,12 @@ int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
   min = fmt.fmt.pix.bytesperline * fmt.fmt.pix.height;
   if (fmt.fmt.pix.sizeimage < min)
     fmt.fmt.pix.sizeimage = min;
-  struct v4l2_requestbuffers req;
-  CLEAR(req);
-  req.count = 4;
-  req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  req.memory = V4L2_MEMORY_MMAP;
-  if (-1 == xioctl(devInfos->fd, VIDIOC_REQBUFS, &req)) {
+  //struct v4l2_requestbuffers req;
+  CLEAR(devInfos->req);
+  devInfos->req.count = 4;
+  devInfos->req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  devInfos->req.memory = V4L2_MEMORY_MMAP;
+  if (-1 == xioctl(devInfos->fd, VIDIOC_REQBUFS, &devInfos->req)) {
     if (EINVAL == errno) {
       fprintf(stderr, "[cap] %s does not support memory mapping\n", devInfos->device);
       exit(EXIT_FAILURE);
@@ -469,17 +471,19 @@ int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
       errno_exit("VIDIOC_REQBUFS");
     }
   }
-  if (req.count < 2) {
+  if (devInfos->req.count < 2) {
     fprintf(stderr, "[cap] Insufficient buffer memory on %s\n", devInfos->device);
     exit(EXIT_FAILURE);
   }
-  // FIXME: Move this section to main()
-  buffers = (buffer*)calloc(req.count, sizeof(*buffers));
+  return 0;
+}
+
+int init_dev_stage2(struct buffer* buffers, struct devInfo* devInfos) {
   if (!buffers) {
     fprintf(stderr, "[cap] Out of memory\n");
     exit(EXIT_FAILURE);
   }
-  for (devInfos->n_buffers = 0; devInfos->n_buffers < req.count; ++devInfos->n_buffers) {
+  for (devInfos->n_buffers = 0; devInfos->n_buffers < devInfos->req.count; ++devInfos->n_buffers) {
     struct v4l2_buffer buf;
     CLEAR(buf);
     buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -537,8 +541,8 @@ int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
       }
     }
   }
-  // TODO: Have some way of passing flags from main() so we can handle settings in this area above
   fprintf(stderr, "[cap] Initialized V4L2 device: %s\n", devInfos->device);
+  unsigned int i;
   for (i = 0; i < devInfos->n_buffers; ++i) {
     struct v4l2_buffer buf;
     CLEAR(buf);
@@ -548,8 +552,8 @@ int init_dev(struct buffer* buffers, struct devInfo *devInfos) {
     if (-1 == xioctl(devInfos->fd, VIDIOC_QBUF, &buf))
       errno_exit("VIDIOC_QBUF");
   }
-  type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  if (-1 == xioctl(devInfos->fd, VIDIOC_STREAMON, &type))
+  devInfos->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  if (-1 == xioctl(devInfos->fd, VIDIOC_STREAMON, &devInfos->type))
     errno_exit("VIDIOC_STREAMON");
   fprintf(stderr, "[cap] Started capturing from V4L2 device: %s\n", devInfos->device);
   return 0;
@@ -596,10 +600,7 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
   }
   assert(buf.index < devInfos->n_buffers);
   if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
-    fprintf(stderr, "devInfos->startingWidth: %d, devInfos->startingHeight: %d, devInfos->scaledOutWidth: %d, devInfos->scaledOutHeight: %d\n", devInfos->startingWidth, devInfos->startingHeight, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
-    fprintf(stderr, "buf.memory: %d\n", buf.memory);
     rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
-    fprintf(stderr, "Test\n");
     gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
     frame_to_stdout(devInfos->outputFrameGreyscale, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
   }
@@ -663,8 +664,14 @@ int main(int argc, char **argv) {
   init_vars(devInfoMain, 2, 640, 360, 10, true, true, argv[1]);
   init_vars(devInfoAlt, 2, 640, 360, 10, true, true, argv[2]);
   fprintf(stderr, "Starting V4L2 capture program\n\n[main-capture]: %s\n[alt-capture]: %s\n", devInfoMain->device, devInfoAlt->device);
-  init_dev(buffersMain, devInfoMain);
-  init_dev(buffersAlt, devInfoAlt);
+  // [main-cap]
+  init_dev_stage1(buffersMain, devInfoMain);
+  buffersMain = (buffer*)calloc(devInfoMain->req.count, sizeof(*buffersMain));
+  init_dev_stage2(buffersMain, devInfoMain);
+  // [alt-cap]
+  init_dev_stage1(buffersAlt, devInfoAlt);
+  buffersAlt = (buffer*)calloc(devInfoAlt->req.count, sizeof(*buffersAlt));
+  init_dev_stage2(buffersAlt, devInfoAlt);
   while (true) {
     get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
     //get_frame(buffersMain, devInfoMain, EXPENSIVE_CONVERTER_BOX);
