@@ -26,6 +26,7 @@
 #include <thread>
 #include <condition_variable>
 #include <chrono>
+//#include <ranges>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -43,6 +44,12 @@
 #include <linux/videodev2.h>
 #include <libv4l2.h>
 #include <omp.h>
+#include "cuda.h"
+#include "cuda_runtime.h"
+#include "helper_cuda.h"
+#include "cuda_device_runtime_api.h"
+#include "cuda_runtime_api.h"
+#include "device_launch_parameters.h"
 
 #define V4L_ALLFORMATS  3
 #define V4L_RAWFORMATS  1
@@ -73,16 +80,21 @@ struct devInfo {
     scaledOutWidth,
     scaledOutHeight,
     targetFramerate,
-    fd;
+    fd,
+    croppedWidth,
+    croppedHeight;
   unsigned int n_buffers;
   double frameDelayMicros,
     frameDelayMillis;
   bool isTC358743 = true,
     isThermalCamera = true;
-  unsigned char *outputFrameGreyscale;
+  unsigned char *outputFrame,
+    *outputFrameGreyscaleScaled;
   char *device;
   struct v4l2_requestbuffers req;
   enum v4l2_buf_type type;
+  // CHANGEME:
+  int index;
 };
 
 struct buffer* buffersMain;
@@ -90,7 +102,7 @@ struct buffer* buffersAlt;
 struct devInfo* devInfoMain;
 struct devInfo* devInfoAlt;
 
-const int cropMatrix[2][4] = { {11, 4, 4, 2}, {1, 1, 1, 1} }; // Crop size matrix (scale up or down as needed)
+int cropMatrix[2][4] = { {11, 4, 4, 2}, {1, 1, 1, 1} }; // Crop size matrix (scale up or down as needed)
 const int KERNEL_SIZE = 3; // The kernel size of the Gaussian blur, default: 5
 const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
 
@@ -105,19 +117,6 @@ int xioctl(int fh, int request, void* arg) {
     r = ioctl(fh, request, arg);
   } while (-1 == r && EINTR == errno);
   return r;
-}
-
-void yuyv_to_greyscale(const unsigned char* input, unsigned char* grey, int width, int height) {
-#pragma omp parallel for simd
-  for (int y = 0; y < height; y++) {
-    for (int x = 0; x < width; x++) {
-      int index = y * width + x;
-      // YUYV format stores chroma (Cb and Cr) values interleaved with the luma (Y) values.
-      // So, we need to skip every other pixel.
-      int y_index = index * 2;
-      grey[index] = input[y_index];
-    }
-  }
 }
 
 void replace_pixels_below_val(const unsigned char* input, unsigned char* output, int width, int height, const int val) {
@@ -158,22 +157,9 @@ void replace_pixels_above_val(const unsigned char* input, unsigned char* output,
   }
 }
 
-void uyvy_to_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
-  // Iterate over each pixel in the input image
-#pragma omp parallel for simd
-  for (int y = 0; y < height; y++) {
-    for (int x = 0; x < width; x++) {
-      // Calculate the offset into the input buffer for the current pixel
-      int offset = (y * width + x) * 2;
-      // Extract the Y component from the UYVY pixel
-      output[y * width + x] = input[offset];
-    }
-  }
-}
-
 void greyscale_to_sobel(const unsigned char* input, unsigned char* output, int width, int height) {
   // The maximum value for the Sobel operator
-  const int maxSobel = 4 * 255;
+  //const int maxSobel = 4 * 255;
   // The Sobel operator as a 3x3 matrix
   const int sobelX[3][3] = { {-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1} };
   const int sobelY[3][3] = { {-1, -2, -1}, {0, 0, 0}, {1, 2, 1} };
@@ -232,7 +218,7 @@ void yuyv_to_uyvy(unsigned char* input, unsigned char* output, int width, int he
   }
 }
 
-void rescale_bilinear(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
+/*void rescale_bilinear(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
 #pragma omp parallel for simd
   for (int y = 0; y < output_height; y++) {
     for (int x = 0; x < output_width; x++) {
@@ -264,9 +250,48 @@ void rescale_bilinear(const unsigned char* input, int input_width, int input_hei
       output[index] = (unsigned char)value;
     }
   }
+}*/
+void rescale_bilinear(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
+#pragma omp parallel for simd
+  for (int y = 0; y < output_height; y++) {
+    for (int x = 0; x < output_width; x++) {
+      // Calculate the corresponding pixel coordinates in the input image.
+      float in_x = x * input_width / output_width;
+      float in_y = y * input_height / output_height;
+      // Calculate the integer and fractional parts of the coordinates.
+      int x1 = (int)in_x;
+      int y1 = (int)in_y;
+      float dx = in_x - x1;
+      float dy = in_y - y1;
+      // Clamp the coordinates to the edges of the input image.
+      x1 = x1 < 0 ? 0 : x1;
+      x1 = x1 >= input_width ? input_width - 1 : x1;
+      y1 = y1 < 0 ? 0 : y1;
+      y1 = y1 >= input_height ? input_height - 1 : y1;
+      int x2 = x1 + 1;
+      int y2 = y1 + 1;
+      x2 = x2 < 0 ? 0 : x2;
+      x2 = x2 >= input_width ? input_width - 1 : x2;
+      y2 = y2 < 0 ? 0 : y2;
+      y2 = y2 >= input_height ? input_height - 1 : y2;
+      // Get the values of the four surrounding pixels in the input image.
+      int index = y * output_width + x;
+      int in_index1 = y1 * input_width + x1;
+      int in_index2 = y1 * input_width + x2;
+      int in_index3 = y2 * input_width + x1;
+      int in_index4 = y2 * input_width + x2;
+      float v1 = input[in_index1];
+      float v2 = input[in_index2];
+      float v3 = input[in_index3];
+      float v4 = input[in_index4];
+      // Use bilinear interpolation to estimate the value of the pixel in the input image.
+      float value = (1 - dx) * (1 - dy) * v1 + dx * (1 - dy) * v2 + (1 - dx) * dy * v3 + dx * dy * v4;
+      output[index] = (unsigned char)value;
+    }
+  }
 }
 
-void rescale_bilinear_from_yuyv(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
+/*void rescale_bilinear_from_yuyv(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
 #pragma omp parallel for simd num_threads(4)
   for (int y = 0; y < output_height; y++) {
     for (int x = 0; x < output_width; x++) {
@@ -297,10 +322,54 @@ void rescale_bilinear_from_yuyv(const unsigned char* input, int input_width, int
       float value = (1 - dx) * (1 - dy) * v1 + dx * (1 - dy) * v2 + (1 - dx) * dy * v3 + dx * dy * v4;
       if (value > 126 && value < 131) {
         value = 255.0F;
-      }
-      else {
+      } else {
         value = 0.0F;
       }
+      //output[index] = (unsigned char)value;
+      output[index] = (unsigned char)value;
+    }
+  }
+}*/
+void rescale_bilinear_from_yuyv(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
+#pragma omp parallel for simd num_threads(4)
+  for (int y = 0; y < output_height; y++) {
+    for (int x = 0; x < output_width; x++) {
+      // Calculate the corresponding pixel coordinates in the input image.
+      float in_x = x * input_width / output_width;
+      float in_y = y * input_height / output_height;
+      // Calculate the integer and fractional parts of the coordinates.
+      int x1 = (int)in_x;
+      int y1 = (int)in_y;
+      float dx = in_x - x1;
+      float dy = in_y - y1;
+      // Clamp the coordinates to the edges of the input image.
+      x1 = x1 < 0 ? 0 : x1;
+      x1 = x1 >= input_width ? input_width - 1 : x1;
+      y1 = y1 < 0 ? 0 : y1;
+      y1 = y1 >= input_height ? input_height - 1 : y1;
+      int x2 = x1 + 1;
+      int y2 = y1 + 1;
+      x2 = x2 < 0 ? 0 : x2;
+      x2 = x2 >= input_width ? input_width - 1 : x2;
+      y2 = y2 < 0 ? 0 : y2;
+      y2 = y2 >= input_height ? input_height - 1 : y2;
+      // Get the luminance values of the four surrounding pixels in the input image.
+      int index = y * output_width + x;
+      int in_index1 = 2 * (y1 * input_width + x1);
+      int in_index2 = 2 * (y1 * input_width + x2);
+      int in_index3 = 2 * (y2 * input_width + x1);
+      int in_index4 = 2 * (y2 * input_width + x2);
+      float v1 = input[in_index1];
+      float v2 = input[in_index2];
+      float v3 = input[in_index3];
+      float v4 = input[in_index4];
+      // Use bilinear interpolation to estimate the luminance value of the pixel in the input image.
+      float value = (1 - dx) * (1 - dy) * v1 + dx * (1 - dy) * v2 + (1 - dx) * dy * v3 + dx * dy * v4;
+      /*if (value > 126 && value < 131) {
+        value = 255.0F;
+      } else {
+        value = 0.0F;
+      }*/
       //output[index] = (unsigned char)value;
       output[index] = (unsigned char)value;
     }
@@ -362,6 +431,51 @@ void invert_greyscale(unsigned char* input, unsigned char* output, int width, in
   }
 }
 
+void crop_greyscale(unsigned char* image, int width, int height, int* crops, unsigned char* croppedImage, struct devInfo* devInfos) {
+  if (devInfos->croppedWidth > 0 || devInfos->croppedHeight > 0) {
+    devInfos->croppedWidth = devInfos->croppedWidth - crops[0] - crops[1];
+    devInfos->croppedHeight = devInfos->croppedHeight - crops[2] - crops[3];
+  } else {
+    devInfos->croppedWidth = width - crops[0] - crops[1];
+    devInfos->croppedHeight = height - crops[2] - crops[3];
+  }
+#pragma omp parallel for
+  for (int y = crops[2]; y < crops[2] + devInfos->croppedHeight; y++) {
+    for (int x = crops[0]; x < crops[0] + devInfos->croppedWidth; x++) {
+      int croppedX = x - crops[0];
+      int croppedY = y - crops[2];
+      int croppedIndex = croppedY * devInfos->croppedWidth + croppedX;
+      int index = y * width + x;
+      croppedImage[croppedIndex] = image[index];
+    }
+  }
+}
+
+/*void yuyv_to_greyscale(unsigned char* input, int width, int height, unsigned char* output) {
+#pragma omp parallel for
+  if (input == nullptr || output == nullptr) {
+    return;
+  }
+  int len = width * height * 2;
+  std::ranges::copy(std::ranges::views::chunk(input, input + len, 2) | std::views::transform([](const auto& chunk) {
+    return (chunk[0] + chunk[1]) / 2;
+    }), output);
+}*/
+
+__global__ void yuyv_to_greyscale(unsigned char* input, int width, int height, unsigned char* output, struct devInfo* devInfos) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < width * height) {
+    output[i] = (input[i * 2] + input[i * 2 + 1]) / 2;
+  }
+  /*if (input == nullptr || output == nullptr) {
+    return;
+  }
+  int len = width * height * 2;
+  for (int i = 0; i < len; i += 2) {
+    output[i / 2] = (input[i] + input[i + 1]) / 2;
+  }*/
+}
+
 void frame_to_stdout(unsigned char* input, int size) {
   int status = write(1, input, size);
   if (status == -1)
@@ -369,7 +483,7 @@ void frame_to_stdout(unsigned char* input, int size) {
 }
 
 int init_dev_stage1(struct buffer* buffers, struct devInfo* devInfos) {
-  unsigned int i;
+  //unsigned int i;
   fprintf(stderr, "\n[cap] Starting V4L2 capture testing program with the following V4L2 device: %s\n", devInfos->device);
 
   struct stat st;
@@ -584,7 +698,7 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
     errno_exit("select");
   }
   if (0 == r) {
-    fprintf(stderr, "select timeout\n");
+    fprintf(stderr, "[cap%d] select timeout\n", devInfos->index);
     exit(EXIT_FAILURE);
   }
   struct v4l2_buffer buf;
@@ -595,7 +709,7 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
   if (-1 == xioctl(devInfos->fd, VIDIOC_DQBUF, &buf)) {
     switch (errno) {
     case EAGAIN:
-      fprintf(stderr, "[cap] EAGAIN\n");
+      fprintf(stderr, "[cap%d] EAGAIN\n", devInfos->index);
       return 0;
     case EIO:
       // Could ignore EIO, see spec.
@@ -605,8 +719,39 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
     }
   }
   assert(buf.index < devInfos->n_buffers);
-  rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
-  gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
+  //frame_to_stdout((unsigned char*)buffers[buf.index].start, (devInfos->startingWidth * devInfos->startingHeight * 2));
+  //rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscaleScaled, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
+  //frame_to_stdout(devInfos->outputFrameGreyscaleScaled, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
+  //gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
+  // Allocate memory on the GPU for input and output arrays
+  /*unsigned char* d_input;
+  unsigned char* d_output = devInfos->outputFrame;
+  cudaMalloc(&d_input, devInfos->startingWidth * devInfos->startingHeight * 2);
+  cudaMalloc(&d_output, devInfos->startingWidth * devInfos->startingHeight);
+
+  // Copy input data from host to device
+  cudaMemcpy(d_input, (unsigned char*)buffers[buf.index].start, devInfos->startingWidth * devInfos->startingHeight * 2, cudaMemcpyHostToDevice);
+  // Launch kernel
+  yuyv_to_greyscale<<<1, devInfos->startingWidth * devInfos->startingHeight>>>(d_input, devInfos->startingWidth, devInfos->startingHeight, d_output, devInfos);
+  // Copy output data from device to host
+  cudaMemcpy(devInfos->outputFrame, d_output, devInfos->startingWidth * devInfos->startingHeight, cudaMemcpyDeviceToHost);
+
+  // Clean up
+  cudaFree(d_input);
+  cudaFree(d_output);*/
+  unsigned char* d_input;
+  unsigned char* d_output;
+  cudaMalloc(&d_input, devInfos->startingWidth * devInfos->startingHeight * 2 * sizeof(unsigned char));
+  cudaMalloc(&d_output, devInfos->startingWidth * devInfos->startingHeight * sizeof(unsigned char));
+  cudaMemcpy(d_input, (unsigned char*)buffers[buf.index].start, devInfos->startingWidth * devInfos->startingHeight * 2 * sizeof(unsigned char), cudaMemcpyHostToDevice);
+  yuyv_to_greyscale<<<(devInfos->scaledOutWidth * devInfos->scaledOutHeight + 255) / 256, 256>>>(d_input, devInfos->scaledOutWidth, devInfos->scaledOutHeight, d_output, devInfoMain);
+  cudaMemcpy(devInfos->outputFrameGreyscaleScaled, d_output, devInfos->scaledOutWidth * devInfos->scaledOutHeight * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+  cudaFree(d_input);
+  cudaFree(d_output);
+  //yuyv_to_greyscale((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrame, devInfos);
+  frame_to_stdout(devInfos->outputFrameGreyscaleScaled, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
+  //crop_greyscale(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, cropMatrix[0], devInfos->outputFrameGreyscaleScaled, devInfos);
+  //rescale_bilinear(devInfos->outputFrameGreyscaleScaled, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscaleScaled, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
   /*if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
     rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
     gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
@@ -617,6 +762,11 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
   if (-1 == xioctl(devInfos->fd, VIDIOC_QBUF, &buf))
     errno_exit("VIDIOC_QBUF");
   // EAGAIN - continue select loop
+  CLEAR(i);
+  CLEAR(buf);
+  CLEAR(r);
+  CLEAR(tv);
+  CLEAR(fds);
   return 0;
 }
 
@@ -636,15 +786,15 @@ int deinit_bufs(struct buffer *buffers, struct devInfo *devInfos) {
   return 0;
 }
 
-int init_vars(struct devInfo* devInfos, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera, char *dev_name) {
+int init_vars(struct devInfo* devInfos, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera, char *dev_name, int index) {
   devInfos->device = (char*)calloc(64, sizeof(char));
   strcpy(devInfos->device, dev_name);
   devInfos->frame_number = 0,
-    devInfos->framerate = -1,
+    devInfos->framerate = 30,
     devInfos->framerateDivisor = 1,
-    devInfos->startingWidth = -1,
-    devInfos->startingHeight = -1,
-    devInfos->startingSize = -1,
+    devInfos->startingWidth = 640,
+    devInfos->startingHeight = 360,
+    devInfos->startingSize = (devInfos->startingWidth * devInfos->startingHeight * 2),
     devInfos->scaledOutSize = (scaledOutWidth * scaledOutHeight),
     devInfos->force_format = force_format,
     devInfos->scaledOutWidth = scaledOutWidth,
@@ -652,41 +802,56 @@ int init_vars(struct devInfo* devInfos, const int force_format, const int scaled
     devInfos->targetFramerate = targetFramerate,
     devInfos->fd = -1,
     devInfos->isTC358743 = isTC358743,
-    devInfos->isThermalCamera = isThermalCamera;
+    devInfos->isThermalCamera = isThermalCamera,
+    devInfos->index = index,
+    devInfos->croppedWidth = 0,
+    devInfos->croppedHeight = 0;
   return 0;
 }
 
 int main(int argc, char **argv) {
-  if (argc < 5) {
+  /*if (argc < 5) {
     fprintf(stderr, "Usage: %s <V4L2 main device> <V4L2 alt device> <scaled down width> <scaled down height>\n\nExample: %s /dev/video0 /dev/video1 640 360\n", argv[0], argv[0]);
     return 1;
+  }*/
+  if (argc < 3) {
+    fprintf(stderr, "Usage: %s <V4L2 device> <scaled down width> <scaled down height>\n\nExample: %s /dev/video0 640 360\n", argv[0], argv[0]);
+    return 1;
   }
+  fprintf(stderr, "[main] Initializing..\n");
   devInfoMain = (devInfo*)calloc(1, sizeof(*devInfoMain));
-  devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
-  init_vars(devInfoMain, 2, atoi(argv[3]), atoi(argv[4]), 10, true, true, argv[1]);
-  init_vars(devInfoAlt, 2, atoi(argv[3]), atoi(argv[4]), 10, true, true, argv[2]);
-  devInfoMain->outputFrameGreyscale = (unsigned char*)malloc(devInfoMain->scaledOutSize);
-  devInfoAlt->outputFrameGreyscale = (unsigned char*)malloc(devInfoAlt->scaledOutSize);
-  fprintf(stderr, "[main] Starting V4L2 capture program\n\n[cap0]: %s\n[cap1]: %s\n[main] scaling resolution to: %dx%d\n", devInfoMain->device, devInfoAlt->device, atoi(argv[3]), atoi(argv[4]));
+  //devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
+  init_vars(devInfoMain, 1, atoi(argv[2]), atoi(argv[3]), 30, true, true, argv[1], 0);
+  //init_vars(devInfoMain, 2, atoi(argv[3]), atoi(argv[4]), 30, true, true, argv[1], 0);
+  //init_vars(devInfoAlt, 2, atoi(argv[3]), atoi(argv[4]), 30, true, true, argv[2], 1);
+  //devInfoMain->outputFrame = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight * 2), sizeof(unsigned char));
+  devInfoMain->outputFrameGreyscaleScaled = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight), sizeof(unsigned char));
+  //devInfoAlt->outputFrameGreyscale = (unsigned char*)malloc(((devInfoAlt->startingWidth * devInfoAlt->startingHeight)));
+  //devInfoAlt->outputFrameGreyscaleScaled = (unsigned char*)malloc(devInfoAlt->scaledOutSize);
+  //fprintf(stderr, "[main] Starting V4L2 capture program\n\n[cap0]: %s\n[cap1]: %s\n[main] scaling resolution to: %dx%d\n", devInfoMain->device, devInfoAlt->device, atoi(argv[3]), atoi(argv[4]));
   // [main-cap]
   init_dev_stage1(buffersMain, devInfoMain);
   buffersMain = (buffer*)calloc(devInfoMain->req.count, sizeof(*buffersMain));
   init_dev_stage2(buffersMain, devInfoMain);
   // [alt-cap]
-  init_dev_stage1(buffersAlt, devInfoAlt);
-  buffersAlt = (buffer*)calloc(devInfoAlt->req.count, sizeof(*buffersAlt));
-  init_dev_stage2(buffersAlt, devInfoAlt);
+  //init_dev_stage1(buffersAlt, devInfoAlt);
+  //buffersAlt = (buffer*)calloc(devInfoAlt->req.count, sizeof(*buffersAlt));
+  //init_dev_stage2(buffersAlt, devInfoAlt);
+  fprintf(stderr, "\n[main] Starting loop now\n");
   while (true) {
-    std::thread thread1(get_frame, buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
-    thread1.detach();
-    std::thread thread2(get_frame, buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
-    thread2.detach();
-    usleep((devInfoMain->frameDelayMicros * devInfoMain->framerateDivisor));
+    get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
+    //std::thread thread1(get_frame, buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
+    //std::thread thread2(get_frame, buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
+    //thread1.detach();
+    //thread2.detach();
     //get_frame(buffersMain, devInfoMain, EXPENSIVE_CONVERTER_BOX);
     //get_frame(buffersAlt, devInfoAlt, EXPENSIVE_CONVERTER_BOX);
-    frame_to_stdout(devInfoMain->outputFrameGreyscale, (devInfoMain->scaledOutSize));
+    //usleep((devInfoMain->frameDelayMicros * devInfoMain->framerateDivisor));
+    //frame_to_stdout(devInfoMain->outputFrameGreyscaleScaled, (devInfoMain->scaledOutSize));
+    devInfoMain->croppedWidth = 0;
+    devInfoMain->croppedHeight = 0;
   }
   deinit_bufs(buffersMain, devInfoMain);
-  deinit_bufs(buffersAlt, devInfoAlt);
+  //deinit_bufs(buffersAlt, devInfoAlt);
   return 0;
 }
