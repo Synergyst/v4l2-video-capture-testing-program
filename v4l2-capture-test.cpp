@@ -16,6 +16,7 @@
  *    This will run the main program and then output the processed video data to FFPlay to test the processed frames
  *
  */
+#define USECUDA
 #include <iostream>
 #include <cstdio>
 #include <cmath>
@@ -830,6 +831,7 @@ int main(int argc, char **argv) {
     return 1;
   }
   fprintf(stderr, "[main] Initializing..\n");
+#ifndef USECUDA
   fdOut = open("/dev/video3", O_RDWR); // open the device file
   if (fdOut < 0) {
     // handle error
@@ -841,9 +843,10 @@ int main(int argc, char **argv) {
   if (ioctl(fdOut, VIDIOC_S_FMT, &formatOut) < 0) {
     // handle error
   }
+#endif
   devInfoMain = (devInfo*)calloc(1, sizeof(*devInfoMain));
   //devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
-  init_vars(devInfoMain, 1, atoi(argv[2]), atoi(argv[3]), 30, true, true, argv[1], 0);
+  init_vars(devInfoMain, 2, atoi(argv[2]), atoi(argv[3]), 30, true, true, argv[1], 0);
   //init_vars(devInfoMain, 2, atoi(argv[3]), atoi(argv[4]), 30, true, true, argv[1], 0);
   //init_vars(devInfoAlt, 2, atoi(argv[3]), atoi(argv[4]), 30, true, true, argv[2], 1);
   //devInfoMain->outputFrame = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight * 2), sizeof(unsigned char));
