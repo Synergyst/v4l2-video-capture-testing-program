@@ -44,12 +44,14 @@
 #include <linux/videodev2.h>
 #include <libv4l2.h>
 #include <omp.h>
+#ifdef USECUDA
 #include "cuda.h"
 #include "cuda_runtime.h"
 #include "helper_cuda.h"
 #include "cuda_device_runtime_api.h"
 #include "cuda_runtime_api.h"
 #include "device_launch_parameters.h"
+#endif
 
 #define V4L_ALLFORMATS  3
 #define V4L_RAWFORMATS  1
@@ -105,6 +107,10 @@ struct devInfo* devInfoAlt;
 int cropMatrix[2][4] = { {11, 4, 4, 2}, {1, 1, 1, 1} }; // Crop size matrix (scale up or down as needed)
 const int KERNEL_SIZE = 3; // The kernel size of the Gaussian blur, default: 5
 const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
+
+// Output vars
+int fdOut;
+struct v4l2_format formatOut;
 
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
@@ -461,9 +467,9 @@ void crop_greyscale(unsigned char* image, int width, int height, int* crops, uns
     return (chunk[0] + chunk[1]) / 2;
     }), output);
 }*/
-
+#ifdef USECUDA
 __global__ void yuyv_to_greyscale(unsigned char* input, int width, int height, unsigned char* output, struct devInfo* devInfos) {
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  int i = threadIdx.x;
   if (i < width * height) {
     output[i] = (input[i * 2] + input[i * 2 + 1]) / 2;
   }
@@ -475,6 +481,17 @@ __global__ void yuyv_to_greyscale(unsigned char* input, int width, int height, u
     output[i / 2] = (input[i] + input[i + 1]) / 2;
   }*/
 }
+#else
+void yuyv_to_greyscale(unsigned char* input, int width, int height, unsigned char* output, struct devInfo* devInfos) {
+  if (input == nullptr || output == nullptr) {
+    return;
+  }
+  int len = width * height * 2;
+  for (int i = 0; i < len; i += 2) {
+    output[i / 2] = (input[i] + input[i + 1]) / 2;
+  }
+}
+#endif
 
 void frame_to_stdout(unsigned char* input, int size) {
   int status = write(1, input, size);
@@ -723,33 +740,27 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
   //rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscaleScaled, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
   //frame_to_stdout(devInfos->outputFrameGreyscaleScaled, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
   //gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
-  // Allocate memory on the GPU for input and output arrays
-  /*unsigned char* d_input;
-  unsigned char* d_output = devInfos->outputFrame;
-  cudaMalloc(&d_input, devInfos->startingWidth * devInfos->startingHeight * 2);
-  cudaMalloc(&d_output, devInfos->startingWidth * devInfos->startingHeight);
-
-  // Copy input data from host to device
-  cudaMemcpy(d_input, (unsigned char*)buffers[buf.index].start, devInfos->startingWidth * devInfos->startingHeight * 2, cudaMemcpyHostToDevice);
-  // Launch kernel
-  yuyv_to_greyscale<<<1, devInfos->startingWidth * devInfos->startingHeight>>>(d_input, devInfos->startingWidth, devInfos->startingHeight, d_output, devInfos);
-  // Copy output data from device to host
-  cudaMemcpy(devInfos->outputFrame, d_output, devInfos->startingWidth * devInfos->startingHeight, cudaMemcpyDeviceToHost);
-
-  // Clean up
-  cudaFree(d_input);
-  cudaFree(d_output);*/
+#ifdef USECUDA
   unsigned char* d_input;
   unsigned char* d_output;
   cudaMalloc(&d_input, devInfos->startingWidth * devInfos->startingHeight * 2 * sizeof(unsigned char));
   cudaMalloc(&d_output, devInfos->startingWidth * devInfos->startingHeight * sizeof(unsigned char));
   cudaMemcpy(d_input, (unsigned char*)buffers[buf.index].start, devInfos->startingWidth * devInfos->startingHeight * 2 * sizeof(unsigned char), cudaMemcpyHostToDevice);
-  yuyv_to_greyscale<<<(devInfos->scaledOutWidth * devInfos->scaledOutHeight + 255) / 256, 256>>>(d_input, devInfos->scaledOutWidth, devInfos->scaledOutHeight, d_output, devInfoMain);
+  yuyv_to_greyscale << <1, (devInfos->scaledOutWidth * devInfos->scaledOutHeight) >> > (d_input, devInfos->scaledOutWidth, devInfos->scaledOutHeight, d_output, devInfoMain);
   cudaMemcpy(devInfos->outputFrameGreyscaleScaled, d_output, devInfos->scaledOutWidth * devInfos->scaledOutHeight * sizeof(unsigned char), cudaMemcpyDeviceToHost);
   cudaFree(d_input);
   cudaFree(d_output);
-  //yuyv_to_greyscale((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrame, devInfos);
   frame_to_stdout(devInfos->outputFrameGreyscaleScaled, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
+#else
+  // fill frame with YUYV data
+  if (write(fdOut, (unsigned char*)buffers[buf.index].start, (devInfos->startingWidth * devInfos->startingHeight * 2)) < 0) {
+    // handle error
+  }
+  //frame_to_stdout((unsigned char*)buffers[buf.index].start, (devInfos->startingWidth * devInfos->startingHeight * 2));
+#endif
+  /*rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscaleScaled, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
+  frame_to_stdout(devInfos->outputFrameGreyscaleScaled, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
+  gaussian_blur(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight);*/
   //crop_greyscale(devInfos->outputFrameGreyscale, devInfos->scaledOutWidth, devInfos->scaledOutHeight, cropMatrix[0], devInfos->outputFrameGreyscaleScaled, devInfos);
   //rescale_bilinear(devInfos->outputFrameGreyscaleScaled, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscaleScaled, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
   /*if (devInfos->frame_number % devInfos->framerateDivisor == 0) {
@@ -819,6 +830,17 @@ int main(int argc, char **argv) {
     return 1;
   }
   fprintf(stderr, "[main] Initializing..\n");
+  fdOut = open("/dev/video3", O_RDWR); // open the device file
+  if (fdOut < 0) {
+    // handle error
+  }
+  // set video format to YUYV
+  memset(&formatOut, 0, sizeof(formatOut));
+  formatOut.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+  formatOut.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+  if (ioctl(fdOut, VIDIOC_S_FMT, &formatOut) < 0) {
+    // handle error
+  }
   devInfoMain = (devInfo*)calloc(1, sizeof(*devInfoMain));
   //devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
   init_vars(devInfoMain, 1, atoi(argv[2]), atoi(argv[3]), 30, true, true, argv[1], 0);
@@ -852,6 +874,7 @@ int main(int argc, char **argv) {
     devInfoMain->croppedHeight = 0;
   }
   deinit_bufs(buffersMain, devInfoMain);
+  close(fdOut); // close the device file
   //deinit_bufs(buffersAlt, devInfoAlt);
   return 0;
 }
