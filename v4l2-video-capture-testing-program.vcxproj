@@ -98,11 +98,11 @@
     </None>
   </ItemGroup>
   <ItemGroup>
-    <Text Include="1080P50EDID.txt" />
+    <None Include="1080P50EDID.txt" />
   </ItemGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">
     <RemotePostBuildEvent>
-      <Command>mkdir -p ~/projects/v4l2-capture-test/bin/ARM/Debug/ ; touch ~/projects/v4l2-capture-test/v4l2-capture-test.cpp ; chmod +x ~/projects/$(ProjectName)/*.sh ; dos2unix ~/projects/$(ProjectName)/* ; cp ~/projects/$(ProjectName)/v4l2-capture-test.cpp ~/projects/$(ProjectName)/v4l2-capture.cu ; ~/projects/$(ProjectName)/build.sh</Command>
+      <Command>mkdir -p ~/projects/$(ProjectName)/bin/ARM/Debug/ ; touch ~/projects/$(ProjectName)/v4l2-capture-test.cpp ~/projects/$(ProjectName)/build.sh ; chmod +x ~/projects/$(ProjectName)/*.sh ; dos2unix ~/projects/$(ProjectName)/* ; cp ~/projects/$(ProjectName)/v4l2-capture-test.cpp ~/projects/$(ProjectName)/v4l2-capture.cu ; ~/projects/$(ProjectName)/build.sh</Command>
     </RemotePostBuildEvent>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -1,7 +1,7 @@
 #/bin/bash
 
 export PATH=/usr/local/cuda-10.2/bin:$PATH
-export LD_LIBRARY_PATH=/usr/local/cuda-10.2/lib64:/usr/local/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/usr/local/cuda-10.2/lib64:/usr/local/lib:/usr/local/cuda-10.2/targets/aarch64-linux/lib:$LD_LIBRARY_PATH
 
 #(git clone git://git.ideasonboard.org/uvc-gadget.git && cd uvc-gadget && make && make install)
 #if [[ $? -eq 0 ]]; then
@@ -20,8 +20,9 @@ export LD_LIBRARY_PATH=/usr/local/cuda-10.2/lib64:/usr/local/lib:$LD_LIBRARY_PAT
 #  exit 1
 #fi
 
-g++ -o ~/projects/v4l2-capture-test/bin/ARM/Debug/v4l2-capture-test -O3 -std=gnu++20 -fopenmp v4l2-capture-test.cpp -ldl -lv4l2 -lpthread
-#nvcc -I/usr/local/cuda-10.2/include -I/usr/local/cuda-10.2/samples/common/inc -L/usr/local/cuda-10.2/lib64 -o ~/projects/v4l2-capture-test/bin/ARM/Debug/v4l2-capture-test -O3 v4l2-capture.cu -ldl -lv4l2 -lpthread -lcudart
+#g++ -o ~/projects/v4l2-capture-test/bin/ARM/Debug/v4l2-capture-test -O3 -std=gnu++20 -fopenmp v4l2-capture-test.cpp -ldl -lv4l2 -lpthread
+/usr/local/cuda-10.2/bin/nvcc -I/usr/local/cuda-10.2/include -I/usr/local/cuda-10.2/samples/common/inc -L/usr/local/cuda-10.2/lib64 -o ~/projects/v4l2-capture-test/bin/ARM/Debug/v4l2-capture-test -O3 v4l2-capture.cu -ldl -lv4l2 -lpthread -lcudart
+#apt-get install cuda-toolkit-10-2 cuda-tools-10-2 cuda-compiler-10-2 cuda-samples-10-2 cuda-libraries-10-2 cuda-driver-dev-10-2 libcudnn8-dev libcudnn8 cuda-*dev* mlocate dos2unix
 if [[ $? -eq 0 ]]; then
   echo "Successfully built: v4l2-capture-test"
 else
