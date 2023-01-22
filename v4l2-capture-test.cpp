@@ -53,12 +53,7 @@
 #include "cuda_runtime_api.h"
 #include "device_launch_parameters.h"
 #else
-int fdOut;
-struct v4l2_format formatOut;
-struct v4l2_requestbuffers reqbufOut;
-struct v4l2_buffer bufferOut;
-void* mapped_buffer;
-int typeOut;
+//
 #endif
 
 #define V4L_ALLFORMATS  3
@@ -756,26 +751,7 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
   cudaFree(d_output);
   frame_to_stdout(devInfos->outputFrameGreyscaleScaled, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
 #else
-  // fill buffer with YUYV data
-  // example data - this should be replaced with your own YUYV frame data
-  memcpy(mapped_buffer, (unsigned char*)buffers[buf.index].start, (devInfos->startingWidth * devInfos->startingHeight * 2));
-
-  // queue buffer
-  if (ioctl(fdOut, VIDIOC_QBUF, &bufferOut) < 0) {
-    fprintf(stderr, "Error queuing buffer\n");
-    munmap(mapped_buffer, bufferOut.length);
-    close(fdOut);
-    return -1;
-  }
-
-  // start streaming
-  typeOut = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-  if (ioctl(fdOut, VIDIOC_STREAMON, &typeOut) < 0) {
-    fprintf(stderr, "Error starting streaming\n");
-    munmap(mapped_buffer, bufferOut.length);
-    close(fdOut);
-    return -1;
-  }
+  //memcpy(frame_bufferOut, (unsigned char*)buffers[buf.index].start, (devInfos->startingWidth * devInfos->startingHeight * 2));
   // fill frame with YUYV data
   /*if (write(fdOut, (unsigned char*)buffers[buf.index].start, (devInfos->startingWidth * devInfos->startingHeight * 2)) < 0) {
     // handle error
@@ -855,46 +831,6 @@ int main(int argc, char **argv) {
     return 1;
   }
   fprintf(stderr, "[main] Initializing..\n");
-#ifndef USECUDA
-  fdOut = open("/dev/video3", O_RDWR); // open the device file
-  if (fdOut < 0) {
-    fprintf(stderr, "Error opening output device\n");
-  }
-  // set video format to YUYV
-  memset(&formatOut, 0, sizeof(formatOut));
-  formatOut.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-  formatOut.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
-  if (ioctl(fdOut, VIDIOC_S_FMT, &formatOut) < 0) {
-    fprintf(stderr, "Error setting output video format\n");
-  }
-  // request and map a buffer
-  memset(&reqbufOut, 0, sizeof(reqbufOut));
-  reqbufOut.count = 1;
-  reqbufOut.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-  reqbufOut.memory = V4L2_MEMORY_MMAP;
-  if (ioctl(fdOut, VIDIOC_REQBUFS, &reqbufOut) < 0) {
-    fprintf(stderr, "Error requesting buffer\n");
-    close(fdOut);
-    return -1;
-  }
-  memset(&bufferOut, 0, sizeof(bufferOut));
-  bufferOut.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
-  bufferOut.memory = V4L2_MEMORY_MMAP;
-  bufferOut.index = 0;
-  if (ioctl(fdOut, VIDIOC_QUERYBUF, &bufferOut) < 0) {
-    fprintf(stderr, "Error querying buffer\n");
-    close(fdOut);
-    return -1;
-  }
-
-  mapped_buffer = mmap(NULL, bufferOut.length, PROT_READ | PROT_WRITE, MAP_SHARED, fdOut, bufferOut.m.offset);
-
-  if (mapped_buffer == MAP_FAILED) {
-    fprintf(stderr, "Error mapping buffer\n");
-    close(fdOut);
-    return -1;
-  }
-#endif
   devInfoMain = (devInfo*)calloc(1, sizeof(*devInfoMain));
   //devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
   init_vars(devInfoMain, 2, atoi(argv[2]), atoi(argv[3]), 30, true, true, argv[1], 0);
@@ -928,24 +864,6 @@ int main(int argc, char **argv) {
     devInfoMain->croppedHeight = 0;
   }
   deinit_bufs(buffersMain, devInfoMain);
-#ifndef USECUDA
-  // dequeue buffer
-  if (ioctl(fdOut, VIDIOC_DQBUF, &bufferOut) < 0) {
-    fprintf(stderr, "Error dequeuing buffer\n");
-    munmap(mapped_buffer, bufferOut.length);
-    close(fdOut);
-    return -1;
-  }
-  // stop streaming
-  if (ioctl(fdOut, VIDIOC_STREAMOFF, &typeOut) < 0) {
-    fprintf(stderr, "Error stopping streaming\n");
-    munmap(mapped_buffer, bufferOut.length);
-    close(fdOut);
-    return -1;
-  }
-  munmap(mapped_buffer, bufferOut.length);
-  close(fdOut); // close the device file
-#endif
   //deinit_bufs(buffersAlt, devInfoAlt);
   return 0;
 }

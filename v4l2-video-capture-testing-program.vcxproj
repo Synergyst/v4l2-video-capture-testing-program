@@ -100,6 +100,15 @@
   <ItemGroup>
     <None Include="1080P50EDID.txt" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="uvc.h" />
+    <None Include="v4l2-mmal-uvc.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="v4l2-mmal-uvc.c">
+      <FileType>CppCode</FileType>
+    </None>
+  </ItemGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">
     <RemotePostBuildEvent>
       <Command>mkdir -p ~/projects/$(ProjectName)/bin/ARM/Debug/ ; touch ~/projects/$(ProjectName)/v4l2-capture-test.cpp ~/projects/$(ProjectName)/build.sh ; chmod +x ~/projects/$(ProjectName)/*.sh ; dos2unix ~/projects/$(ProjectName)/* ; cp ~/projects/$(ProjectName)/v4l2-capture-test.cpp ~/projects/$(ProjectName)/v4l2-capture.cu ; ~/projects/$(ProjectName)/build.sh</Command>
