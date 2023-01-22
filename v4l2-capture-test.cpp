@@ -45,6 +45,12 @@
 #include <linux/videodev2.h>
 #include <libv4l2.h>
 #include <omp.h>
+#include <libswscale/swscale.h>
+#include <libyuv.h>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/pixfmt.h>
+#include <libavutil/imgutils.h>
 #ifdef USECUDA
 #include "cuda.h"
 #include "cuda_runtime.h"
@@ -696,6 +702,100 @@ int init_dev_stage2(struct buffer* buffers, struct devInfo* devInfos) {
   return 0;
 }
 
+void convert_yuyv_to_yuv(unsigned char* yuyv_frame, unsigned char* yuv_frame, int width, int height) {
+  int yuyv_idx, yuv_idx;
+#pragma omp parallel for
+  for (int i = 0; i < height; i++) {
+    for (int j = 0; j < width; j += 2) {
+      yuyv_idx = (i * width + j) * 2;
+      yuv_idx = (i * width + j) * 3;
+      yuv_frame[yuv_idx] = yuyv_frame[yuyv_idx];
+      yuv_frame[yuv_idx + 1] = yuyv_frame[yuyv_idx + 1];
+      yuv_frame[yuv_idx + 2] = yuyv_frame[yuyv_idx + 3];
+    }
+  }
+}
+
+/*void convert_yuyv_to_yuv_libav(unsigned char* yuyv_frame, int width, int height, unsigned char* yuv_frame) {
+  // Allocate context
+  SwsContext* sws_context = sws_getContext(width, height, AV_PIX_FMT_YUYV422, width, height, AV_PIX_FMT_YUV420P, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+
+  // Allocate frame
+  AVFrame* yuyv_frame_av = av_frame_alloc();
+  yuyv_frame_av->width = width;
+  yuyv_frame_av->height = height;
+  yuyv_frame_av->format = AV_PIX_FMT_YUYV422;
+  av_image_fill_arrays(yuyv_frame_av->data, yuyv_frame_av->linesize, yuyv_frame, AV_PIX_FMT_YUYV422, width, height, 1);
+
+  // Allocate frame
+  AVFrame* yuv_frame_av = av_frame_alloc();
+  yuv_frame_av->width = width;
+  yuv_frame_av->height = height;
+  yuv_frame_av->format = AV_PIX_FMT_YUV420P;
+  av_image_fill_arrays(yuv_frame_av->data, yuv_frame_av->linesize, yuv_frame, AV_PIX_FMT_YUV420P, width, height, 1);
+
+  // Convert YUYV to YUV
+  sws_scale(sws_context, yuyv_frame_av->data, yuyv_frame_av->linesize, 0, height, yuv_frame_av->data, yuv_frame_av->linesize);
+
+  // Release memory
+  sws_freeContext(sws_context);
+  av_frame_free(&yuyv_frame_av);
+  av_frame_free(&yuv_frame_av);
+}*/
+
+/*void convert_yuyv_to_mjpeg(unsigned char* yuyv_frame, int width, int height, unsigned char* mjpeg_frame, unsigned long& jpeg_size) {
+  // Allocate memory for YUV image
+  unsigned char* yuv_frame = new unsigned char[width * height * 3 / 2];
+
+  // Convert YUYV to YUV
+  //libyuv::YUY2ToI420(yuyv_frame, width * 2, yuv_frame, width, yuv_frame + width * height, width / 2, yuv_frame + width * height * 5 / 4, width / 2, width, height);
+
+  // Initialize codec context
+  AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_MJPEG);
+  AVCodecContext* codec_context = avcodec_alloc_context3(codec);
+  codec_context->width = width;
+  codec_context->height = height;
+  codec_context->pix_fmt = AV_PIX_FMT_YUV420P;
+  codec_context->time_base = (AVRational){ 1,25 };
+  codec_context->qmin = 10;
+  codec_context->qmax = 51;
+  codec_context->max_b_frames = 0;
+  codec_context->codec_id = AV_CODEC_ID_MJPEG;
+  codec_context->codec_type = AVMEDIA_TYPE_VIDEO;
+  if (avcodec_open2(codec_context, codec, nullptr) < 0) {
+    std::cout << "Failed to open codec" << std::endl;
+    return;
+  }
+  // Allocate frame
+  AVFrame* frame = av_frame_alloc();
+  frame->format = codec_context->pix_fmt;
+  frame->width = codec_context->width;
+  frame->height = codec_context->height;
+  av_image_alloc(frame->data, frame->linesize, codec_context->width, codec_context->height, codec_context->pix_fmt, 32);
+
+  // Fill frame with YUV data
+  av_image_copy_plane(frame->data[0], frame->linesize[0], yuv_frame, width, width, height);
+  av_image_copy_plane(frame->data[1], frame->linesize[1], yuv_frame + width * height, width / 2, width / 2, height / 2);
+  av_image_copy_plane(frame->data[2], frame->linesize[2], yuv_frame + width * height * 5 / 4, width / 2, width / 2, height / 2);
+
+  // Encode frame to MJPEG
+  AVPacket packet;
+  av_init_packet(&packet);
+  packet.data = mjpeg_frame;
+  packet.size = jpeg_size;
+  int got_packet = 0;
+  if (avcodec_encode_video2(codec_context, &packet, frame, &got_packet) < 0) {
+    std::cout << "Failed to encode frame to MJPEG" << std::endl;
+    return;
+  }
+  jpeg_size = packet.size;
+  // Release memory and close codec context
+  av_free(frame);
+  avcodec_close(codec_context);
+  av_free(codec_context);
+  delete[] yuv_frame;
+}*/
+
 int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capType) {
   //memset(devInfos->outputFrameGreyscale, 0, devInfos->startingSize);
   fd_set fds;
@@ -751,13 +851,12 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
   cudaFree(d_output);
   frame_to_stdout(devInfos->outputFrameGreyscaleScaled, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
 #else
-  //memcpy(frame_bufferOut, (unsigned char*)buffers[buf.index].start, (devInfos->startingWidth * devInfos->startingHeight * 2));
-  // fill frame with YUYV data
-  /*if (write(fdOut, (unsigned char*)buffers[buf.index].start, (devInfos->startingWidth * devInfos->startingHeight * 2)) < 0) {
-    // handle error
-    fprintf(stderr, "Write error\n");
-  }*/
-  //frame_to_stdout((unsigned char*)buffers[buf.index].start, (devInfos->startingWidth * devInfos->startingHeight * 2));
+  //unsigned long jpeg_size = 0;
+  //convert_yuyv_to_mjpeg((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrame, jpeg_size);
+  //std::fwrite(devInfos->outputFrame, 1, jpeg_size, stdout);
+  //frame_to_stdout(devInfos->outputFrame, jpeg_size);
+  //fprintf(stderr, "Test: %u\n", jpeg_size);
+  //frame_to_stdout(devInfos->outputFrame, (devInfos->startingWidth * devInfos->startingHeight * 2));
 #endif
   /*rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscaleScaled, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
   frame_to_stdout(devInfos->outputFrameGreyscaleScaled, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
@@ -836,7 +935,7 @@ int main(int argc, char **argv) {
   init_vars(devInfoMain, 2, atoi(argv[2]), atoi(argv[3]), 30, true, true, argv[1], 0);
   //init_vars(devInfoMain, 2, atoi(argv[3]), atoi(argv[4]), 30, true, true, argv[1], 0);
   //init_vars(devInfoAlt, 2, atoi(argv[3]), atoi(argv[4]), 30, true, true, argv[2], 1);
-  //devInfoMain->outputFrame = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight * 2), sizeof(unsigned char));
+  devInfoMain->outputFrame = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight * 2), sizeof(unsigned char));
   devInfoMain->outputFrameGreyscaleScaled = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight), sizeof(unsigned char));
   //devInfoAlt->outputFrameGreyscale = (unsigned char*)malloc(((devInfoAlt->startingWidth * devInfoAlt->startingHeight)));
   //devInfoAlt->outputFrameGreyscaleScaled = (unsigned char*)malloc(devInfoAlt->scaledOutSize);
