@@ -785,18 +785,10 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
   cudaFree(d_output);
   frame_to_stdout(devInfos->outputFrameGreyscaleScaled, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
 #else
-  /*unsigned char* yuv_frame = new unsigned char[fmtOut.fmt.pix.sizeimage];
-  // Fill yuv_frame with YUV data
-  convert_yuyv_to_yuv((unsigned char*)buffers[buf.index].start, yuv_frame, devInfos->startingWidth, devInfos->startingHeight);*/
-  //uyvy_to_yuyv((unsigned char*)buffers[buf.index].start, devInfos->outputFrame, devInfos->startingWidth, devInfos->startingHeight);
-  //if (write(fdOut, devInfos->outputFrame, (devInfos->startingWidth * devInfos->startingHeight * 2)) < 0) {
-  if (write(fdOut, (unsigned char*)buffers[buf.index].start, (devInfos->startingWidth * devInfos->startingHeight * 2)) < 0) {
+  rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscaleScaled, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
+  /*if (write(fdOut, (unsigned char*)buffers[buf.index].start, (devInfos->startingWidth * devInfos->startingHeight * 2)) < 0) {
     fprintf(stderr, "Error writing frame\n");
-  }
-  //convert_yuyv_to_mjpeg((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrame, jpeg_size);
-  //std::fwrite(devInfos->outputFrame, 1, jpeg_size, stdout);
-  //frame_to_stdout(devInfos->outputFrame, jpeg_size);
-  //fprintf(stderr, "Test: %u\n", jpeg_size);
+  }*/
   //frame_to_stdout(devInfos->outputFrame, (devInfos->startingWidth * devInfos->startingHeight * 2));
 #endif
   /*rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscaleScaled, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
@@ -861,17 +853,42 @@ int init_vars(struct devInfo* devInfos, const int force_format, const int scaled
   return 0;
 }
 
+/* TODO: make this dynamically accept n-number of frames to combine
+void combine_multiple_frames(unsigned char** frames, unsigned char* output, int width, int height, int n_frames) {
+  int frameSize = width * height;
+  int offset = 0;
+  for (int f = 0; f < n_frames; f++) {
+#pragma omp parallel for simd
+    for (int i = 0; i < frameSize; i++) {
+      output[i + offset] = frames[f][i];
+    }
+    offset += frameSize;
+  }
+}*/
+
+void combine_multiple_frames(unsigned char* input, unsigned char* inputAlt, unsigned char* output, int width, int height) {
+  int frameSize = width * height;
+#pragma omp parallel for simd
+  for (int i = 0; i < frameSize; i++) {
+    output[i] = input[i];
+  }
+#pragma omp parallel for simd
+  for (int i = 0; i < frameSize; i++) {
+    output[i + frameSize] = inputAlt[i];
+  }
+}
+
 int main(int argc, char **argv) {
-  /*if (argc < 5) {
+  if (argc < 5) {
     fprintf(stderr, "Usage: %s <V4L2 main device> <V4L2 alt device> <scaled down width> <scaled down height>\n\nExample: %s /dev/video0 /dev/video1 640 360\n", argv[0], argv[0]);
     return 1;
-  }*/
-  if (argc < 3) {
+  }
+  /*if (argc < 3) {
     fprintf(stderr, "Usage: %s <V4L2 device> <scaled down width> <scaled down height>\n\nExample: %s /dev/video0 640 360\n", argv[0], argv[0]);
     return 1;
-  }
+  }*/
   fprintf(stderr, "[main] Initializing..\n");
-  fdOut = v4l2_open("/dev/video2", O_RDWR, 0);
+  fdOut = v4l2_open("/dev/video3", O_RDWR, 0);
   if (fdOut < 0) {
     fprintf(stderr, "Error opening video device\n");
   }
@@ -885,33 +902,32 @@ int main(int argc, char **argv) {
     fprintf(stderr, "Error setting format\n");
   }
   devInfoMain = (devInfo*)calloc(1, sizeof(*devInfoMain));
-  //devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
-  init_vars(devInfoMain, 2, atoi(argv[2]), atoi(argv[3]), 30, true, true, argv[1], 0);
-  //init_vars(devInfoMain, 2, atoi(argv[3]), atoi(argv[4]), 30, true, true, argv[1], 0);
-  //init_vars(devInfoAlt, 2, atoi(argv[3]), atoi(argv[4]), 30, true, true, argv[2], 1);
+  devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
+  //init_vars(devInfoMain, 2, atoi(argv[2]), atoi(argv[3]), 30, true, true, argv[1], 0);
+  init_vars(devInfoMain, 2, atoi(argv[3]), atoi(argv[4]), 30, true, true, argv[1], 0);
+  init_vars(devInfoAlt, 2, atoi(argv[3]), atoi(argv[4]), 30, true, true, argv[2], 1);
   devInfoMain->outputFrame = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight * 2), sizeof(unsigned char));
   devInfoMain->outputFrameGreyscaleScaled = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight), sizeof(unsigned char));
-  //devInfoAlt->outputFrameGreyscale = (unsigned char*)malloc(((devInfoAlt->startingWidth * devInfoAlt->startingHeight)));
-  //devInfoAlt->outputFrameGreyscaleScaled = (unsigned char*)malloc(devInfoAlt->scaledOutSize);
-  //fprintf(stderr, "[main] Starting V4L2 capture program\n\n[cap0]: %s\n[cap1]: %s\n[main] scaling resolution to: %dx%d\n", devInfoMain->device, devInfoAlt->device, atoi(argv[3]), atoi(argv[4]));
+  devInfoAlt->outputFrame = (unsigned char*)calloc((devInfoAlt->startingWidth * devInfoAlt->startingHeight * 2), sizeof(unsigned char));
+  devInfoAlt->outputFrameGreyscaleScaled = (unsigned char*)calloc((devInfoAlt->scaledOutWidth * devInfoAlt->scaledOutHeight), sizeof(unsigned char));
+
+  unsigned char *finalOutputFrame = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2), sizeof(unsigned char));
+  fprintf(stderr, "[main] Starting V4L2 capture program\n\n[cap0]: %s\n[cap1]: %s\n[main] scaling resolution to: %dx%d\n", devInfoMain->device, devInfoAlt->device, atoi(argv[3]), atoi(argv[4]));
   // [main-cap]
   init_dev_stage1(buffersMain, devInfoMain);
   buffersMain = (buffer*)calloc(devInfoMain->req.count, sizeof(*buffersMain));
   init_dev_stage2(buffersMain, devInfoMain);
   // [alt-cap]
-  //init_dev_stage1(buffersAlt, devInfoAlt);
-  //buffersAlt = (buffer*)calloc(devInfoAlt->req.count, sizeof(*buffersAlt));
-  //init_dev_stage2(buffersAlt, devInfoAlt);
+  init_dev_stage1(buffersAlt, devInfoAlt);
+  buffersAlt = (buffer*)calloc(devInfoAlt->req.count, sizeof(*buffersAlt));
+  init_dev_stage2(buffersAlt, devInfoAlt);
   fprintf(stderr, "\n[main] Starting loop now\n");
   while (true) {
     get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
-    //std::thread thread1(get_frame, buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
-    //std::thread thread2(get_frame, buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
-    //thread1.detach();
-    //thread2.detach();
-    //get_frame(buffersMain, devInfoMain, EXPENSIVE_CONVERTER_BOX);
-    //get_frame(buffersAlt, devInfoAlt, EXPENSIVE_CONVERTER_BOX);
+    get_frame(buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
     //usleep((devInfoMain->frameDelayMicros * devInfoMain->framerateDivisor));
+    combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrame, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight);
+    frame_to_stdout(finalOutputFrame, (devInfoMain->scaledOutSize * 2));
     //frame_to_stdout(devInfoMain->outputFrameGreyscaleScaled, (devInfoMain->scaledOutSize));
     devInfoMain->croppedWidth = 0;
     devInfoMain->croppedHeight = 0;
