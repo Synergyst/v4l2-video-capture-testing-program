@@ -128,7 +128,6 @@ unsigned char* finalOutputFrame;
 unsigned char* finalOutputFrameGreyscale;
 const int PORT = 8888;
 const int MAX_CLIENTS = 1;
-const int IMAGE_SIZE = 640 * 720 * 2; // YUYV image at 640x720 resolution
 
 std::vector<int> client_sockets; // stores connected client sockets
 
@@ -1055,7 +1054,7 @@ int main(int argc, char **argv) {
         }
         // send image data to all connected clients
         if (frame_number % 2 == 0) {
-          ret = send(client_socket, finalOutputFrame, IMAGE_SIZE, MSG_NOSIGNAL);
+          ret = send(client_socket, finalOutputFrame, retSize, MSG_NOSIGNAL);
           //fprintf(stderr, "[net] Sent: %d\n", ret);
           if (ret != retSize)
             break;
@@ -1070,6 +1069,13 @@ int main(int argc, char **argv) {
         if (write(fdOut, finalOutputFrame, (devInfoMain->startingWidth * devInfoMain->startingHeight * 2 * 2)) < 0) {
           fprintf(stderr, "Error writing frame\n");
         }
+        if (frame_number % 2 == 0) {
+          ret = send(client_socket, finalOutputFrame, retSize, MSG_NOSIGNAL);
+          //fprintf(stderr, "[net] Sent: %d\n", ret);
+          if (ret != retSize)
+            break;
+        }
+        frame_number++;
       }
     }
   }
