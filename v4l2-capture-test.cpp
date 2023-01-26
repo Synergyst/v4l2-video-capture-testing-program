@@ -976,8 +976,8 @@ int main(int argc, char **argv) {
   fprintf(stderr, "[main] Initializing..\n");
   devInfoMain = (devInfo*)calloc(1, sizeof(*devInfoMain));
   devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
-  init_vars(devInfoMain, 2, atoi(argv[4]), atoi(argv[5]), 30, true, true, argv[1], 0);
-  init_vars(devInfoAlt, 2, atoi(argv[4]), atoi(argv[5]), 30, true, true, argv[2], 1);
+  init_vars(devInfoMain, 2, atoi(argv[4]), atoi(argv[5]), 10, true, true, argv[1], 0);
+  init_vars(devInfoAlt, 2, atoi(argv[4]), atoi(argv[5]), 10, true, true, argv[2], 1);
   // [main-cap]
   init_dev_stage1(buffersMain, devInfoMain);
   buffersMain = (buffer*)calloc(devInfoMain->req.count, sizeof(*buffersMain));
@@ -1010,7 +1010,6 @@ int main(int argc, char **argv) {
   fprintf(stderr, "\n[main] Starting loop now\n");
   while (true) {
     get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
-    usleep((devInfoMain->frameDelayMicros * devInfoMain->framerateDivisor));
     get_frame(buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
     if (check_if_scaling(devInfoMain)) {
       invert_greyscale(devInfoAlt->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, devInfoAlt->scaledOutWidth, devInfoAlt->scaledOutHeight);
@@ -1033,6 +1032,7 @@ int main(int argc, char **argv) {
       }
       //frame_to_stdout(finalOutputFrame, (devInfoMain->startingHeight * devInfoMain->startingWidth * 2 * 2));
     }
+    usleep((devInfoMain->frameDelayMicros / 2));
   }
   deinit_bufs(buffersMain, devInfoMain);
   deinit_bufs(buffersAlt, devInfoAlt);
