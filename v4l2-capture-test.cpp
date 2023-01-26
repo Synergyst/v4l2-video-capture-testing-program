@@ -1025,7 +1025,7 @@ int main(int argc, char **argv) {
   bind(server_socket, (struct sockaddr*)&server_address, sizeof(server_address));
   listen(server_socket, MAX_CLIENTS);
   // start [main] loop
-  int ret = 1, retSize = 1;
+  int ret = 1, retSize = 1, frame_number = 0;
   struct sockaddr_in client_address;
   socklen_t client_len = sizeof(client_address);
   if (check_if_scaling(devInfoMain)) {
@@ -1054,15 +1054,13 @@ int main(int argc, char **argv) {
           fprintf(stderr, "Error writing frame\n");
         }
         // send image data to all connected clients
-        /*for (int i = 0; i < client_sockets.size(); i++) {
-          ret = send(client_sockets[i], finalOutputFrame, IMAGE_SIZE, 0);
-          fprintf(stderr, "[net] Sent: %d\n", ret);
-        }*/
-        ret = send(client_socket, finalOutputFrame, IMAGE_SIZE, MSG_NOSIGNAL);
-        //fprintf(stderr, "[net] Sent: %d\n", ret);
-        if (ret != retSize)
-          break;
-        //frame_to_stdout(finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2));
+        if (frame_number % 2 == 0) {
+          ret = send(client_socket, finalOutputFrame, IMAGE_SIZE, MSG_NOSIGNAL);
+          //fprintf(stderr, "[net] Sent: %d\n", ret);
+          if (ret != retSize)
+            break;
+        }
+        frame_number++;
       } else {
         invert_greyscale(devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->startingWidth, devInfoAlt->startingHeight);
         combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrameGreyscale, devInfoMain->startingWidth, devInfoMain->startingHeight);
@@ -1072,11 +1070,7 @@ int main(int argc, char **argv) {
         if (write(fdOut, finalOutputFrame, (devInfoMain->startingWidth * devInfoMain->startingHeight * 2 * 2)) < 0) {
           fprintf(stderr, "Error writing frame\n");
         }
-        // Send data to clients
-        //
-        //frame_to_stdout(finalOutputFrame, (devInfoMain->startingHeight * devInfoMain->startingWidth * 2 * 2));
       }
-      usleep((devInfoMain->frameDelayMicros / 2));
     }
   }
   deinit_bufs(buffersMain, devInfoMain);
