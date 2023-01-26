@@ -930,10 +930,45 @@ void print_example_usage(char* basename) {
 }
 
 void commandline_usage(int argcnt, char** args) {
-  if (argcnt != 5) {
-    fprintf(stderr, "Usage: %s <V4L2 main device> <V4L2 alt device> <scaled down width> <scaled down height>\n\nExample: %s /dev/video0 /dev/video1 640 360\n", args[0], args[0]);
+  if (argcnt != 6) {
+    fprintf(stderr, "Usage: %s <V4L2 main device> <V4L2 alt device> <V4L2 out device> <scaled down width> <scaled down height>\n\nExample: %s /dev/video0 /dev/video1 /dev/video2 640 360\n", args[0], args[0]);
     exit(1);
   }
+}
+
+void init_output_v4l2_dev(struct devInfo* devInfos, const char* outDevName) {
+  fdOut = v4l2_open(outDevName, O_RDWR, 0);
+  if (fdOut < 0) {
+    fprintf(stderr, "Error opening video device\n");
+  }
+  memset(&fmtOut, 0, sizeof(fmtOut));
+  fmtOut.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+  if (check_if_scaling(devInfos)) {
+    fmtOut.fmt.pix.width = devInfos->scaledOutWidth;
+    fmtOut.fmt.pix.height = devInfos->scaledOutHeight * 2;
+  } else {
+    fmtOut.fmt.pix.width = devInfos->startingWidth;
+    fmtOut.fmt.pix.height = devInfos->startingHeight * 2;
+  }
+  //switch (devInfos->force_format) {
+  switch (1) {
+  case 3:
+    fmtOut.fmt.pix.pixelformat = V4L2_PIX_FMT_GREY;
+    fmtOut.fmt.pix.field = V4L2_FIELD_NONE; // V4L2_FIELD_INTERLACED;
+    break;
+  case 2:
+    fmtOut.fmt.pix.pixelformat = V4L2_PIX_FMT_UYVY;
+    fmtOut.fmt.pix.field = V4L2_FIELD_NONE; // V4L2_FIELD_INTERLACED;
+    break;
+  case 1:
+    fmtOut.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+    fmtOut.fmt.pix.field = V4L2_FIELD_NONE; // V4L2_FIELD_INTERLACED;
+    break;
+  }
+  if (xioctl(fdOut, VIDIOC_S_FMT, &fmtOut) < 0) {
+    fprintf(stderr, "Error setting format\n");
+  }
+  fprintf(stderr, "[out] Using %s to output combined frames\n", outDevName);
 }
 
 int main(int argc, char **argv) {
@@ -941,8 +976,8 @@ int main(int argc, char **argv) {
   fprintf(stderr, "[main] Initializing..\n");
   devInfoMain = (devInfo*)calloc(1, sizeof(*devInfoMain));
   devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
-  init_vars(devInfoMain, 2, atoi(argv[3]), atoi(argv[4]), 30, true, true, argv[1], 0);
-  init_vars(devInfoAlt, 2, atoi(argv[3]), atoi(argv[4]), 30, true, true, argv[2], 1);
+  init_vars(devInfoMain, 2, atoi(argv[4]), atoi(argv[5]), 30, true, true, argv[1], 0);
+  init_vars(devInfoAlt, 2, atoi(argv[4]), atoi(argv[5]), 30, true, true, argv[2], 1);
   // [main-cap]
   init_dev_stage1(buffersMain, devInfoMain);
   buffersMain = (buffer*)calloc(devInfoMain->req.count, sizeof(*buffersMain));
@@ -970,6 +1005,7 @@ int main(int argc, char **argv) {
   }
   did_memory_allocate_correctly();
   print_example_usage(argv[0]);
+  init_output_v4l2_dev(devInfoMain, argv[3]);
   // start [main] loop
   fprintf(stderr, "\n[main] Starting loop now\n");
   while (true) {
@@ -982,17 +1018,24 @@ int main(int argc, char **argv) {
       //combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrame);
       //frame_to_stdout(finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2));
       grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->scaledOutWidth, (devInfoMain->scaledOutHeight * 2));
-      frame_to_stdout(finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2));
+      if (write(fdOut, finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2)) < 0) {
+        fprintf(stderr, "Error writing frame\n");
+      }
+      //frame_to_stdout(finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2));
     } else {
       invert_greyscale(devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->startingWidth, devInfoAlt->startingHeight);
       combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrameGreyscale, devInfoMain->startingWidth, devInfoMain->startingHeight);
       //combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrame);
       //frame_to_stdout(finalOutputFrame, (devInfoMain->startingHeight * devInfoMain->startingWidth * 2));
       grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->startingWidth, (devInfoMain->startingHeight * 2));
-      frame_to_stdout(finalOutputFrame, (devInfoMain->startingHeight * devInfoMain->startingWidth * 2 * 2));
+      if (write(fdOut, finalOutputFrame, (devInfoMain->startingWidth * devInfoMain->startingHeight * 2 * 2)) < 0) {
+        fprintf(stderr, "Error writing frame\n");
+      }
+      //frame_to_stdout(finalOutputFrame, (devInfoMain->startingHeight * devInfoMain->startingWidth * 2 * 2));
     }
   }
   deinit_bufs(buffersMain, devInfoMain);
   deinit_bufs(buffersAlt, devInfoAlt);
+  close(fdOut);
   return 0;
 }
