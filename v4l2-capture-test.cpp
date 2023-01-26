@@ -52,6 +52,10 @@
 #include <libavutil/pixfmt.h>
 #include <libavutil/imgutils.h>
 #include <span>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <errno.h>
 #ifdef USECUDA
 #include "cuda.h"
 #include "cuda_runtime.h"
@@ -122,6 +126,11 @@ const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
 
 unsigned char* finalOutputFrame;
 unsigned char* finalOutputFrameGreyscale;
+const int PORT = 8888;
+const int MAX_CLIENTS = 1;
+const int IMAGE_SIZE = 640 * 720 * 2; // YUYV image at 640x720 resolution
+
+std::vector<int> client_sockets; // stores connected client sockets
 
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
@@ -1006,33 +1015,69 @@ int main(int argc, char **argv) {
   did_memory_allocate_correctly();
   print_example_usage(argv[0]);
   init_output_v4l2_dev(devInfoMain, argv[3]);
+  // start UDP network layer
+  // Create the socket
+  int server_socket = socket(AF_INET, SOCK_STREAM, 0);
+  struct sockaddr_in server_address;
+  server_address.sin_family = AF_INET;
+  server_address.sin_port = htons(PORT);
+  server_address.sin_addr.s_addr = INADDR_ANY;
+  bind(server_socket, (struct sockaddr*)&server_address, sizeof(server_address));
+  listen(server_socket, MAX_CLIENTS);
   // start [main] loop
-  fprintf(stderr, "\n[main] Starting loop now\n");
+  int ret = 1, retSize = 1;
+  struct sockaddr_in client_address;
+  socklen_t client_len = sizeof(client_address);
+  if (check_if_scaling(devInfoMain)) {
+    retSize = (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2);
+  } else {
+    retSize = (devInfoMain->startingWidth * devInfoMain->startingHeight * 2 * 2);
+  }
   while (true) {
-    get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
-    get_frame(buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
-    if (check_if_scaling(devInfoMain)) {
-      invert_greyscale(devInfoAlt->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, devInfoAlt->scaledOutWidth, devInfoAlt->scaledOutHeight);
-      combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrameGreyscale, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight);
-      //combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrame);
-      //frame_to_stdout(finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2));
-      grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->scaledOutWidth, (devInfoMain->scaledOutHeight * 2));
-      if (write(fdOut, finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2)) < 0) {
-        fprintf(stderr, "Error writing frame\n");
+    fprintf(stderr, "\n[main] Listening for client on TCP port 8888\n");
+    int client_socket = accept(server_socket, (struct sockaddr*)&client_address, &client_len);
+    fprintf(stderr, "[net] Packet size: %d\n", retSize);
+    sleep(1);
+    fprintf(stderr, "\n[main] Starting main loop now\n");
+    while (true) {
+      struct sockaddr_in client_address;
+      socklen_t client_address_len = sizeof(client_address);
+      get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
+      get_frame(buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
+      if (check_if_scaling(devInfoMain)) {
+        invert_greyscale(devInfoAlt->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, devInfoAlt->scaledOutWidth, devInfoAlt->scaledOutHeight);
+        combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrameGreyscale, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight);
+        //combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrame);
+        //frame_to_stdout(finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2));
+        grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->scaledOutWidth, (devInfoMain->scaledOutHeight * 2));
+        if (write(fdOut, finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2)) < 0) {
+          fprintf(stderr, "Error writing frame\n");
+        }
+        // send image data to all connected clients
+        /*for (int i = 0; i < client_sockets.size(); i++) {
+          ret = send(client_sockets[i], finalOutputFrame, IMAGE_SIZE, 0);
+          fprintf(stderr, "[net] Sent: %d\n", ret);
+        }*/
+        ret = send(client_socket, finalOutputFrame, IMAGE_SIZE, MSG_NOSIGNAL);
+        //fprintf(stderr, "[net] Sent: %d\n", ret);
+        if (ret != retSize)
+          break;
+        //frame_to_stdout(finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2));
+      } else {
+        invert_greyscale(devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->startingWidth, devInfoAlt->startingHeight);
+        combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrameGreyscale, devInfoMain->startingWidth, devInfoMain->startingHeight);
+        //combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrame);
+        //frame_to_stdout(finalOutputFrame, (devInfoMain->startingHeight * devInfoMain->startingWidth * 2));
+        grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->startingWidth, (devInfoMain->startingHeight * 2));
+        if (write(fdOut, finalOutputFrame, (devInfoMain->startingWidth * devInfoMain->startingHeight * 2 * 2)) < 0) {
+          fprintf(stderr, "Error writing frame\n");
+        }
+        // Send data to clients
+        //
+        //frame_to_stdout(finalOutputFrame, (devInfoMain->startingHeight * devInfoMain->startingWidth * 2 * 2));
       }
-      //frame_to_stdout(finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2));
-    } else {
-      invert_greyscale(devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->startingWidth, devInfoAlt->startingHeight);
-      combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrameGreyscale, devInfoMain->startingWidth, devInfoMain->startingHeight);
-      //combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrame);
-      //frame_to_stdout(finalOutputFrame, (devInfoMain->startingHeight * devInfoMain->startingWidth * 2));
-      grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->startingWidth, (devInfoMain->startingHeight * 2));
-      if (write(fdOut, finalOutputFrame, (devInfoMain->startingWidth * devInfoMain->startingHeight * 2 * 2)) < 0) {
-        fprintf(stderr, "Error writing frame\n");
-      }
-      //frame_to_stdout(finalOutputFrame, (devInfoMain->startingHeight * devInfoMain->startingWidth * 2 * 2));
+      usleep((devInfoMain->frameDelayMicros / 2));
     }
-    usleep((devInfoMain->frameDelayMicros / 2));
   }
   deinit_bufs(buffersMain, devInfoMain);
   deinit_bufs(buffersAlt, devInfoAlt);

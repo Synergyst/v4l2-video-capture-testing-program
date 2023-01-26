@@ -134,7 +134,7 @@ struct uvc_format_info
 static const struct uvc_frame_info uvc_frames_yuyv[] = {
   //  {640, 360, {66666, 100000, 500000, 0},},
   //  {736, 480, {500000, 0},},
-    {1280, 720, {400000, 0},},
+    {640, 720, {400000, 0},},
     {0, 0, {0,},},
 };
 
@@ -142,14 +142,14 @@ static const struct uvc_frame_info uvc_frames_yuyv[] = {
 
 static const struct uvc_frame_info uvc_frames_mjpeg[] = {
   //  {640, 360, {66666, 100000, 500000, 0},},
-    {1280, 720, {500000},},
+    {640, 720, {500000},},
     {0, 0, {0,},},
 };
 
 
 static const struct uvc_format_info uvc_formats[] = {
-  //  {V4L2_PIX_FMT_YUYV, uvc_frames_yuyv},
-    {V4L2_PIX_FMT_MJPEG, uvc_frames_mjpeg},
+    {V4L2_PIX_FMT_YUYV, uvc_frames_yuyv},
+  //  {V4L2_PIX_FMT_MJPEG, uvc_frames_mjpeg},
 };
 
 /* ---------------------------------------------------------------------------
@@ -3161,7 +3161,7 @@ usage(const char* argv0)
   //  fprintf (stderr, " -d               Do not use any real V4L2 capture device\n");
   fprintf(stderr, " -f <format>    Select frame format\n\t"
     "0 = V4L2_PIX_FMT_YUYV\n\t" "1 = V4L2_PIX_FMT_MJPEG\n\t");
-  fprintf(stderr, " -g	1280x720 input device frame size\n");
+  fprintf(stderr, " -g	640x720 input device frame size\n");
   fprintf(stderr, " -h		Print this help screen and exit\n");
   //  fprintf (stderr, " -i image MJPEG image\n");
   //  fprintf (stderr, " -m               Streaming mult for ISOC (b/w 0 and 2)\n");
@@ -3169,7 +3169,7 @@ usage(const char* argv0)
   //  fprintf (stderr, " -o <IO method> Select UVC IO method:\n\t"
   //         "0 = MMAP\n\t" "1 = USER_PTR\n");
   fprintf(stderr, " -r <resolution> Select output frame resolution:\n\t"
-    "0 = 480p, (720x480)\n\t" "1 = 720p, WXGA (1280x720)\n");
+    "0 = 480p, (720x480)\n\t" "1 = 640x720\n");
   fprintf(stderr, " -s <speed>	Select USB bus speed (b/w 0 and 2)\n\t"
     "0 = Full Speed (FS)\n\t"
     "1 = High Speed (HS)\n\t" "2 = Super Speed (SS)\n");
@@ -3210,7 +3210,8 @@ main(int argc, char* argv[])
   struct timespec last;;
   //v4l2 setup parameters
   const struct v4l2_format_info* info;
-  unsigned int pixelformat = V4L2_PIX_FMT_UYVY;
+  unsigned int pixelformat = V4L2_PIX_FMT_YUYV;
+  //unsigned int pixelformat = V4L2_PIX_FMT_UYVY;
 
   int v4l2_width = 0;
   int v4l2_height = 0;
@@ -3330,8 +3331,10 @@ main(int argc, char* argv[])
     // Try to set the default format at the V4L2 video capture device as //requested by the user. actually not setup here, use video_set_format//
     CLEAR(fmt);
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    fmt.fmt.pix.width = v4l2_width;//(default_resolution == 0) ? 640 : 1280;
-    fmt.fmt.pix.height = v4l2_height;//(default_resolution == 0) ? 360 : 720;
+    fmt.fmt.pix.width = 640;//(default_resolution == 0) ? 640 : 1280;
+    fmt.fmt.pix.height = 720;//(default_resolution == 0) ? 360 : 720;
+    //fmt.fmt.pix.width = v4l2_width;//(default_resolution == 0) ? 640 : 1280;
+    //fmt.fmt.pix.height = v4l2_height;//(default_resolution == 0) ? 360 : 720;
     printf("width %d, height %d\n", fmt.fmt.pix.width, fmt.fmt.pix.height);
     switch (0) {
     case 1:
@@ -3390,7 +3393,7 @@ main(int argc, char* argv[])
     udev->height = 360;
     break;
   case 1:
-    udev->width = 1280;
+    udev->width = 640;
     udev->height = 720;
     break;
   case 2:
