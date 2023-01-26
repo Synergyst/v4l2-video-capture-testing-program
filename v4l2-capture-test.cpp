@@ -121,6 +121,7 @@ const int KERNEL_SIZE = 3; // The kernel size of the Gaussian blur, default: 5
 const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
 
 unsigned char* finalOutputFrame;
+unsigned char* finalOutputFrameGreyscale;
 
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
@@ -244,6 +245,13 @@ void yuyv_to_uyvy(unsigned char* input, unsigned char* output, int width, int he
       output[offset + 2] = y2;
       output[offset + 3] = v;
     }
+  }
+}
+
+void grey_to_yuyv(unsigned char* input, unsigned char* output, int width, int height) {
+  for (int i = 0, j = 0; i < width * height; i++, j += 2) {
+    output[j] = input[i];  // Y
+    output[j + 1] = 128; // U and V
   }
 }
 
@@ -900,7 +908,6 @@ void combine_multiple_frames(unsigned char* input, unsigned char* inputAlt, unsi
   std::memcpy(output + size, inputAlt, size);
 }
 
-
 bool check_if_scaling(struct devInfo* devInfos) {
   return (devInfoMain->startingWidth != devInfoMain->scaledOutWidth || devInfoMain->startingHeight != devInfoMain->scaledOutHeight);
 }
@@ -914,10 +921,10 @@ void did_memory_allocate_correctly() {
 
 void print_example_usage(char* basename) {
   if (check_if_scaling(devInfoMain)) {
-    fprintf(stderr, "[main] Example to test frame output:\n%s %s %s %d %d | ffplay -hide_banner -loglevel error -probesize 256M -f rawvideo -pixel_format gray -video_size %dx%d -i pipe:0\n",
+    fprintf(stderr, "[main] Example to test frame output:\n%s %s %s %d %d | ffplay -hide_banner -loglevel error -f rawvideo -pixel_format yuyv422 -video_size %dx%d -i pipe:0\n",
       basename, devInfoMain->device, devInfoAlt->device, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight, devInfoMain->scaledOutWidth, (devInfoMain->scaledOutHeight * 2));
   } else {
-    fprintf(stderr, "[main] Example to test frame output:\n%s %s %s %d %d | ffplay -hide_banner -loglevel error -probesize 256M -f rawvideo -pixel_format gray -video_size %dx%d -i pipe:0\n",
+    fprintf(stderr, "[main] Example to test frame output:\n%s %s %s %d %d | ffplay -hide_banner -loglevel error -f rawvideo -pixel_format yuyv422 -video_size %dx%d -i pipe:0\n",
       basename, devInfoMain->device, devInfoAlt->device, devInfoMain->startingWidth, devInfoMain->startingHeight, devInfoMain->startingWidth, (devInfoMain->startingHeight * 2));
   }
 }
@@ -953,11 +960,13 @@ int main(int argc, char **argv) {
   if (check_if_scaling(devInfoMain)) {
     devInfoMain->outputFrameGreyscaleUnscaled = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight), sizeof(unsigned char));
     devInfoAlt->outputFrameGreyscaleUnscaled = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight), sizeof(unsigned char));
-    finalOutputFrame = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2), sizeof(unsigned char));
+    finalOutputFrameGreyscale = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2), sizeof(unsigned char));
+    finalOutputFrame = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2), sizeof(unsigned char));
   } else {
     devInfoMain->outputFrameGreyscaleUnscaled = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight), sizeof(unsigned char));
     devInfoAlt->outputFrameGreyscaleUnscaled = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight), sizeof(unsigned char));
-    finalOutputFrame = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight * 2), sizeof(unsigned char));
+    finalOutputFrameGreyscale = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight * 2), sizeof(unsigned char));
+    finalOutputFrame = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight * 2 * 2), sizeof(unsigned char));
   }
   did_memory_allocate_correctly();
   print_example_usage(argv[0]);
@@ -969,14 +978,18 @@ int main(int argc, char **argv) {
     get_frame(buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
     if (check_if_scaling(devInfoMain)) {
       invert_greyscale(devInfoAlt->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, devInfoAlt->scaledOutWidth, devInfoAlt->scaledOutHeight);
-      combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrame, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight);
+      combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrameGreyscale, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight);
       //combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrame);
-      frame_to_stdout(finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2));
+      //frame_to_stdout(finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2));
+      grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->scaledOutWidth, (devInfoMain->scaledOutHeight * 2));
+      frame_to_stdout(finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2));
     } else {
       invert_greyscale(devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->startingWidth, devInfoAlt->startingHeight);
-      combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight);
+      combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrameGreyscale, devInfoMain->startingWidth, devInfoMain->startingHeight);
       //combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrame);
-      frame_to_stdout(finalOutputFrame, (devInfoMain->startingHeight * devInfoMain->startingWidth * 2));
+      //frame_to_stdout(finalOutputFrame, (devInfoMain->startingHeight * devInfoMain->startingWidth * 2));
+      grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->startingWidth, (devInfoMain->startingHeight * 2));
+      frame_to_stdout(finalOutputFrame, (devInfoMain->startingHeight * devInfoMain->startingWidth * 2 * 2));
     }
   }
   deinit_bufs(buffersMain, devInfoMain);
