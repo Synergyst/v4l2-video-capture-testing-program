@@ -35,13 +35,13 @@ fi
 
 # ~/projects/v4l2-capture-test/bin/ARM/Debug/v4l2-capture-test /dev/video1 1280 720 |ffmpeg -hide_banner -loglevel error -f rawvideo -pixel_format yuyv422 -video_size 1280x720 -i pipe:0 -f rawvideo -c:v copy /dev/video2
 
-arm-linux-gnueabihf-gcc -g -I/opt/vc/include -pipe -o v4l2-mmal-uvc.o -c v4l2-mmal-uvc.c && arm-linux-gnueabihf-gcc -o v4l2-mmal-uvc v4l2-mmal-uvc.o -L/opt/vc/lib -lrt -lbcm_host -lvcos -lvchiq_arm -pthread -lmmal_core -lmmal_util -lmmal_vc_client -lvcsm
-if [[ $? -eq 0 ]]; then
-  echo "Successfully built: v4l2-mmal-uvc"
-else
-  echo "Build failed (v4l2-mmal-uvc)"
-  exit 1
-fi
+#arm-linux-gnueabihf-gcc -g -I/opt/vc/include -pipe -o v4l2-mmal-uvc.o -c v4l2-mmal-uvc.c && arm-linux-gnueabihf-gcc -o v4l2-mmal-uvc v4l2-mmal-uvc.o -L/opt/vc/lib -lrt -lbcm_host -lvcos -lvchiq_arm -pthread -lmmal_core -lmmal_util -lmmal_vc_client -lvcsm
+#if [[ $? -eq 0 ]]; then
+#  echo "Successfully built: v4l2-mmal-uvc"
+#else
+#  echo "Build failed (v4l2-mmal-uvc)"
+#  exit 1
+#fi
 
 #~/projects/v4l2-capture-test/v4l2-mmal-uvc
 
