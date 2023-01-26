@@ -886,15 +886,36 @@ void combine_multiple_frames(unsigned char* input, unsigned char* inputAlt, unsi
   }
 }
 
-int main(int argc, char **argv) {
-  if (argc < 5) {
-    fprintf(stderr, "Usage: %s <V4L2 main device> <V4L2 alt device> <scaled down width> <scaled down height>\n\nExample: %s /dev/video0 /dev/video1 640 360\n", argv[0], argv[0]);
-    return 1;
+bool check_if_scaling(struct devInfo* devInfos) {
+  return (devInfoMain->startingWidth != devInfoMain->scaledOutWidth || devInfoMain->startingHeight != devInfoMain->scaledOutHeight);
+}
+
+void did_memory_allocate_correctly() {
+  if (devInfoMain->outputFrameGreyscaleScaled == NULL || devInfoAlt->outputFrameGreyscaleScaled == NULL || devInfoMain->outputFrame == NULL || devInfoAlt->outputFrame == NULL || finalOutputFrame == NULL || devInfoMain->outputFrameGreyscaleUnscaled == NULL || devInfoAlt->outputFrameGreyscaleUnscaled == NULL) {
+    fprintf(stderr, "Memory Allocation Failed\n");
+    exit(1);
   }
-  /*if (argc < 3) {
-    fprintf(stderr, "Usage: %s <V4L2 device> <scaled down width> <scaled down height>\n\nExample: %s /dev/video0 640 360\n", argv[0], argv[0]);
-    return 1;
-  }*/
+}
+
+void print_example_usage(char* basename) {
+  if (check_if_scaling(devInfoMain)) {
+    fprintf(stderr, "[main] Example to test frame output:\n%s %s %s %d %d | ffplay -hide_banner -loglevel error -probesize 256M -f rawvideo -pixel_format gray -video_size %dx%d -i pipe:0\n",
+      basename, devInfoMain->device, devInfoAlt->device, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight, devInfoMain->scaledOutWidth, (devInfoMain->scaledOutHeight * 2));
+  } else {
+    fprintf(stderr, "[main] Example to test frame output:\n%s %s %s %d %d | ffplay -hide_banner -loglevel error -probesize 256M -f rawvideo -pixel_format gray -video_size %dx%d -i pipe:0\n",
+      basename, devInfoMain->device, devInfoAlt->device, devInfoMain->startingWidth, devInfoMain->startingHeight, devInfoMain->startingWidth, (devInfoMain->startingHeight * 2));
+  }
+}
+
+void commandline_usage(int argcnt, char** args) {
+  if (argcnt < 5) {
+    fprintf(stderr, "Usage: %s <V4L2 main device> <V4L2 alt device> <scaled down width> <scaled down height>\n\nExample: %s /dev/video0 /dev/video1 640 360\n", args[0], args[0]);
+    exit(1);
+  }
+}
+
+int main(int argc, char **argv) {
+  commandline_usage(argc, argv);
   fprintf(stderr, "[main] Initializing..\n");
   fdOut = v4l2_open("/dev/video3", O_RDWR, 0);
   if (fdOut < 0) {
@@ -927,7 +948,7 @@ int main(int argc, char **argv) {
   devInfoMain->outputFrame = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight * 2), sizeof(unsigned char));
   devInfoAlt->outputFrame = (unsigned char*)calloc((devInfoAlt->startingWidth * devInfoAlt->startingHeight * 2), sizeof(unsigned char));
   // allocate memory for combining frames
-  if (devInfoMain->startingWidth != devInfoMain->scaledOutWidth || devInfoMain->startingHeight != devInfoMain->scaledOutHeight) {
+  if (check_if_scaling(devInfoMain)) {
     devInfoMain->outputFrameGreyscaleUnscaled = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight), sizeof(unsigned char));
     devInfoAlt->outputFrameGreyscaleUnscaled = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight), sizeof(unsigned char));
     finalOutputFrame = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2), sizeof(unsigned char));
@@ -936,24 +957,14 @@ int main(int argc, char **argv) {
     devInfoAlt->outputFrameGreyscaleUnscaled = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight), sizeof(unsigned char));
     finalOutputFrame = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight * 2), sizeof(unsigned char));
   }
-  if (devInfoMain->outputFrameGreyscaleScaled == NULL || devInfoAlt->outputFrameGreyscaleScaled == NULL || devInfoMain->outputFrame == NULL || devInfoAlt->outputFrame == NULL || finalOutputFrame == NULL || devInfoMain->outputFrameGreyscaleUnscaled == NULL || devInfoAlt->outputFrameGreyscaleUnscaled == NULL) {
-    fprintf(stderr, "Memory Allocation Failed\n");
-    exit(1);
-  }
-  // print example usage
-  if (devInfoMain->startingWidth != devInfoMain->scaledOutWidth || devInfoMain->startingHeight != devInfoMain->scaledOutHeight) {
-    fprintf(stderr, "[main] Example to test frame output:\n%s %s %s %d %d | ffplay -hide_banner -loglevel error -probesize 256M -f rawvideo -pixel_format gray -video_size %dx%d -i pipe:0\n",
-      argv[0], devInfoMain->device, devInfoAlt->device, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight, devInfoMain->scaledOutWidth, (devInfoMain->scaledOutHeight * 2));
-  } else {
-    fprintf(stderr, "[main] Example to test frame output:\n%s %s %s %d %d | ffplay -hide_banner -loglevel error -probesize 256M -f rawvideo -pixel_format gray -video_size %dx%d -i pipe:0\n",
-      argv[0], devInfoMain->device, devInfoAlt->device, devInfoMain->startingWidth, devInfoMain->startingHeight, devInfoMain->startingWidth, (devInfoMain->startingHeight * 2));
-  }
+  did_memory_allocate_correctly();
+  print_example_usage(argv[0]);
   // start [main] loop
   fprintf(stderr, "\n[main] Starting loop now\n");
   while (true) {
     get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
     get_frame(buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
-    if (devInfoMain->startingWidth != devInfoMain->scaledOutWidth || devInfoMain->startingHeight != devInfoMain->scaledOutHeight) {
+    if (check_if_scaling(devInfoMain)) {
       invert_greyscale(devInfoAlt->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, devInfoAlt->scaledOutWidth, devInfoAlt->scaledOutHeight);
       combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrame, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight);
       frame_to_stdout(finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2));
