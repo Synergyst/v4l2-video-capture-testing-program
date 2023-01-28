@@ -993,6 +993,12 @@ int net_sender(int retSz, int clisock, unsigned char* outData) {
 int main(int argc, char **argv) {
   commandline_usage(argc, argv);
   fprintf(stderr, "[main] Initializing..\n");
+  // define and initialize variables
+  int server_socket;
+  struct sockaddr_in server_address;
+  int ret = 1, retSize = 1, frame_number = 0;
+  struct sockaddr_in client_address;
+  socklen_t client_len = sizeof(client_address);
   devInfoMain = (devInfo*)calloc(1, sizeof(*devInfoMain));
   devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
   init_vars(devInfoMain, 2, atoi(argv[4]), atoi(argv[5]), 10, true, true, argv[1], 0);
@@ -1025,10 +1031,8 @@ int main(int argc, char **argv) {
   did_memory_allocate_correctly();
   print_example_usage(argv[0]);
   init_output_v4l2_dev(devInfoMain, argv[3]);
-  // start UDP network layer
-  // Create the socket
-  int server_socket = socket(AF_INET, SOCK_STREAM, 0);
-  struct sockaddr_in server_address;
+  // networking layer
+  server_socket = socket(AF_INET, SOCK_STREAM, 0);
   server_address.sin_family = AF_INET;
   server_address.sin_port = htons(PORT);
   server_address.sin_addr.s_addr = INADDR_ANY;
@@ -1037,9 +1041,6 @@ int main(int argc, char **argv) {
   bind(server_socket, (struct sockaddr*)&server_address, sizeof(server_address));
   listen(server_socket, MAX_CLIENTS);
   // start [main] loop
-  int ret = 1, retSize = 1, frame_number = 0;
-  struct sockaddr_in client_address;
-  socklen_t client_len = sizeof(client_address);
   if (check_if_scaling(devInfoMain)) {
     retSize = (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2);
   } else {
@@ -1047,44 +1048,36 @@ int main(int argc, char **argv) {
   }
   while (true) {
     fprintf(stderr, "\n[main] Listening for client on TCP port 8888\n");
+    // wait for a network client so we're not spinning our wheels maxing out the CPU when there's no client to view the data
     int client_socket = accept(server_socket, (struct sockaddr*)&client_address, &client_len);
+    // we've got a client. let's proceed..
     fprintf(stderr, "[net] Packet size: %d\n", retSize);
     sleep(1);
     fprintf(stderr, "\n[main] Starting main loop now\n");
+    // shouldLoop allows the while loop below to loop while we have a client listening (explained further later below)
     shouldLoop.store(true);
     while (shouldLoop) {
-      struct sockaddr_in client_address;
-      socklen_t client_address_len = sizeof(client_address);
       get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
       get_frame(buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
       if (check_if_scaling(devInfoMain)) {
         invert_greyscale(devInfoAlt->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, devInfoAlt->scaledOutWidth, devInfoAlt->scaledOutHeight);
         combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrameGreyscale, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight);
-        //combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrame);
-        //frame_to_stdout(finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2));
-        //background_task.wait();
         grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->scaledOutWidth, (devInfoMain->scaledOutHeight * 2));
-        if (write(fdOut, finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2)) < 0) {
-          fprintf(stderr, "Error writing frame\n");
-        }
-        // send image data to all connected clients
-        if (frame_number % 2 == 0) {
+        if (write(fdOut, finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2)) < 0)
+          fprintf(stderr, "Error writing frame to: %s\n", argv[3]);
+        if (frame_number % 2 == 0)
           background_task = std::async(std::launch::async, net_sender, retSize, client_socket, finalOutputFrame);
-        }
+        // if net_sender() in the background can't send the data (or enough data) to the client we will assume the connection is severed and set shallLoop to false
         frame_number++;
       } else {
         invert_greyscale(devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->startingWidth, devInfoAlt->startingHeight);
         combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrameGreyscale, devInfoMain->startingWidth, devInfoMain->startingHeight);
-        //combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrame);
-        //frame_to_stdout(finalOutputFrame, (devInfoMain->startingHeight * devInfoMain->startingWidth * 2));
-        //background_task.wait();
         grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->startingWidth, (devInfoMain->startingHeight * 2));
-        if (write(fdOut, finalOutputFrame, (devInfoMain->startingWidth * devInfoMain->startingHeight * 2 * 2)) < 0) {
-          fprintf(stderr, "Error writing frame\n");
-        }
-        if (frame_number % 2 == 0) {
+        if (write(fdOut, finalOutputFrame, (devInfoMain->startingWidth * devInfoMain->startingHeight * 2 * 2)) < 0)
+          fprintf(stderr, "Error writing frame to: %s\n", argv[3]);
+        if (frame_number % 2 == 0)
           background_task = std::async(std::launch::async, net_sender, retSize, client_socket, finalOutputFrame);
-        }
+        // if net_sender() in the background can't send the data (or enough data) to the client we will assume the connection is severed and set shallLoop to false
         frame_number++;
       }
     }
