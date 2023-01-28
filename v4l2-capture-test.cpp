@@ -132,6 +132,12 @@ const int MAX_CLIENTS = 1;
 std::vector<int> client_sockets; // stores connected client sockets
 std::atomic<bool> shouldLoop;
 std::future<int> background_task;
+// define and initialize variables
+int server_socket, client_socket;
+struct sockaddr_in server_address;
+int ret = 1, retSize = 1, frame_number = 0;
+struct sockaddr_in client_address;
+socklen_t client_len = sizeof(client_address);
 
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
@@ -859,7 +865,18 @@ int deinit_bufs(struct buffer *buffers, struct devInfo *devInfos) {
   return 0;
 }
 
-int init_vars(struct devInfo* devInfos, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera, char *dev_name, int index) {
+bool check_if_scaling(struct devInfo* devInfos) {
+  return (devInfos->startingWidth != devInfos->scaledOutWidth || devInfos->startingHeight != devInfos->scaledOutHeight);
+}
+
+void did_memory_allocate_correctly(struct devInfo* devInfos) {
+  if (devInfos->outputFrameGreyscaleScaled == NULL || devInfos->outputFrame == NULL || finalOutputFrame == NULL) {
+    fprintf(stderr, "Memory Allocation Failed\n");
+    exit(1);
+  }
+}
+
+int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera, char *dev_name, int index) {
   devInfos->device = (char*)calloc(64, sizeof(char));
   strcpy(devInfos->device, dev_name);
   devInfos->frame_number = 0,
@@ -879,64 +896,31 @@ int init_vars(struct devInfo* devInfos, const int force_format, const int scaled
     devInfos->index = index,
     devInfos->croppedWidth = 0,
     devInfos->croppedHeight = 0;
+  init_dev_stage1(buffersMain, devInfos);
+  bufs = (buffer*)calloc(devInfos->req.count, sizeof(*bufs));
+  init_dev_stage2(bufs, devInfos);
+  // allocate memory for commonly used frame buffers
+  devInfos->outputFrameGreyscaleScaled = (unsigned char*)calloc((devInfos->scaledOutWidth * devInfos->scaledOutHeight), sizeof(unsigned char));
+  devInfos->outputFrame = (unsigned char*)calloc((devInfos->startingWidth * devInfos->startingHeight * 2), sizeof(unsigned char));
+  // allocate memory for combining frame buffers
+  if (check_if_scaling(devInfos)) {
+    devInfos->outputFrameGreyscaleUnscaled = (unsigned char*)calloc((devInfos->scaledOutWidth * devInfos->scaledOutHeight), sizeof(unsigned char));
+    finalOutputFrameGreyscale = (unsigned char*)calloc((devInfos->scaledOutWidth * devInfos->scaledOutHeight * 2), sizeof(unsigned char));
+    finalOutputFrame = (unsigned char*)calloc((devInfos->scaledOutWidth * devInfos->scaledOutHeight * 2 * 2), sizeof(unsigned char));
+    did_memory_allocate_correctly(devInfos);
+  } else {
+    devInfos->outputFrameGreyscaleUnscaled = (unsigned char*)calloc((devInfos->startingWidth * devInfos->startingHeight), sizeof(unsigned char));
+    finalOutputFrameGreyscale = (unsigned char*)calloc((devInfos->startingWidth * devInfos->startingHeight * 2), sizeof(unsigned char));
+    finalOutputFrame = (unsigned char*)calloc((devInfos->startingWidth * devInfos->startingHeight * 2 * 2), sizeof(unsigned char));
+    did_memory_allocate_correctly(devInfos);
+  }
   return 0;
 }
-
-/* TODO: make this dynamically accept n-number of frames to combine
-void combine_multiple_frames(unsigned char** frames, unsigned char* output, int width, int height, int n_frames) {
-  int frameSize = width * height;
-  int offset = 0;
-  for (int f = 0; f < n_frames; f++) {
-#pragma omp parallel for simd
-    for (int i = 0; i < frameSize; i++) {
-      output[i + offset] = frames[f][i];
-    }
-    offset += frameSize;
-  }
-}*/
-
-/*void combine_multiple_frames(unsigned char* input, unsigned char* inputAlt, unsigned char* output, int width, int height) {
-  int frameSize = width * height;
-#pragma omp parallel for simd
-  for (int i = 0; i < frameSize; i++) {
-    output[i] = input[i];
-  }
-#pragma omp parallel for simd
-  for (int i = 0; i < frameSize; i++) {
-    output[i + frameSize] = inputAlt[i];
-  }
-}
-
-void combine_multiple_frames(std::span<unsigned char> input, std::span<unsigned char> inputAlt, std::span<unsigned char> output) {
-  std::memcpy(output.data(), input.data(), input.size());
-  std::memcpy(output.data() + input.size(), inputAlt.data(), inputAlt.size());
-}*/
 
 void combine_multiple_frames(unsigned char* input, unsigned char* inputAlt, unsigned char* output, int width, int height) {
   int size = width * height;
   std::memcpy(output, input, size);
   std::memcpy(output + size, inputAlt, size);
-}
-
-bool check_if_scaling(struct devInfo* devInfos) {
-  return (devInfoMain->startingWidth != devInfoMain->scaledOutWidth || devInfoMain->startingHeight != devInfoMain->scaledOutHeight);
-}
-
-void did_memory_allocate_correctly() {
-  if (devInfoMain->outputFrameGreyscaleScaled == NULL || devInfoAlt->outputFrameGreyscaleScaled == NULL || devInfoMain->outputFrame == NULL || devInfoAlt->outputFrame == NULL || finalOutputFrame == NULL || devInfoMain->outputFrameGreyscaleUnscaled == NULL || devInfoAlt->outputFrameGreyscaleUnscaled == NULL) {
-    fprintf(stderr, "Memory Allocation Failed\n");
-    exit(1);
-  }
-}
-
-void print_example_usage(char* basename) {
-  if (check_if_scaling(devInfoMain)) {
-    fprintf(stderr, "[main] Example to test frame output:\n%s %s %s %d %d | ffplay -hide_banner -loglevel error -f rawvideo -pixel_format yuyv422 -video_size %dx%d -i pipe:0\n",
-      basename, devInfoMain->device, devInfoAlt->device, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight, devInfoMain->scaledOutWidth, (devInfoMain->scaledOutHeight * 2));
-  } else {
-    fprintf(stderr, "[main] Example to test frame output:\n%s %s %s %d %d | ffplay -hide_banner -loglevel error -f rawvideo -pixel_format yuyv422 -video_size %dx%d -i pipe:0\n",
-      basename, devInfoMain->device, devInfoAlt->device, devInfoMain->startingWidth, devInfoMain->startingHeight, devInfoMain->startingWidth, (devInfoMain->startingHeight * 2));
-  }
 }
 
 void commandline_usage(int argcnt, char** args) {
@@ -946,7 +930,7 @@ void commandline_usage(int argcnt, char** args) {
   }
 }
 
-void init_output_v4l2_dev(struct devInfo* devInfos, const char* outDevName) {
+void init_output_v4l2_dev(struct devInfo* devInfos, const char* outDevName, const char* basename) {
   fdOut = v4l2_open(outDevName, O_RDWR, 0);
   if (fdOut < 0) {
     fprintf(stderr, "Error opening video device\n");
@@ -979,11 +963,20 @@ void init_output_v4l2_dev(struct devInfo* devInfos, const char* outDevName) {
     fprintf(stderr, "Error setting format\n");
   }
   fprintf(stderr, "[out] Using %s to output combined frames\n", outDevName);
+  // CHANGEME?
+  if (check_if_scaling(devInfos)) {
+    fprintf(stderr, "[main] Example to test frame output:\n%s %s %s %d %d | ffplay -hide_banner -loglevel error -f rawvideo -pixel_format yuyv422 -video_size %dx%d -i pipe:0\n",
+      basename, devInfoMain->device, devInfoAlt->device, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight, devInfoMain->scaledOutWidth, (devInfoMain->scaledOutHeight * 2));
+  } else {
+    fprintf(stderr, "[main] Example to test frame output:\n%s %s %s %d %d | ffplay -hide_banner -loglevel error -f rawvideo -pixel_format yuyv422 -video_size %dx%d -i pipe:0\n",
+      basename, devInfoMain->device, devInfoAlt->device, devInfoMain->startingWidth, devInfoMain->startingHeight, devInfoMain->startingWidth, (devInfoMain->startingHeight * 2));
+  }
 }
 
 int net_sender(int retSz, int clisock, unsigned char* outData) {
   int retVal = send(clisock, outData, retSz, MSG_NOSIGNAL);
   if (retVal != retSz) {
+    // if net_sender() in the background can't send the data (or enough data) to the client we will assume the connection is severed and set shallLoop to false
     shouldLoop.store(false);
     return 1;
   }
@@ -993,44 +986,6 @@ int net_sender(int retSz, int clisock, unsigned char* outData) {
 int main(int argc, char **argv) {
   commandline_usage(argc, argv);
   fprintf(stderr, "[main] Initializing..\n");
-  // define and initialize variables
-  int server_socket;
-  struct sockaddr_in server_address;
-  int ret = 1, retSize = 1, frame_number = 0;
-  struct sockaddr_in client_address;
-  socklen_t client_len = sizeof(client_address);
-  devInfoMain = (devInfo*)calloc(1, sizeof(*devInfoMain));
-  devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
-  init_vars(devInfoMain, 2, atoi(argv[4]), atoi(argv[5]), 10, true, true, argv[1], 0);
-  init_vars(devInfoAlt, 2, atoi(argv[4]), atoi(argv[5]), 10, true, true, argv[2], 1);
-  // [main-cap]
-  init_dev_stage1(buffersMain, devInfoMain);
-  buffersMain = (buffer*)calloc(devInfoMain->req.count, sizeof(*buffersMain));
-  init_dev_stage2(buffersMain, devInfoMain);
-  // [alt-cap]
-  init_dev_stage1(buffersAlt, devInfoAlt);
-  buffersAlt = (buffer*)calloc(devInfoAlt->req.count, sizeof(*buffersAlt));
-  init_dev_stage2(buffersAlt, devInfoAlt);
-  // allocate memory for commonly used frame buffers
-  devInfoMain->outputFrameGreyscaleScaled = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight), sizeof(unsigned char));
-  devInfoMain->outputFrame = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight * 2), sizeof(unsigned char));
-  devInfoAlt->outputFrameGreyscaleScaled = (unsigned char*)calloc((devInfoAlt->scaledOutWidth * devInfoAlt->scaledOutHeight), sizeof(unsigned char));
-  devInfoAlt->outputFrame = (unsigned char*)calloc((devInfoAlt->startingWidth * devInfoAlt->startingHeight * 2), sizeof(unsigned char));
-  // allocate memory for combining frame buffers
-  if (check_if_scaling(devInfoMain)) {
-    devInfoMain->outputFrameGreyscaleUnscaled = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight), sizeof(unsigned char));
-    devInfoAlt->outputFrameGreyscaleUnscaled = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight), sizeof(unsigned char));
-    finalOutputFrameGreyscale = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2), sizeof(unsigned char));
-    finalOutputFrame = (unsigned char*)calloc((devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2), sizeof(unsigned char));
-  } else {
-    devInfoMain->outputFrameGreyscaleUnscaled = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight), sizeof(unsigned char));
-    devInfoAlt->outputFrameGreyscaleUnscaled = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight), sizeof(unsigned char));
-    finalOutputFrameGreyscale = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight * 2), sizeof(unsigned char));
-    finalOutputFrame = (unsigned char*)calloc((devInfoMain->startingWidth * devInfoMain->startingHeight * 2 * 2), sizeof(unsigned char));
-  }
-  did_memory_allocate_correctly();
-  print_example_usage(argv[0]);
-  init_output_v4l2_dev(devInfoMain, argv[3]);
   // networking layer
   server_socket = socket(AF_INET, SOCK_STREAM, 0);
   server_address.sin_family = AF_INET;
@@ -1040,6 +995,12 @@ int main(int argc, char **argv) {
   setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &server_address, sizeof(server_address));
   bind(server_socket, (struct sockaddr*)&server_address, sizeof(server_address));
   listen(server_socket, MAX_CLIENTS);
+  // allocate memory for structs
+  devInfoMain = (devInfo*)calloc(1, sizeof(*devInfoMain));
+  devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
+  init_vars(devInfoMain, buffersMain, 2, atoi(argv[4]), atoi(argv[5]), 10, true, true, argv[1], 0);
+  init_vars(devInfoAlt, buffersAlt, 2, atoi(argv[4]), atoi(argv[5]), 10, true, true, argv[2], 1);
+  init_output_v4l2_dev(devInfoMain, argv[3], argv[0]);
   // start [main] loop
   if (check_if_scaling(devInfoMain)) {
     retSize = (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2);
@@ -1049,7 +1010,7 @@ int main(int argc, char **argv) {
   while (true) {
     fprintf(stderr, "\n[main] Listening for client on TCP port 8888\n");
     // wait for a network client so we're not spinning our wheels maxing out the CPU when there's no client to view the data
-    int client_socket = accept(server_socket, (struct sockaddr*)&client_address, &client_len);
+    client_socket = accept(server_socket, (struct sockaddr*)&client_address, &client_len);
     // we've got a client. let's proceed..
     fprintf(stderr, "[net] Packet size: %d\n", retSize);
     sleep(1);
@@ -1067,7 +1028,6 @@ int main(int argc, char **argv) {
           fprintf(stderr, "Error writing frame to: %s\n", argv[3]);
         if (frame_number % 2 == 0)
           background_task = std::async(std::launch::async, net_sender, retSize, client_socket, finalOutputFrame);
-        // if net_sender() in the background can't send the data (or enough data) to the client we will assume the connection is severed and set shallLoop to false
         frame_number++;
       } else {
         invert_greyscale(devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->startingWidth, devInfoAlt->startingHeight);
@@ -1077,7 +1037,6 @@ int main(int argc, char **argv) {
           fprintf(stderr, "Error writing frame to: %s\n", argv[3]);
         if (frame_number % 2 == 0)
           background_task = std::async(std::launch::async, net_sender, retSize, client_socket, finalOutputFrame);
-        // if net_sender() in the background can't send the data (or enough data) to the client we will assume the connection is severed and set shallLoop to false
         frame_number++;
       }
     }
