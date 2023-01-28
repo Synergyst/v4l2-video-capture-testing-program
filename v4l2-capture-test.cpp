@@ -541,23 +541,23 @@ void frame_to_stdout(unsigned char* input, int size) {
 
 int init_dev_stage1(struct buffer* buffers, struct devInfo* devInfos) {
   //unsigned int i;
-  fprintf(stderr, "\n[cap] Starting V4L2 capture testing program with the following V4L2 device: %s\n", devInfos->device);
+  fprintf(stderr, "\n[cap%d] Starting V4L2 capture testing program with the following V4L2 device: %s\n", devInfos->index, devInfos->device);
 
   struct stat st;
   if (-1 == stat(devInfos->device, &st)) {
-    fprintf(stderr, "[cap] Cannot identify '%s': %d, %s\n", devInfos->device, errno, strerror(errno));
+    fprintf(stderr, "[cap%d] Cannot identify '%s': %d, %s\n", devInfos->index, devInfos->device, errno, strerror(errno));
     exit(EXIT_FAILURE);
   }
   if (!S_ISCHR(st.st_mode)) {
-    fprintf(stderr, "[cap] %s is no device\n", devInfos->device);
+    fprintf(stderr, "[cap%d] %s is no device\n", devInfos->index, devInfos->device);
     exit(EXIT_FAILURE);
   }
   devInfos->fd = open(devInfos->device, O_RDWR | O_NONBLOCK, 0);
   if (-1 == devInfos->fd) {
-    fprintf(stderr, "[cap] Cannot open '%s': %d, %s\n", devInfos->device, errno, strerror(errno));
+    fprintf(stderr, "[cap%d] Cannot open '%s': %d, %s\n", devInfos->index, devInfos->device, errno, strerror(errno));
     exit(EXIT_FAILURE);
   }
-  fprintf(stderr, "[cap] Opened V4L2 device: %s\n", devInfos->device);
+  fprintf(stderr, "[cap%d] Opened V4L2 device: %s\n", devInfos->index, devInfos->device);
 
   struct v4l2_capability cap;
   struct v4l2_cropcap cropcap;
@@ -566,7 +566,7 @@ int init_dev_stage1(struct buffer* buffers, struct devInfo* devInfos) {
   unsigned int min;
   if (-1 == xioctl(devInfos->fd, VIDIOC_QUERYCAP, &cap)) {
     if (EINVAL == errno) {
-      fprintf(stderr, "[cap] %s is no V4L2 device\n", devInfos->device);
+      fprintf(stderr, "[cap%d] %s is no V4L2 device\n", devInfos->index, devInfos->device);
       exit(EXIT_FAILURE);
     }
     else {
@@ -574,7 +574,7 @@ int init_dev_stage1(struct buffer* buffers, struct devInfo* devInfos) {
     }
   }
   if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)) {
-    fprintf(stderr, "[cap] %s is no video capture device\n", devInfos->device);
+    fprintf(stderr, "[cap%d] %s is no video capture device\n", devInfos->index, devInfos->device);
     exit(EXIT_FAILURE);
   }
   // Select video input, video standard and tune here.
@@ -598,7 +598,7 @@ int init_dev_stage1(struct buffer* buffers, struct devInfo* devInfos) {
   }
   CLEAR(fmt);
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  fprintf(stderr, "[cap] Forcing format for %s to: %d\n", devInfos->device, devInfos->force_format);
+  fprintf(stderr, "[cap%d] Forcing format for %s to: %d\n", devInfos->index, devInfos->device, devInfos->force_format);
   if (devInfos->force_format) {
     if (devInfos->force_format == 3) {
       fmt.fmt.pix.width = devInfos->startingWidth;
@@ -638,14 +638,14 @@ int init_dev_stage1(struct buffer* buffers, struct devInfo* devInfos) {
   devInfos->req.memory = V4L2_MEMORY_MMAP;
   if (-1 == xioctl(devInfos->fd, VIDIOC_REQBUFS, &devInfos->req)) {
     if (EINVAL == errno) {
-      fprintf(stderr, "[cap] %s does not support memory mapping\n", devInfos->device);
+      fprintf(stderr, "[cap%d] %s does not support memory mapping\n", devInfos->index, devInfos->device);
       exit(EXIT_FAILURE);
     } else {
       errno_exit("VIDIOC_REQBUFS");
     }
   }
   if (devInfos->req.count < 2) {
-    fprintf(stderr, "[cap] Insufficient buffer memory on %s\n", devInfos->device);
+    fprintf(stderr, "[cap%d] Insufficient buffer memory on %s\n", devInfos->index, devInfos->device);
     exit(EXIT_FAILURE);
   }
   return 0;
@@ -653,7 +653,7 @@ int init_dev_stage1(struct buffer* buffers, struct devInfo* devInfos) {
 
 int init_dev_stage2(struct buffer* buffers, struct devInfo* devInfos) {
   if (!buffers) {
-    fprintf(stderr, "[cap] Out of memory\n");
+    fprintf(stderr, "[cap%d] Out of memory\n", devInfos->index);
     exit(EXIT_FAILURE);
   }
   for (devInfos->n_buffers = 0; devInfos->n_buffers < devInfos->req.count; ++devInfos->n_buffers) {
@@ -678,7 +678,7 @@ int init_dev_stage2(struct buffer* buffers, struct devInfo* devInfos) {
     memset(&timings, 0, sizeof timings);
     ret = xioctl(devInfos->fd, VIDIOC_QUERY_DV_TIMINGS, &timings);
     if (ret >= 0) {
-      fprintf(stderr, "[cap] QUERY_DV_TIMINGS for %s: %ux%u pixclk %llu\n", devInfos->device, timings.bt.width, timings.bt.height, timings.bt.pixelclock);
+      fprintf(stderr, "[cap%d] QUERY_DV_TIMINGS for %s: %ux%u pixclk %llu\n", devInfos->index, devInfos->device, timings.bt.width, timings.bt.height, timings.bt.pixelclock);
       devInfos->startingWidth = timings.bt.width;
       devInfos->startingHeight = timings.bt.height;
       devInfos->startingSize = devInfos->startingWidth * devInfos->startingHeight * sizeof(unsigned char);
@@ -686,7 +686,7 @@ int init_dev_stage2(struct buffer* buffers, struct devInfo* devInfos) {
       // Can read DV timings, so set them.
       ret = xioctl(devInfos->fd, VIDIOC_S_DV_TIMINGS, &timings);
       if (ret < 0) {
-        fprintf(stderr, "[cap] Failed to set DV timings\n");
+        fprintf(stderr, "[cap%d] Failed to set DV timings\n", devInfos->index);
         return 1;
       } else {
         double tot_height, tot_width;
@@ -699,7 +699,7 @@ int init_dev_stage2(struct buffer* buffers, struct devInfo* devInfos) {
         devInfos->frameDelayMillis = (1000 / devInfos->framerate);
         int rawInputThroughput = (float)((float)(devInfos->framerate * devInfos->startingSize * 2.0F) / 125000.0F); // Measured in megabits/sec based on input framerate
         int rawOutputThroughput = (float)((((float)devInfos->framerate / devInfos->framerateDivisor) * devInfos->scaledOutSize) / 125000.0F); // Measured in megabits/sec based on output framerate
-        fprintf(stderr, "[cap] device_name: %s, isTC358743: %d, isThermalCamera: %d, startingWidth: %d, startingHeight: %d, startingSize: %d, scaledOutWidth: %d, scaledOutHeight: %d, scaledOutSize: %d, framerate: %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", devInfos->device, devInfos->isTC358743, devInfos->isThermalCamera, devInfos->startingWidth, devInfos->startingHeight, devInfos->startingSize, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->scaledOutSize, devInfos->framerate, devInfos->framerateDivisor, devInfos->targetFramerate, rawInputThroughput, rawOutputThroughput);
+        fprintf(stderr, "[cap%d] device_name: %s, isTC358743: %d, isThermalCamera: %d, startingWidth: %d, startingHeight: %d, startingSize: %d, scaledOutWidth: %d, scaledOutHeight: %d, scaledOutSize: %d, framerate: %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", devInfos->index, devInfos->device, devInfos->isTC358743, devInfos->isThermalCamera, devInfos->startingWidth, devInfos->startingHeight, devInfos->startingSize, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->scaledOutSize, devInfos->framerate, devInfos->framerateDivisor, devInfos->targetFramerate, rawInputThroughput, rawOutputThroughput);
       }
     } else {
       memset(&std, 0, sizeof std);
@@ -708,7 +708,7 @@ int init_dev_stage2(struct buffer* buffers, struct devInfo* devInfos) {
         // Can read standard, so set it.
         ret = xioctl(devInfos->fd, VIDIOC_S_STD, &std);
         if (ret < 0) {
-          fprintf(stderr, "[cap] Failed to set standard\n");
+          fprintf(stderr, "[cap%d] Failed to set standard\n", devInfos->index);
           return 1;
         } else {
           // SD video - assume 50Hz / 25fps
@@ -717,7 +717,7 @@ int init_dev_stage2(struct buffer* buffers, struct devInfo* devInfos) {
       }
     }
   } else {
-    fprintf(stderr, "For now only the TC358743 is supported, support for general camera inputs will need to be added in the future..\nExiting now.\n");
+    fprintf(stderr, "FATAL: Only the TC358743 is supported for now. Support for general camera inputs will need to be added in the future..\nExiting now.\n");
     exit(1);
   }
   unsigned int i;
@@ -733,7 +733,7 @@ int init_dev_stage2(struct buffer* buffers, struct devInfo* devInfos) {
   devInfos->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   if (-1 == xioctl(devInfos->fd, VIDIOC_STREAMON, &devInfos->type))
     errno_exit("VIDIOC_STREAMON");
-  fprintf(stderr, "[cap] Initialized V4L2 device: %s\n", devInfos->device);
+  fprintf(stderr, "[cap%d] Initialized V4L2 device: %s\n", devInfos->index, devInfos->device);
   return 0;
 }
 
@@ -847,12 +847,12 @@ int deinit_bufs(struct buffer *buffers, struct devInfo *devInfos) {
     if (-1 == munmap(buffers[i].start, buffers[i].length))
       errno_exit("munmap");
   free(buffers);
-  fprintf(stderr, "[cap] Uninitialized V4L2 device: %s\n", devInfos->device);
+  fprintf(stderr, "[cap%d] Uninitialized V4L2 device: %s\n", devInfos->index, devInfos->device);
 
   if (-1 == close(devInfos->fd))
     errno_exit("close");
   devInfos->fd = -1;
-  fprintf(stderr, "[cap] Closed V4L2 device: %s\n", devInfos->device);
+  fprintf(stderr, "[cap%d] Closed V4L2 device: %s\n", devInfos->index, devInfos->device);
   fprintf(stderr, "\n");
   return 0;
 }
