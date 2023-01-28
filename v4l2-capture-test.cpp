@@ -56,6 +56,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <errno.h>
+#include <future>
 #ifdef USECUDA
 #include "cuda.h"
 #include "cuda_runtime.h"
@@ -128,8 +129,9 @@ unsigned char* finalOutputFrame;
 unsigned char* finalOutputFrameGreyscale;
 const int PORT = 8888;
 const int MAX_CLIENTS = 1;
-
 std::vector<int> client_sockets; // stores connected client sockets
+std::atomic<bool> shouldLoop;
+std::future<int> background_task;
 
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
@@ -979,6 +981,15 @@ void init_output_v4l2_dev(struct devInfo* devInfos, const char* outDevName) {
   fprintf(stderr, "[out] Using %s to output combined frames\n", outDevName);
 }
 
+int net_sender(int retSz, int clisock, unsigned char* outData) {
+  int retVal = send(clisock, outData, retSz, MSG_NOSIGNAL);
+  if (retVal != retSz) {
+    shouldLoop.store(false);
+    return 1;
+  }
+  return 0;
+}
+
 int main(int argc, char **argv) {
   commandline_usage(argc, argv);
   fprintf(stderr, "[main] Initializing..\n");
@@ -1021,6 +1032,8 @@ int main(int argc, char **argv) {
   server_address.sin_family = AF_INET;
   server_address.sin_port = htons(PORT);
   server_address.sin_addr.s_addr = INADDR_ANY;
+  // tell the system that it can reuse the socket address
+  setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &server_address, sizeof(server_address));
   bind(server_socket, (struct sockaddr*)&server_address, sizeof(server_address));
   listen(server_socket, MAX_CLIENTS);
   // start [main] loop
@@ -1038,7 +1051,8 @@ int main(int argc, char **argv) {
     fprintf(stderr, "[net] Packet size: %d\n", retSize);
     sleep(1);
     fprintf(stderr, "\n[main] Starting main loop now\n");
-    while (true) {
+    shouldLoop.store(true);
+    while (shouldLoop) {
       struct sockaddr_in client_address;
       socklen_t client_address_len = sizeof(client_address);
       get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
@@ -1048,16 +1062,14 @@ int main(int argc, char **argv) {
         combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrameGreyscale, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight);
         //combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrame);
         //frame_to_stdout(finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2));
+        //background_task.wait();
         grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->scaledOutWidth, (devInfoMain->scaledOutHeight * 2));
         if (write(fdOut, finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2)) < 0) {
           fprintf(stderr, "Error writing frame\n");
         }
         // send image data to all connected clients
         if (frame_number % 2 == 0) {
-          ret = send(client_socket, finalOutputFrame, retSize, MSG_NOSIGNAL);
-          //fprintf(stderr, "[net] Sent: %d\n", ret);
-          if (ret != retSize)
-            break;
+          background_task = std::async(std::launch::async, net_sender, retSize, client_socket, finalOutputFrame);
         }
         frame_number++;
       } else {
@@ -1065,15 +1077,13 @@ int main(int argc, char **argv) {
         combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrameGreyscale, devInfoMain->startingWidth, devInfoMain->startingHeight);
         //combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrame);
         //frame_to_stdout(finalOutputFrame, (devInfoMain->startingHeight * devInfoMain->startingWidth * 2));
+        //background_task.wait();
         grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->startingWidth, (devInfoMain->startingHeight * 2));
         if (write(fdOut, finalOutputFrame, (devInfoMain->startingWidth * devInfoMain->startingHeight * 2 * 2)) < 0) {
           fprintf(stderr, "Error writing frame\n");
         }
         if (frame_number % 2 == 0) {
-          ret = send(client_socket, finalOutputFrame, retSize, MSG_NOSIGNAL);
-          //fprintf(stderr, "[net] Sent: %d\n", ret);
-          if (ret != retSize)
-            break;
+          background_task = std::async(std::launch::async, net_sender, retSize, client_socket, finalOutputFrame);
         }
         frame_number++;
       }
