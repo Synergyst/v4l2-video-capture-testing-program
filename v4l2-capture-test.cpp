@@ -914,6 +914,11 @@ int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_f
     finalOutputFrame = (unsigned char*)calloc((devInfos->startingWidth * devInfos->startingHeight * 2 * 2), sizeof(unsigned char));
     did_memory_allocate_correctly(devInfos);
   }
+  if (check_if_scaling(devInfos)) {
+    retSize = (devInfos->scaledOutWidth * devInfos->scaledOutHeight * 2 * 2);
+  } else {
+    retSize = (devInfos->startingWidth * devInfos->startingHeight * 2 * 2);
+  }
   return 0;
 }
 
@@ -930,10 +935,10 @@ void commandline_usage(int argcnt, char** args) {
   }
 }
 
-void init_output_v4l2_dev(struct devInfo* devInfos, const char* outDevName, const char* basename) {
+void init_output_v4l2_dev(struct devInfo* devInfos, const char* outDevName) {
   fdOut = v4l2_open(outDevName, O_RDWR, 0);
   if (fdOut < 0) {
-    fprintf(stderr, "Error opening video device\n");
+    fprintf(stderr, "[out] Error opening video device\n");
   }
   memset(&fmtOut, 0, sizeof(fmtOut));
   fmtOut.type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
@@ -960,16 +965,12 @@ void init_output_v4l2_dev(struct devInfo* devInfos, const char* outDevName, cons
     break;
   }
   if (xioctl(fdOut, VIDIOC_S_FMT, &fmtOut) < 0) {
-    fprintf(stderr, "Error setting format\n");
+    fprintf(stderr, "[out] Error setting format\n");
   }
-  fprintf(stderr, "[out] Using %s to output combined frames\n", outDevName);
-  // CHANGEME?
   if (check_if_scaling(devInfos)) {
-    fprintf(stderr, "[main] Example to test frame output:\n%s %s %s %d %d | ffplay -hide_banner -loglevel error -f rawvideo -pixel_format yuyv422 -video_size %dx%d -i pipe:0\n",
-      basename, devInfoMain->device, devInfoAlt->device, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight, devInfoMain->scaledOutWidth, (devInfoMain->scaledOutHeight * 2));
+    fprintf(stderr, "[out] Output resolution for %s: %dx%d\n", outDevName, devInfos->scaledOutWidth, (devInfos->scaledOutHeight * 2));
   } else {
-    fprintf(stderr, "[main] Example to test frame output:\n%s %s %s %d %d | ffplay -hide_banner -loglevel error -f rawvideo -pixel_format yuyv422 -video_size %dx%d -i pipe:0\n",
-      basename, devInfoMain->device, devInfoAlt->device, devInfoMain->startingWidth, devInfoMain->startingHeight, devInfoMain->startingWidth, (devInfoMain->startingHeight * 2));
+    fprintf(stderr, "[out] Output resolution for %s: %dx%d\n", outDevName, devInfos->startingWidth, (devInfos->startingHeight * 2));
   }
 }
 
@@ -1000,13 +1001,8 @@ int main(int argc, char **argv) {
   devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
   init_vars(devInfoMain, buffersMain, 2, atoi(argv[4]), atoi(argv[5]), 10, true, true, argv[1], 0);
   init_vars(devInfoAlt, buffersAlt, 2, atoi(argv[4]), atoi(argv[5]), 10, true, true, argv[2], 1);
-  init_output_v4l2_dev(devInfoMain, argv[3], argv[0]);
+  init_output_v4l2_dev(devInfoMain, argv[3]);
   // start [main] loop
-  if (check_if_scaling(devInfoMain)) {
-    retSize = (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2);
-  } else {
-    retSize = (devInfoMain->startingWidth * devInfoMain->startingHeight * 2 * 2);
-  }
   while (true) {
     fprintf(stderr, "\n[main] Listening for client on TCP port 8888\n");
     // wait for a network client so we're not spinning our wheels maxing out the CPU when there's no client to view the data
@@ -1025,7 +1021,7 @@ int main(int argc, char **argv) {
         combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrameGreyscale, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight);
         grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->scaledOutWidth, (devInfoMain->scaledOutHeight * 2));
         if (write(fdOut, finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2)) < 0)
-          fprintf(stderr, "Error writing frame to: %s\n", argv[3]);
+          fprintf(stderr, "[main] Error writing frame to: %s\n", argv[3]);
         if (frame_number % 2 == 0)
           background_task = std::async(std::launch::async, net_sender, retSize, client_socket, finalOutputFrame);
         frame_number++;
@@ -1034,7 +1030,7 @@ int main(int argc, char **argv) {
         combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrameGreyscale, devInfoMain->startingWidth, devInfoMain->startingHeight);
         grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->startingWidth, (devInfoMain->startingHeight * 2));
         if (write(fdOut, finalOutputFrame, (devInfoMain->startingWidth * devInfoMain->startingHeight * 2 * 2)) < 0)
-          fprintf(stderr, "Error writing frame to: %s\n", argv[3]);
+          fprintf(stderr, "[main] Error writing frame to: %s\n", argv[3]);
         if (frame_number % 2 == 0)
           background_task = std::async(std::launch::async, net_sender, retSize, client_socket, finalOutputFrame);
         frame_number++;
