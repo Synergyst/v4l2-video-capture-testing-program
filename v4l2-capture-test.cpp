@@ -1,22 +1,27 @@
 /*
- *
  *  V4L2 video capture test program
  *
- *  This is not meant to be representative of a production-ready program, it may not work without heavy modification..
+ *  This is not meant to be representative of a production-ready program, it may not work without heavy modification.
  *  Lots of variables, functions, etc may be named incorrectly, have issues, etc.
- *  This file gets updated frequently with test code; please understand that a lot of parts of it may not make any sense. :)
- *
- *  Understanding that this is really meant for internal-use only/testing; feel free to modify/reuse/distribute this code in any way without restrictions.
+ *  This file gets updated frequently with test code; please understand that a lot of parts of it may not make any sense time to time/at all. :)
+ *  Understanding that this is a public testing branch; feel free to modify/reuse/distribute this code in any way without restrictions!
  *
  *  Example command-line usage:
  *    Usage: ./build.sh
- *    This will attempt to build the source once uploaded by Visual Studio 2022 to the Raspberry Pi
+ *    This will attempt to build the source code
  * 
- *    Usage: ./v4l2-capture-test | ffplay -hide_banner -loglevel error -f rawvideo -pixel_format gray -video_size 640x360 -i pipe:0
- *    This will run the main program and then output the processed video data to FFPlay to test the processed frames
- *
+ *    Usage: ./v4l2-capture-test
+ *    This will return the most recent usage information for the utility
  */
 //#define USECUDA
+#ifdef USECUDA
+#include "cuda.h"
+#include "cuda_runtime.h"
+#include "helper_cuda.h"
+#include "cuda_device_runtime_api.h"
+#include "cuda_runtime_api.h"
+#include "device_launch_parameters.h"
+#endif
 #include <iostream>
 #include <cstdio>
 #include <cmath>
@@ -57,22 +62,22 @@
 #include <netinet/in.h>
 #include <errno.h>
 #include <future>
-#ifdef USECUDA
-#include "cuda.h"
-#include "cuda_runtime.h"
-#include "helper_cuda.h"
-#include "cuda_device_runtime_api.h"
-#include "cuda_runtime_api.h"
-#include "device_launch_parameters.h"
-#else
-int fdOut;
-struct v4l2_format fmtOut;
-#endif
 
 #define V4L_ALLFORMATS  3
 #define V4L_RAWFORMATS  1
 #define V4L_COMPFORMATS 2
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
+
+#define PORT 8888
+#define MAX_CLIENTS 1
+
+std::vector<int> client_sockets; // stores connected client sockets
+std::atomic<bool> shouldLoop;
+std::future<int> background_task;
+int server_socket, client_socket;
+struct sockaddr_in server_address;
+struct sockaddr_in client_address;
+socklen_t client_len = sizeof(client_address);
 
 enum captureType {
   /*
@@ -121,23 +126,17 @@ struct buffer* buffersAlt;
 struct devInfo* devInfoMain;
 struct devInfo* devInfoAlt;
 
-int cropMatrix[2][4] = { {11, 4, 4, 2}, {1, 1, 1, 1} }; // Crop size matrix (scale up or down as needed)
-const int KERNEL_SIZE = 3; // The kernel size of the Gaussian blur, default: 5
-const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
-
+int fdOut, ret = 1, retSize = 1, frame_number = 0;
+struct v4l2_format fmtOut;
 unsigned char* finalOutputFrame;
 unsigned char* finalOutputFrameGreyscale;
-const int PORT = 8888;
-const int MAX_CLIENTS = 1;
-std::vector<int> client_sockets; // stores connected client sockets
-std::atomic<bool> shouldLoop;
-std::future<int> background_task;
-// define and initialize variables
-int server_socket, client_socket;
-struct sockaddr_in server_address;
-int ret = 1, retSize = 1, frame_number = 0;
-struct sockaddr_in client_address;
-socklen_t client_len = sizeof(client_address);
+// Crop size matrix (scale up or down as needed)
+int cropMatrix[2][4] = {
+  {11, 4, 4, 2},
+  {1, 1, 1, 1}
+};
+const int KERNEL_SIZE = 3; // The kernel size of the Gaussian blur, default: 5
+const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
 
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
@@ -153,6 +152,10 @@ int xioctl(int fh, int request, void* arg) {
 }
 
 void replace_pixels_below_val(const unsigned char* input, unsigned char* output, int width, int height, const int val) {
+  if (input == nullptr || output == nullptr) {
+    fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
+    exit(1);
+  }
 #pragma omp parallel for simd
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
@@ -172,6 +175,10 @@ void replace_pixels_below_val(const unsigned char* input, unsigned char* output,
 }
 
 void replace_pixels_above_val(const unsigned char* input, unsigned char* output, int width, int height, const int val) {
+  if (input == nullptr || output == nullptr) {
+    fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
+    exit(1);
+  }
 #pragma omp parallel for simd
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
@@ -191,6 +198,10 @@ void replace_pixels_above_val(const unsigned char* input, unsigned char* output,
 }
 
 void greyscale_to_sobel(const unsigned char* input, unsigned char* output, int width, int height) {
+  if (input == nullptr || output == nullptr) {
+    fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
+    exit(1);
+  }
   // The maximum value for the Sobel operator
   //const int maxSobel = 4 * 255;
   // The Sobel operator as a 3x3 matrix
@@ -209,28 +220,11 @@ void greyscale_to_sobel(const unsigned char* input, unsigned char* output, int w
   }
 }
 
-/*void uyvy_to_yuyv(unsigned char* input, unsigned char* output, int width, int height) {
-  // Iterate over each pixel in the input image
-#pragma omp parallel for simd
-  for (int y = 0; y < height; y++) {
-    for (int x = 0; x < width; x++) {
-      // Calculate the offset into the input buffer for the current pixel
-      int offset = (y * width + x) * 2;
-      // Extract the Y and U/V components from the UYVY pixel
-      unsigned char y1 = input[offset];
-      unsigned char u = input[offset + 1];
-      unsigned char y2 = input[offset + 2];
-      unsigned char v = input[offset + 3];
-      // Pack the Y1, U, Y2, and V components into a YUYV pixel
-      output[offset] = y1;
-      output[offset + 1] = u;
-      output[offset + 2] = y2;
-      output[offset + 3] = v;
-    }
-  }
-}*/
-
 void uyvy_to_yuyv(unsigned char* input, unsigned char* output, int width, int height) {
+  if (input == nullptr || output == nullptr) {
+    fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
+    exit(1);
+  }
 #pragma omp parallel for simd
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x += 2) {
@@ -244,6 +238,10 @@ void uyvy_to_yuyv(unsigned char* input, unsigned char* output, int width, int he
 }
 
 void yuyv_to_uyvy(unsigned char* input, unsigned char* output, int width, int height) {
+  if (input == nullptr || output == nullptr) {
+    fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
+    exit(1);
+  }
   // Iterate over each pixel in the input image
 #pragma omp parallel for simd
   for (int y = 0; y < height; y++) {
@@ -265,46 +263,21 @@ void yuyv_to_uyvy(unsigned char* input, unsigned char* output, int width, int he
 }
 
 void grey_to_yuyv(unsigned char* input, unsigned char* output, int width, int height) {
+  if (input == nullptr || output == nullptr) {
+    fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
+    exit(1);
+  }
   for (int i = 0, j = 0; i < width * height; i++, j += 2) {
     output[j] = input[i];  // Y
     output[j + 1] = 128; // U and V
   }
 }
 
-/*void rescale_bilinear(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
-#pragma omp parallel for simd
-  for (int y = 0; y < output_height; y++) {
-    for (int x = 0; x < output_width; x++) {
-      // Calculate the corresponding pixel coordinates in the input image.
-      float in_x = x * input_width / output_width;
-      float in_y = y * input_height / output_height;
-      // Calculate the integer and fractional parts of the coordinates.
-      int x1 = (int)in_x;
-      int y1 = (int)in_y;
-      float dx = in_x - x1;
-      float dy = in_y - y1;
-      // Clamp the coordinates to the edges of the input image.
-      x1 = std::clamp(x1, 0, input_width - 1);
-      y1 = std::clamp(y1, 0, input_height - 1);
-      int x2 = std::clamp(x1 + 1, 0, input_width - 1);
-      int y2 = std::clamp(y1 + 1, 0, input_height - 1);
-      // Get the values of the four surrounding pixels in the input image.
-      int index = y * output_width + x;
-      int in_index1 = y1 * input_width + x1;
-      int in_index2 = y1 * input_width + x2;
-      int in_index3 = y2 * input_width + x1;
-      int in_index4 = y2 * input_width + x2;
-      float v1 = input[in_index1];
-      float v2 = input[in_index2];
-      float v3 = input[in_index3];
-      float v4 = input[in_index4];
-      // Use bilinear interpolation to estimate the value of the pixel in the input image.
-      float value = (1 - dx) * (1 - dy) * v1 + dx * (1 - dy) * v2 + (1 - dx) * dy * v3 + dx * dy * v4;
-      output[index] = (unsigned char)value;
-    }
-  }
-}*/
 void rescale_bilinear(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
+  if (input == nullptr || output == nullptr) {
+    fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
+    exit(1);
+  }
 #pragma omp parallel for simd
   for (int y = 0; y < output_height; y++) {
     for (int x = 0; x < output_width; x++) {
@@ -384,6 +357,10 @@ void rescale_bilinear(const unsigned char* input, int input_width, int input_hei
   }
 }*/
 void rescale_bilinear_from_yuyv(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
+  if (input == nullptr || output == nullptr) {
+    fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
+    exit(1);
+  }
 #pragma omp parallel for simd num_threads(4)
   for (int y = 0; y < output_height; y++) {
     for (int x = 0; x < output_width; x++) {
@@ -444,6 +421,10 @@ std::vector<double> computeGaussianKernel(int kernelSize, double sigma) {
 }
 
 void gaussian_blur(unsigned char* input, int inputWidth, int inputHeight, unsigned char* output, int outputWidth, int outputHeight) {
+  if (input == nullptr || output == nullptr) {
+    fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
+    exit(1);
+  }
   std::vector<double> kernel = computeGaussianKernel(KERNEL_SIZE, SIGMA);
   // Perform the blur in the horizontal direction
 #pragma omp parallel for simd num_threads(4)
@@ -478,6 +459,10 @@ void gaussian_blur(unsigned char* input, int inputWidth, int inputHeight, unsign
 }
 
 void invert_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
+  if (input == nullptr || output == nullptr) {
+    fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
+    exit(1);
+  }
 #pragma omp parallel for simd num_threads(4)
   for (int i = 0; i < width * height; i++) {
     output[i] = 255 - input[i];
@@ -485,6 +470,10 @@ void invert_greyscale(unsigned char* input, unsigned char* output, int width, in
 }
 
 void crop_greyscale(unsigned char* image, int width, int height, int* crops, unsigned char* croppedImage, struct devInfo* devInfos) {
+  if (image == nullptr || croppedImage == nullptr || crops == nullptr) {
+    fprintf(stderr, "Fatal: Input or output or crops for operation is NULL..\nExiting now.\n");
+    exit(1);
+  }
   if (devInfos->croppedWidth > 0 || devInfos->croppedHeight > 0) {
     devInfos->croppedWidth = devInfos->croppedWidth - crops[0] - crops[1];
     devInfos->croppedHeight = devInfos->croppedHeight - crops[2] - crops[3];
@@ -504,19 +493,13 @@ void crop_greyscale(unsigned char* image, int width, int height, int* crops, uns
   }
 }
 
-/*void yuyv_to_greyscale(unsigned char* input, int width, int height, unsigned char* output) {
-#pragma omp parallel for
-  if (input == nullptr || output == nullptr) {
-    return;
-  }
-  int len = width * height * 2;
-  std::ranges::copy(std::ranges::views::chunk(input, input + len, 2) | std::views::transform([](const auto& chunk) {
-    return (chunk[0] + chunk[1]) / 2;
-    }), output);
-}*/
 #ifdef USECUDA
 __global__ void yuyv_to_greyscale(unsigned char* input, int width, int height, unsigned char* output, struct devInfo* devInfos) {
   int i = threadIdx.x;
+  if (input == nullptr || output == nullptr) {
+    fprintf(stderr, "Fatal: Input or output for CUDA operation is NULL..\nExiting now.\n");
+    exit(1);
+  }
   if (i < width * height) {
     output[i] = (input[i * 2] + input[i * 2 + 1]) / 2;
   }
@@ -531,7 +514,8 @@ __global__ void yuyv_to_greyscale(unsigned char* input, int width, int height, u
 #else
 void yuyv_to_greyscale(unsigned char* input, int width, int height, unsigned char* output, struct devInfo* devInfos) {
   if (input == nullptr || output == nullptr) {
-    return;
+    fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
+    exit(1);
   }
   int len = width * height * 2;
 #pragma omp parallel for
@@ -542,6 +526,10 @@ void yuyv_to_greyscale(unsigned char* input, int width, int height, unsigned cha
 #endif
 
 void frame_to_stdout(unsigned char* input, int size) {
+  if (input == nullptr) {
+    fprintf(stderr, "Fatal: Input for operation is NULL..\nExiting now.\n");
+    exit(1);
+  }
   int status = write(1, input, size);
   if (status == -1)
     perror("write");
@@ -725,7 +713,7 @@ int init_dev_stage2(struct buffer* buffers, struct devInfo* devInfos) {
       }
     }
   } else {
-    fprintf(stderr, "FATAL: Only the TC358743 is supported for now. Support for general camera inputs will need to be added in the future..\nExiting now.\n");
+    fprintf(stderr, "Fatal: Only the TC358743 is supported for now. Support for general camera inputs will need to be added in the future..\nExiting now.\n");
     exit(1);
   }
   unsigned int i;
@@ -767,7 +755,7 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
   FD_ZERO(&fds);
   FD_SET(devInfos->fd, &fds);
   // Timeout period to wait for device to respond
-  tv.tv_sec = 2;
+  tv.tv_sec = 1;
   tv.tv_usec = 0;
   r = select(devInfos->fd + 1, &fds, NULL, NULL, &tv);
   if (-1 == r) {
@@ -850,13 +838,12 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
 }
 
 int deinit_bufs(struct buffer *buffers, struct devInfo *devInfos) {
-  // We are using DMA (Direct-Memory-Access), so we shouldn't have much to cleanup
+  // We should be using DMA (Direct-Memory-Access), so we shouldn't have much to cleanup
   for (unsigned int i = 0; i < devInfos->n_buffers; ++i)
     if (-1 == munmap(buffers[i].start, buffers[i].length))
       errno_exit("munmap");
   free(buffers);
   fprintf(stderr, "[cap%d] Uninitialized V4L2 device: %s\n", devInfos->index, devInfos->device);
-
   if (-1 == close(devInfos->fd))
     errno_exit("close");
   devInfos->fd = -1;
@@ -871,7 +858,7 @@ bool check_if_scaling(struct devInfo* devInfos) {
 
 void did_memory_allocate_correctly(struct devInfo* devInfos) {
   if (devInfos->outputFrameGreyscaleScaled == NULL || devInfos->outputFrame == NULL || finalOutputFrame == NULL) {
-    fprintf(stderr, "Memory Allocation Failed\n");
+    fprintf(stderr, "Fatal: Memory allocation failed for output frames..\nExiting now.\n");
     exit(1);
   }
 }
@@ -923,6 +910,10 @@ int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_f
 }
 
 void combine_multiple_frames(unsigned char* input, unsigned char* inputAlt, unsigned char* output, int width, int height) {
+  /*if (input == nullptr || inputAlt == nullptr || output == nullptr) {
+    fprintf(stderr, "Fatal: Input or inputAlt or output for operation is NULL..\nExiting now.\n");
+    exit(1);
+  }*/
   int size = width * height;
   std::memcpy(output, input, size);
   std::memcpy(output + size, inputAlt, size);
@@ -930,7 +921,7 @@ void combine_multiple_frames(unsigned char* input, unsigned char* inputAlt, unsi
 
 void commandline_usage(int argcnt, char** args) {
   if (argcnt != 6) {
-    fprintf(stderr, "Usage: %s <V4L2 main device> <V4L2 alt device> <V4L2 out device> <scaled down width> <scaled down height>\n\nExample: %s /dev/video0 /dev/video1 /dev/video2 640 360\n", args[0], args[0]);
+    fprintf(stderr, "[main] Usage: %s <V4L2 main device> <V4L2 alt device> <V4L2 out device> <scaled down width> <scaled down height>\n\nExample: %s /dev/video0 /dev/video1 /dev/video2 640 360\n", args[0], args[0]);
     exit(1);
   }
 }
