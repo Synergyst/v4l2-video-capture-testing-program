@@ -920,7 +920,7 @@ void combine_multiple_frames(unsigned char* input, unsigned char* inputAlt, unsi
   std::memcpy(output + size, inputAlt, size);
 }
 
-void commandline_usage(int argcnt, char** args) {
+void commandline_usage(const int argcnt, char** args) {
   if (argcnt != 6) {
     fprintf(stderr, "[main] Usage: %s <V4L2 main device> <V4L2 alt device> <V4L2 out device> <scaled down width> <scaled down height>\n\nExample: %s /dev/video0 /dev/video1 /dev/video2 640 360\n", args[0], args[0]);
     exit(1);
@@ -997,21 +997,30 @@ void init_net() {
   listen(server_socket, MAX_CLIENTS);
 }
 
-int main(int argc, char **argv) {
-  commandline_usage(argc, argv);
+void cleanup_vars() {
+  deinit_bufs(buffersMain, devInfoMain);
+  deinit_bufs(buffersAlt, devInfoAlt);
+  close(fdOut);
+}
+
+void configure_main(struct devInfo* deviMain, struct buffer* bufMain, struct devInfo* deviAlt, struct buffer* bufAlt, const int argCnt, char **args) {
+  commandline_usage(argCnt, args);
   fprintf(stderr, "[main] Initializing..\n");
   init_net();
   // allocate memory for structs
-  init_vars(devInfoMain, buffersMain, 2, atoi(argv[4]), atoi(argv[5]), 10, true, true, argv[1], 0);
-  init_vars(devInfoAlt, buffersAlt, 2, atoi(argv[4]), atoi(argv[5]), 10, true, true, argv[2], 1);
-  init_output_v4l2_dev(devInfoMain, argv[3]);
+  init_vars(deviMain, bufMain, 2, atoi(args[4]), atoi(args[5]), 10, true, true, args[1], 0);
+  init_vars(deviAlt, bufAlt, 2, atoi(args[4]), atoi(args[5]), 10, true, true, args[2], 1);
+  init_output_v4l2_dev(deviMain, args[3]);
+}
+
+int main(const int argc, char **argv) {
+  configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
   // start [main] loop
   while (true) {
-    fprintf(stderr, "\n[main] Listening for client on TCP port 8888\n");
+    fprintf(stderr, "\n[net] Listening for client on TCP port 8888\n");
     // wait for a network client so we're not spinning our wheels maxing out the CPU when there's no client to view the data
     client_socket = accept(server_socket, (struct sockaddr*)&client_address, &client_len);
     // we've got a client. let's proceed..
-    fprintf(stderr, "[net] Packet size: %d\n", retSize);
     sleep(1);
     fprintf(stderr, "\n[main] Starting main loop now\n");
     // shouldLoop allows the while loop below to loop while we have a client listening (explained further later below)
@@ -1032,8 +1041,6 @@ int main(int argc, char **argv) {
       }
     }
   }
-  deinit_bufs(buffersMain, devInfoMain);
-  deinit_bufs(buffersAlt, devInfoAlt);
-  close(fdOut);
+  cleanup_vars();
   return 0;
 }
