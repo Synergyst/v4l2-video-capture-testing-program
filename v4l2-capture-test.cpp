@@ -864,6 +864,7 @@ void did_memory_allocate_correctly(struct devInfo* devInfos) {
 }
 
 int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera, char *dev_name, int index) {
+  devInfos = (devInfo*)calloc(1, sizeof(*devInfos));
   devInfos->device = (char*)calloc(64, sizeof(char));
   strcpy(devInfos->device, dev_name);
   devInfos->frame_number = 0,
@@ -975,9 +976,16 @@ int net_sender(int retSz, int clisock, unsigned char* outData) {
   return 0;
 }
 
-int main(int argc, char **argv) {
-  commandline_usage(argc, argv);
-  fprintf(stderr, "[main] Initializing..\n");
+void write_outputs(unsigned char* output, const char* outDev, int width, int height) {
+  if (frame_number % 2 == 0) {
+    background_task = std::async(std::launch::async, net_sender, retSize, client_socket, output);
+    if (write(fdOut, output, (width * height * 2 * 2)) < 0)
+      fprintf(stderr, "[main] Error writing frame to: %s\n", outDev);
+  }
+  frame_number++;
+}
+
+void init_net() {
   // networking layer
   server_socket = socket(AF_INET, SOCK_STREAM, 0);
   server_address.sin_family = AF_INET;
@@ -987,9 +995,13 @@ int main(int argc, char **argv) {
   setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &server_address, sizeof(server_address));
   bind(server_socket, (struct sockaddr*)&server_address, sizeof(server_address));
   listen(server_socket, MAX_CLIENTS);
+}
+
+int main(int argc, char **argv) {
+  commandline_usage(argc, argv);
+  fprintf(stderr, "[main] Initializing..\n");
+  init_net();
   // allocate memory for structs
-  devInfoMain = (devInfo*)calloc(1, sizeof(*devInfoMain));
-  devInfoAlt = (devInfo*)calloc(1, sizeof(*devInfoAlt));
   init_vars(devInfoMain, buffersMain, 2, atoi(argv[4]), atoi(argv[5]), 10, true, true, argv[1], 0);
   init_vars(devInfoAlt, buffersAlt, 2, atoi(argv[4]), atoi(argv[5]), 10, true, true, argv[2], 1);
   init_output_v4l2_dev(devInfoMain, argv[3]);
@@ -1011,20 +1023,12 @@ int main(int argc, char **argv) {
         invert_greyscale(devInfoAlt->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, devInfoAlt->scaledOutWidth, devInfoAlt->scaledOutHeight);
         combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrameGreyscale, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight);
         grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->scaledOutWidth, (devInfoMain->scaledOutHeight * 2));
-        if (write(fdOut, finalOutputFrame, (devInfoMain->scaledOutWidth * devInfoMain->scaledOutHeight * 2 * 2)) < 0)
-          fprintf(stderr, "[main] Error writing frame to: %s\n", argv[3]);
-        if (frame_number % 2 == 0)
-          background_task = std::async(std::launch::async, net_sender, retSize, client_socket, finalOutputFrame);
-        frame_number++;
+        write_outputs(finalOutputFrame, argv[3], devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight);
       } else {
         invert_greyscale(devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->startingWidth, devInfoAlt->startingHeight);
         combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrameGreyscale, devInfoMain->startingWidth, devInfoMain->startingHeight);
         grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->startingWidth, (devInfoMain->startingHeight * 2));
-        if (write(fdOut, finalOutputFrame, (devInfoMain->startingWidth * devInfoMain->startingHeight * 2 * 2)) < 0)
-          fprintf(stderr, "[main] Error writing frame to: %s\n", argv[3]);
-        if (frame_number % 2 == 0)
-          background_task = std::async(std::launch::async, net_sender, retSize, client_socket, finalOutputFrame);
-        frame_number++;
+        write_outputs(finalOutputFrame, argv[3], devInfoMain->startingWidth, devInfoMain->startingHeight);
       }
     }
   }
