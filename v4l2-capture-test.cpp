@@ -73,7 +73,9 @@
 
 std::vector<int> client_sockets; // stores connected client sockets
 std::atomic<bool> shouldLoop;
-std::future<int> background_task;
+std::future<int> background_task_net;
+std::future<int> background_task_cap_main;
+std::future<int> background_task_cap_alt;
 int server_socket, client_socket;
 struct sockaddr_in server_address;
 struct sockaddr_in client_address;
@@ -151,7 +153,7 @@ int xioctl(int fh, int request, void* arg) {
   return r;
 }
 
-void replace_pixels_below_val(const unsigned char* input, unsigned char* output, int width, int height, const int val) {
+void replace_pixels_below_val(unsigned char*& input, unsigned char*& output, int width, int height, const int val) {
   if (input == nullptr || output == nullptr) {
     fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
     exit(1);
@@ -174,7 +176,7 @@ void replace_pixels_below_val(const unsigned char* input, unsigned char* output,
   }
 }
 
-void replace_pixels_above_val(const unsigned char* input, unsigned char* output, int width, int height, const int val) {
+void replace_pixels_above_val(unsigned char*& input, unsigned char*& output, int width, int height, const int val) {
   if (input == nullptr || output == nullptr) {
     fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
     exit(1);
@@ -197,7 +199,7 @@ void replace_pixels_above_val(const unsigned char* input, unsigned char* output,
   }
 }
 
-void greyscale_to_sobel(const unsigned char* input, unsigned char* output, int width, int height) {
+void greyscale_to_sobel(unsigned char*& input, unsigned char*& output, int width, int height) {
   if (input == nullptr || output == nullptr) {
     fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
     exit(1);
@@ -220,7 +222,7 @@ void greyscale_to_sobel(const unsigned char* input, unsigned char* output, int w
   }
 }
 
-void uyvy_to_yuyv(unsigned char* input, unsigned char* output, int width, int height) {
+void uyvy_to_yuyv(unsigned char*& input, unsigned char*& output, int width, int height) {
   if (input == nullptr || output == nullptr) {
     fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
     exit(1);
@@ -237,7 +239,7 @@ void uyvy_to_yuyv(unsigned char* input, unsigned char* output, int width, int he
   }
 }
 
-void yuyv_to_uyvy(unsigned char* input, unsigned char* output, int width, int height) {
+void yuyv_to_uyvy(unsigned char*& input, unsigned char*& output, int width, int height) {
   if (input == nullptr || output == nullptr) {
     fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
     exit(1);
@@ -262,7 +264,7 @@ void yuyv_to_uyvy(unsigned char* input, unsigned char* output, int width, int he
   }
 }
 
-void grey_to_yuyv(unsigned char* input, unsigned char* output, int width, int height) {
+void grey_to_yuyv(unsigned char*& input, unsigned char*& output, int width, int height) {
   if (input == nullptr || output == nullptr) {
     fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
     exit(1);
@@ -273,7 +275,7 @@ void grey_to_yuyv(unsigned char* input, unsigned char* output, int width, int he
   }
 }
 
-void rescale_bilinear(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
+void rescale_bilinear(unsigned char*& input, int input_width, int input_height, unsigned char*& output, int output_width, int output_height) {
   if (input == nullptr || output == nullptr) {
     fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
     exit(1);
@@ -356,7 +358,7 @@ void rescale_bilinear(const unsigned char* input, int input_width, int input_hei
     }
   }
 }*/
-void rescale_bilinear_from_yuyv(const unsigned char* input, int input_width, int input_height, unsigned char* output, int output_width, int output_height) {
+void rescale_bilinear_from_yuyv(unsigned char*& input, int input_width, int input_height, unsigned char*& output, int output_width, int output_height) {
   if (input == nullptr || output == nullptr) {
     fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
     exit(1);
@@ -420,7 +422,7 @@ std::vector<double> computeGaussianKernel(int kernelSize, double sigma) {
   return kernel;
 }
 
-void gaussian_blur(unsigned char* input, int inputWidth, int inputHeight, unsigned char* output, int outputWidth, int outputHeight) {
+void gaussian_blur(unsigned char*& input, int inputWidth, int inputHeight, unsigned char*& output, int outputWidth, int outputHeight) {
   if (input == nullptr || output == nullptr) {
     fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
     exit(1);
@@ -458,7 +460,7 @@ void gaussian_blur(unsigned char* input, int inputWidth, int inputHeight, unsign
   }
 }
 
-void invert_greyscale(unsigned char* input, unsigned char* output, int width, int height) {
+void invert_greyscale(unsigned char*& input, unsigned char*& output, int width, int height) {
   if (input == nullptr || output == nullptr) {
     fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
     exit(1);
@@ -469,7 +471,7 @@ void invert_greyscale(unsigned char* input, unsigned char* output, int width, in
   }
 }
 
-void crop_greyscale(unsigned char* image, int width, int height, int* crops, unsigned char* croppedImage, struct devInfo* devInfos) {
+void crop_greyscale(unsigned char*& image, int width, int height, int*& crops, unsigned char*& croppedImage, struct devInfo*& devInfos) {
   if (image == nullptr || croppedImage == nullptr || crops == nullptr) {
     fprintf(stderr, "Fatal: Input or output or crops for operation is NULL..\nExiting now.\n");
     exit(1);
@@ -525,7 +527,7 @@ void yuyv_to_greyscale(unsigned char* input, int width, int height, unsigned cha
 }
 #endif
 
-void frame_to_stdout(unsigned char* input, int size) {
+void frame_to_stdout(unsigned char*& input, int size) {
   if (input == nullptr) {
     fprintf(stderr, "Fatal: Input for operation is NULL..\nExiting now.\n");
     exit(1);
@@ -535,7 +537,7 @@ void frame_to_stdout(unsigned char* input, int size) {
     perror("write");
 }
 
-int init_dev_stage1(struct buffer* buffers, struct devInfo* devInfos) {
+int init_dev_stage1(struct buffer*& buffers, struct devInfo*& devInfos) {
   //unsigned int i;
   fprintf(stderr, "\n[cap%d] Starting V4L2 capture testing program with the following V4L2 device: %s\n", devInfos->index, devInfos->device);
 
@@ -647,7 +649,7 @@ int init_dev_stage1(struct buffer* buffers, struct devInfo* devInfos) {
   return 0;
 }
 
-int init_dev_stage2(struct buffer* buffers, struct devInfo* devInfos) {
+int init_dev_stage2(struct buffer*& buffers, struct devInfo*& devInfos) {
   if (!buffers) {
     fprintf(stderr, "[cap%d] Out of memory\n", devInfos->index);
     exit(EXIT_FAILURE);
@@ -733,7 +735,7 @@ int init_dev_stage2(struct buffer* buffers, struct devInfo* devInfos) {
   return 0;
 }
 
-void convert_yuyv_to_yuv(unsigned char* yuyv_frame, unsigned char* yuv_frame, int width, int height) {
+void convert_yuyv_to_yuv(unsigned char*& yuyv_frame, unsigned char*& yuv_frame, int width, int height) {
   int yuyv_idx, yuv_idx;
 #pragma omp parallel for
   for (int i = 0; i < height; i++) {
@@ -747,7 +749,7 @@ void convert_yuyv_to_yuv(unsigned char* yuyv_frame, unsigned char* yuv_frame, in
   }
 }
 
-int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capType) {
+int get_frame(struct buffer* buffers, struct devInfo* devInfos, captureType capType) {
   //memset(devInfos->outputFrameGreyscale, 0, devInfos->startingSize);
   fd_set fds;
   struct timeval tv;
@@ -837,7 +839,7 @@ int get_frame(struct buffer *buffers, struct devInfo *devInfos, captureType capT
   return 0;
 }
 
-int deinit_bufs(struct buffer *buffers, struct devInfo *devInfos) {
+int deinit_bufs(struct buffer*& buffers, struct devInfo*& devInfos) {
   // We should be using DMA (Direct-Memory-Access), so we shouldn't have much to cleanup
   for (unsigned int i = 0; i < devInfos->n_buffers; ++i)
     if (-1 == munmap(buffers[i].start, buffers[i].length))
@@ -856,14 +858,14 @@ bool check_if_scaling(struct devInfo* devInfos) {
   return (devInfos->startingWidth != devInfos->scaledOutWidth || devInfos->startingHeight != devInfos->scaledOutHeight);
 }
 
-void did_memory_allocate_correctly(struct devInfo* devInfos) {
+void did_memory_allocate_correctly(struct devInfo*& devInfos) {
   if (devInfos->outputFrameGreyscaleScaled == NULL || devInfos->outputFrame == NULL || finalOutputFrame == NULL) {
     fprintf(stderr, "Fatal: Memory allocation failed for output frames..\nExiting now.\n");
     exit(1);
   }
 }
 
-int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera, char *dev_name, int index) {
+int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_format, const int scaledOutWidth, const int scaledOutHeight, const int targetFramerate, const bool isTC358743, const bool isThermalCamera, char*& dev_name, int index) {
   devInfos = (devInfo*)calloc(1, sizeof(*devInfos));
   devInfos->device = (char*)calloc(64, sizeof(char));
   strcpy(devInfos->device, dev_name);
@@ -910,7 +912,7 @@ int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_f
   return 0;
 }
 
-void combine_multiple_frames(unsigned char* input, unsigned char* inputAlt, unsigned char* output, int width, int height) {
+void combine_multiple_frames(unsigned char*& input, unsigned char*& inputAlt, unsigned char*& output, int width, int height) {
   /*if (input == nullptr || inputAlt == nullptr || output == nullptr) {
     fprintf(stderr, "Fatal: Input or inputAlt or output for operation is NULL..\nExiting now.\n");
     exit(1);
@@ -927,7 +929,7 @@ void commandline_usage(const int argcnt, char** args) {
   }
 }
 
-void init_output_v4l2_dev(struct devInfo* devInfos, const char* outDevName) {
+void init_output_v4l2_dev(struct devInfo*& devInfos, char*& outDevName) {
   fdOut = v4l2_open(outDevName, O_RDWR, 0);
   if (fdOut < 0) {
     fprintf(stderr, "[out] Error opening video device\n");
@@ -976,13 +978,10 @@ int net_sender(int retSz, int clisock, unsigned char* outData) {
   return 0;
 }
 
-void write_outputs(unsigned char* output, const char* outDev, int width, int height) {
-  if (frame_number % 2 == 0) {
-    background_task = std::async(std::launch::async, net_sender, retSize, client_socket, output);
-    if (write(fdOut, output, (width * height * 2 * 2)) < 0)
-      fprintf(stderr, "[main] Error writing frame to: %s\n", outDev);
-  }
-  frame_number++;
+void write_outputs(unsigned char*& output, char*& outDev, int width, int height) {
+  background_task_net = std::async(std::launch::async, net_sender, retSize, client_socket, output);
+  if (write(fdOut, output, (width * height * 2 * 2)) < 0)
+    fprintf(stderr, "[main] Error writing frame to: %s\n", outDev);
 }
 
 void init_net() {
@@ -1003,7 +1002,7 @@ void cleanup_vars() {
   close(fdOut);
 }
 
-void configure_main(struct devInfo* deviMain, struct buffer* bufMain, struct devInfo* deviAlt, struct buffer* bufAlt, const int argCnt, char **args) {
+void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct devInfo*& deviAlt, struct buffer*& bufAlt, int argCnt, char **args) {
   commandline_usage(argCnt, args);
   fprintf(stderr, "[main] Initializing..\n");
   init_net();
@@ -1011,6 +1010,20 @@ void configure_main(struct devInfo* deviMain, struct buffer* bufMain, struct dev
   init_vars(deviMain, bufMain, 2, atoi(args[4]), atoi(args[5]), 10, true, true, args[1], 0);
   init_vars(deviAlt, bufAlt, 2, atoi(args[4]), atoi(args[5]), 10, true, true, args[2], 1);
   init_output_v4l2_dev(deviMain, args[3]);
+}
+
+void process_frames(struct devInfo*& deviMain, struct devInfo*& deviAlt, unsigned char*& outputGreyscale, unsigned char*& output, char*& deviName) {
+  if (check_if_scaling(deviMain)) {
+    invert_greyscale(deviAlt->outputFrameGreyscaleScaled, deviAlt->outputFrameGreyscaleScaled, deviAlt->scaledOutWidth, deviAlt->scaledOutHeight);
+    combine_multiple_frames(deviMain->outputFrameGreyscaleScaled, deviAlt->outputFrameGreyscaleScaled, outputGreyscale, deviMain->scaledOutWidth, deviMain->scaledOutHeight);
+    grey_to_yuyv(outputGreyscale, output, deviMain->scaledOutWidth, (deviMain->scaledOutHeight * 2));
+    write_outputs(output, deviName, deviMain->scaledOutWidth, deviMain->scaledOutHeight);
+  } else {
+    invert_greyscale(deviAlt->outputFrameGreyscaleUnscaled, deviAlt->outputFrameGreyscaleUnscaled, deviAlt->startingWidth, deviAlt->startingHeight);
+    combine_multiple_frames(deviMain->outputFrameGreyscaleUnscaled, deviAlt->outputFrameGreyscaleUnscaled, outputGreyscale, deviMain->startingWidth, deviMain->startingHeight);
+    grey_to_yuyv(outputGreyscale, output, deviMain->startingWidth, (deviMain->startingHeight * 2));
+    write_outputs(output, deviName, deviMain->startingWidth, deviMain->startingHeight);
+  }
 }
 
 int main(const int argc, char **argv) {
@@ -1026,19 +1039,14 @@ int main(const int argc, char **argv) {
     // shouldLoop allows the while loop below to loop while we have a client listening (explained further later below)
     shouldLoop.store(true);
     while (shouldLoop) {
-      get_frame(buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
-      get_frame(buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
-      if (check_if_scaling(devInfoMain)) {
-        invert_greyscale(devInfoAlt->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, devInfoAlt->scaledOutWidth, devInfoAlt->scaledOutHeight);
-        combine_multiple_frames(devInfoMain->outputFrameGreyscaleScaled, devInfoAlt->outputFrameGreyscaleScaled, finalOutputFrameGreyscale, devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight);
-        grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->scaledOutWidth, (devInfoMain->scaledOutHeight * 2));
-        write_outputs(finalOutputFrame, argv[3], devInfoMain->scaledOutWidth, devInfoMain->scaledOutHeight);
-      } else {
-        invert_greyscale(devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, devInfoAlt->startingWidth, devInfoAlt->startingHeight);
-        combine_multiple_frames(devInfoMain->outputFrameGreyscaleUnscaled, devInfoAlt->outputFrameGreyscaleUnscaled, finalOutputFrameGreyscale, devInfoMain->startingWidth, devInfoMain->startingHeight);
-        grey_to_yuyv(finalOutputFrameGreyscale, finalOutputFrame, devInfoMain->startingWidth, (devInfoMain->startingHeight * 2));
-        write_outputs(finalOutputFrame, argv[3], devInfoMain->startingWidth, devInfoMain->startingHeight);
+      if (frame_number % 2 == 0) {
+        background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
+        background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
+        background_task_cap_main.wait();
+        background_task_cap_alt.wait();
+        process_frames(devInfoMain, devInfoAlt, finalOutputFrameGreyscale, finalOutputFrame, argv[3]);
       }
+      frame_number++;
     }
   }
   cleanup_vars();
