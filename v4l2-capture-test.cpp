@@ -57,9 +57,6 @@
 #include <libavutil/pixfmt.h>
 #include <libavutil/imgutils.h>
 #include <span>
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
 #include <errno.h>
 #include <future>
 #include <linux/fb.h>
@@ -71,22 +68,9 @@
 #define V4L_COMPFORMATS 2
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 
-#define PORT 8888
-#define MAX_CLIENTS 1
-
-std::vector<int> client_sockets; // stores connected client sockets
 std::atomic<bool> shouldLoop;
-std::future<int> background_task_net;
 std::future<int> background_task_cap_main;
 std::future<int> background_task_cap_alt;
-int server_socket, client_socket;
-struct sockaddr_in server_address;
-struct sockaddr_in client_address;
-socklen_t client_len = sizeof(client_address);
-
-int strSfd, strSock, strSopt = 1;;
-struct sockaddr_in strSaddr;
-int strSaddrlen = sizeof(strSaddr);
 
 enum captureType {
   /*
@@ -313,7 +297,7 @@ int init_dev_stage2(struct buffer*& buffers, struct devInfo*& devInfos) {
       fprintf(stderr, "[cap%d] QUERY_DV_TIMINGS for %s: %ux%u pixclk %llu\n", devInfos->index, devInfos->device, timings.bt.width, timings.bt.height, timings.bt.pixelclock);
       devInfos->startingWidth = timings.bt.width;
       devInfos->startingHeight = timings.bt.height;
-      devInfos->startingSize = devInfos->startingWidth * devInfos->startingHeight * sizeof(unsigned char);
+      devInfos->startingSize = devInfos->startingWidth * devInfos->startingHeight * byteScaler;
       // Can read DV timings, so set them.
       ret = xioctl(devInfos->fd, VIDIOC_S_DV_TIMINGS, &timings);
       if (ret < 0) {
@@ -629,7 +613,7 @@ unsigned char* add_alpha_channel(struct devInfo* deviAlt) {
     outputWithAlpha[i * 4] = deviAlt->outputFrame[i * 3];
     outputWithAlpha[i * 4 + 1] = deviAlt->outputFrame[i * 3 + 1];
     outputWithAlpha[i * 4 + 2] = deviAlt->outputFrame[i * 3 + 2];
-    outputWithAlpha[i * 4 + 3] = 128;
+    outputWithAlpha[i * 4 + 3] = 127;
     });
   return outputWithAlpha;
 }
@@ -659,8 +643,10 @@ void process_frames(struct devInfo*& deviMain, struct devInfo*& deviAlt, unsigne
   for (auto& thread : threads) {
     thread.join();
   }
-  overlayRGBA32OnRGB24(deviMain->outputFrame, deviAlt->outputFrame, deviMain->startingWidth, deviMain->startingHeight, num_threads);
   writeFrameToFramebuffer(deviMain->outputFrame);
+  /*overlayRGBA32OnRGB24(deviMain->outputFrame, deviAlt->outputFrame, deviMain->startingWidth, deviMain->startingHeight, num_threads);
+  writeFrameToFramebuffer(deviMain->outputFrame);
+  writeFrameToFramebuffer(deviAlt->outputFrame);*/
 }
 int main(const int argc, char **argv) {
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
