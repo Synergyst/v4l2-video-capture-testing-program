@@ -614,20 +614,20 @@ unsigned char* add_alpha_channel(struct devInfo* deviAlt) {
     outputWithAlpha[i * 4 + 1] = deviAlt->outputFrame[i * 3 + 1];
     outputWithAlpha[i * 4 + 2] = deviAlt->outputFrame[i * 3 + 2];
     outputWithAlpha[i * 4 + 3] = 127;
-    });
+  });
   return outputWithAlpha;
 }
 void process_frames(struct devInfo*& deviMain, struct devInfo*& deviAlt, unsigned char*& outputGreyscale, unsigned char*& output, char*& deviName) {
   // TODO: Append adjustable alpha channel to deviAlt->outputFrame (which is stored in an unsigned char array representing an RGB24 image frame with a resolution of 1280x720) on this very line! :)
   // Copy RGB values from deviAlt->outputFrame and set alpha to 128 (the commented section below is single-threaded)
-  /*for (int i = 0; i < 1280 * 720; i++) {
+  for (int i = 0; i < 1280 * 720; i++) {
     outputWithAlpha[i * 4] = deviAlt->outputFrame[i * 3];
     outputWithAlpha[i * 4 + 1] = deviAlt->outputFrame[i * 3 + 1];
     outputWithAlpha[i * 4 + 2] = deviAlt->outputFrame[i * 3 + 2];
     outputWithAlpha[i * 4 + 3] = 128;
-  }*/
+  }
   // multi-threaded operation version
-  const int region_width = 1280 / num_threads;
+  /*const int region_width = 1280 / num_threads;
   std::vector<std::jthread> threads(num_threads);
   for (int i = 0; i < num_threads; i++) {
     const int region_start = i * region_width;
@@ -642,7 +642,8 @@ void process_frames(struct devInfo*& deviMain, struct devInfo*& deviAlt, unsigne
   // Wait for all threads to finish before writing to framebuffer
   for (auto& thread : threads) {
     thread.join();
-  }
+  }*/
+  overlayRGBA32OnRGB24(deviMain->outputFrame, outputWithAlpha, deviMain->startingWidth, deviMain->startingHeight, num_threads);
   writeFrameToFramebuffer(deviMain->outputFrame);
   /*overlayRGBA32OnRGB24(deviMain->outputFrame, deviAlt->outputFrame, deviMain->startingWidth, deviMain->startingHeight, num_threads);
   writeFrameToFramebuffer(deviMain->outputFrame);
