@@ -107,14 +107,9 @@ struct devInfo {
     startingWidth,
     startingHeight,
     startingSize,
-    scaledOutSize,
     force_format,
-    scaledOutWidth,
-    scaledOutHeight,
     targetFramerate,
-    fd,
-    croppedWidth,
-    croppedHeight;
+    fd;
   unsigned int n_buffers;
   double frameDelayMicros,
     frameDelayMillis;
@@ -124,7 +119,6 @@ struct devInfo {
   enum v4l2_buf_type type;
   int index;
   unsigned char *outputFrame,
-    *outputFrameGreyscaleScaled,
     *outputFrameGreyscaleUnscaled;
   char* device;
 };
@@ -134,25 +128,19 @@ struct buffer* buffersAlt;
 struct devInfo* devInfoMain;
 struct devInfo* devInfoAlt;
 
-int /*fdOut,*/ ret = 1, retSize = 1, frame_number = 0;
+int ret = 1, retSize = 1, frame_number = 0;
 struct v4l2_format fmtOut;
 unsigned char* finalOutputFrame;
 unsigned char* finalOutputFrameGreyscale;
-// Crop size matrix (scale up or down as needed)
-int cropMatrix[2][4] = {
-  {11, 4, 4, 2},
-  {1, 1, 1, 1}
-};
-const int KERNEL_SIZE = 3; // The kernel size of the Gaussian blur, default: 5
-const double SIGMA = 2.0; // The sigma value of the Gaussian blur, default: 2.0
-int byteScaler = 0;
+int byteScaler = 3;
 const int num_threads = 4;
+// Allocate new array with alpha channel
+unsigned char* outputWithAlpha = new unsigned char[1280 * 720 * 4];
 
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
   exit(EXIT_FAILURE);
 }
-
 int xioctl(int fh, int request, void* arg) {
   int r;
   do {
@@ -160,7 +148,6 @@ int xioctl(int fh, int request, void* arg) {
   } while (-1 == r && EINTR == errno);
   return r;
 }
-
 void invert_greyscale(unsigned char*& input, unsigned char*& output, int width, int height) {
   if (input == nullptr || output == nullptr) {
     fprintf(stderr, "Fatal: Input or output for operation is NULL..\nExiting now.\n");
@@ -171,7 +158,6 @@ void invert_greyscale(unsigned char*& input, unsigned char*& output, int width, 
     output[i] = 255 - input[i];
   }
 }
-
 void frame_to_stdout(unsigned char*& input, int size) {
   if (input == nullptr) {
     fprintf(stderr, "Fatal: Input for operation is NULL..\nExiting now.\n");
@@ -181,7 +167,6 @@ void frame_to_stdout(unsigned char*& input, int size) {
   if (status == -1)
     perror("write");
 }
-
 int init_dev_stage1(struct buffer*& buffers, struct devInfo*& devInfos) {
   //unsigned int i;
   fprintf(stderr, "\n[cap%d] Starting V4L2 capture testing program with the following V4L2 device: %s\n", devInfos->index, devInfos->device);
@@ -298,7 +283,6 @@ int init_dev_stage1(struct buffer*& buffers, struct devInfo*& devInfos) {
   }
   return 0;
 }
-
 int init_dev_stage2(struct buffer*& buffers, struct devInfo*& devInfos) {
   if (!buffers) {
     fprintf(stderr, "[cap%d] Out of memory\n", devInfos->index);
@@ -330,7 +314,6 @@ int init_dev_stage2(struct buffer*& buffers, struct devInfo*& devInfos) {
       devInfos->startingWidth = timings.bt.width;
       devInfos->startingHeight = timings.bt.height;
       devInfos->startingSize = devInfos->startingWidth * devInfos->startingHeight * sizeof(unsigned char);
-      devInfos->scaledOutSize = devInfos->scaledOutWidth * devInfos->scaledOutHeight;
       // Can read DV timings, so set them.
       ret = xioctl(devInfos->fd, VIDIOC_S_DV_TIMINGS, &timings);
       if (ret < 0) {
@@ -346,8 +329,8 @@ int init_dev_stage2(struct buffer*& buffers, struct devInfo*& devInfos) {
         devInfos->frameDelayMicros = (1000000 / devInfos->framerate);
         devInfos->frameDelayMillis = (1000 / devInfos->framerate);
         int rawInputThroughput = (float)((float)(devInfos->framerate * devInfos->startingSize * 2.0F) / 125000.0F); // Measured in megabits/sec based on input framerate
-        int rawOutputThroughput = (float)((((float)devInfos->framerate / devInfos->framerateDivisor) * devInfos->scaledOutSize) / 125000.0F); // Measured in megabits/sec based on output framerate
-        fprintf(stderr, "[cap%d] device_name: %s, isTC358743: %d, isThermalCamera: %d, startingWidth: %d, startingHeight: %d, startingSize: %d, scaledOutWidth: %d, scaledOutHeight: %d, scaledOutSize: %d, framerate: %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", devInfos->index, devInfos->device, devInfos->isTC358743, devInfos->isThermalCamera, devInfos->startingWidth, devInfos->startingHeight, devInfos->startingSize, devInfos->scaledOutWidth, devInfos->scaledOutHeight, devInfos->scaledOutSize, devInfos->framerate, devInfos->framerateDivisor, devInfos->targetFramerate, rawInputThroughput, rawOutputThroughput);
+        int rawOutputThroughput = (float)((((float)devInfos->framerate / devInfos->framerateDivisor) * devInfos->startingSize) / 125000.0F); // Measured in megabits/sec based on output framerate
+        fprintf(stderr, "[cap%d] device_name: %s, isTC358743: %d, isThermalCamera: %d, startingWidth: %d, startingHeight: %d, startingSize: %d, framerate: %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", devInfos->index, devInfos->device, devInfos->isTC358743, devInfos->isThermalCamera, devInfos->startingWidth, devInfos->startingHeight, devInfos->startingSize, devInfos->framerate, devInfos->framerateDivisor, devInfos->targetFramerate, rawInputThroughput, rawOutputThroughput);
       }
     } else {
       memset(&std, 0, sizeof std);
@@ -384,21 +367,6 @@ int init_dev_stage2(struct buffer*& buffers, struct devInfo*& devInfos) {
   fprintf(stderr, "[cap%d] Initialized V4L2 device: %s\n", devInfos->index, devInfos->device);
   return 0;
 }
-
-void convert_yuyv_to_yuv(unsigned char*& yuyv_frame, unsigned char*& yuv_frame, int width, int height) {
-  int yuyv_idx, yuv_idx;
-#pragma omp parallel for
-  for (int i = 0; i < height; i++) {
-    for (int j = 0; j < width; j += 2) {
-      yuyv_idx = (i * width + j) * 2;
-      yuv_idx = (i * width + j) * 3;
-      yuv_frame[yuv_idx] = yuyv_frame[yuyv_idx];
-      yuv_frame[yuv_idx + 1] = yuyv_frame[yuyv_idx + 1];
-      yuv_frame[yuv_idx + 2] = yuyv_frame[yuyv_idx + 3];
-    }
-  }
-}
-
 int get_frame(struct buffer* buffers, struct devInfo* devInfos, captureType capType) {
   //memset(devInfos->outputFrameGreyscale, 0, devInfos->startingSize);
   fd_set fds;
@@ -455,7 +423,6 @@ int get_frame(struct buffer* buffers, struct devInfo* devInfos, captureType capT
   CLEAR(fds);
   return 0;
 }
-
 int deinit_bufs(struct buffer*& buffers, struct devInfo*& devInfos) {
   // We should be using DMA (Direct-Memory-Access), so we shouldn't have much to cleanup
   for (unsigned int i = 0; i < devInfos->n_buffers; ++i)
@@ -470,18 +437,12 @@ int deinit_bufs(struct buffer*& buffers, struct devInfo*& devInfos) {
   fprintf(stderr, "\n");
   return 0;
 }
-
-bool check_if_scaling(struct devInfo* devInfos) {
-  return (devInfos->startingWidth != devInfos->scaledOutWidth || devInfos->startingHeight != devInfos->scaledOutHeight);
-}
-
 void did_memory_allocate_correctly(struct devInfo*& devInfos) {
-  if (devInfos->outputFrameGreyscaleScaled == NULL || devInfos->outputFrame == NULL || finalOutputFrame == NULL) {
+  if (devInfos->outputFrame == NULL || finalOutputFrame == NULL) {
     fprintf(stderr, "Fatal: Memory allocation failed for output frames..\nExiting now.\n");
     exit(1);
   }
 }
-
 int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_format, const int targetFramerate, const bool isTC358743, const bool isThermalCamera, char*& dev_name, int index) {
   devInfos = (devInfo*)calloc(1, sizeof(*devInfos));
   devInfos->device = (char*)calloc(sizeof(dev_name)+1, sizeof(char));
@@ -492,17 +453,12 @@ int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_f
     devInfos->startingWidth = 1280,
     devInfos->startingHeight = 720,
     devInfos->startingSize = (devInfos->startingWidth * devInfos->startingHeight * byteScaler),
-    /*devInfos->scaledOutSize = (scaledOutWidth * scaledOutHeight),*/
     devInfos->force_format = force_format,
-    /*devInfos->scaledOutWidth = scaledOutWidth,
-    devInfos->scaledOutHeight = scaledOutHeight,*/
     devInfos->targetFramerate = targetFramerate,
     devInfos->fd = -1,
     devInfos->isTC358743 = isTC358743,
     devInfos->isThermalCamera = isThermalCamera,
-    devInfos->index = index,
-    devInfos->croppedWidth = 0,
-    devInfos->croppedHeight = 0;
+    devInfos->index = index;
   init_dev_stage1(buffersMain, devInfos);
   bufs = (buffer*)calloc(devInfos->req.count, sizeof(*bufs));
   init_dev_stage2(bufs, devInfos);
@@ -517,7 +473,6 @@ int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_f
   retSize = (devInfos->startingWidth * devInfos->startingHeight * byteScaler * 2);
   return 0;
 }
-
 void combine_multiple_frames(unsigned char*& input, unsigned char*& inputAlt, unsigned char*& output, int width, int height) {
   /*if (input == nullptr || inputAlt == nullptr || output == nullptr) {
     fprintf(stderr, "Fatal: Input or inputAlt or output for operation is NULL..\nExiting now.\n");
@@ -527,7 +482,6 @@ void combine_multiple_frames(unsigned char*& input, unsigned char*& inputAlt, un
   std::memcpy(output, input, size);
   std::memcpy(output + size, inputAlt, size);
 }
-
 void commandline_usage(const int argcnt, char** args) {
   /*if (argcnt != 6) {
     fprintf(stderr, "[main] Usage: %s <V4L2 main device> <V4L2 alt device> <V4L2 out device> <scaled down width> <scaled down height>\n\nExample: %s /dev/video0 /dev/video1 /dev/video2 640 360\n", args[0], args[0]);
@@ -538,18 +492,15 @@ void commandline_usage(const int argcnt, char** args) {
     exit(1);
   }
 }
-
 void write_outputs(unsigned char*& output, char*& outDev, int width, int height) {
   /*if (write(fdOut, output, (width * height * byteScaler * 2)) < 0)
     fprintf(stderr, "[main] Error writing frame to: %s\n", outDev);*/
 }
-
 void cleanup_vars() {
   deinit_bufs(buffersMain, devInfoMain);
   deinit_bufs(buffersAlt, devInfoAlt);
   //close(fdOut);
 }
-
 void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct devInfo*& deviAlt, struct buffer*& bufAlt, int argCnt, char **args) {
   commandline_usage(argCnt, args);
   fprintf(stderr, "[main] Initializing..\n");
@@ -559,7 +510,6 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
   init_vars(deviAlt, bufAlt, 3, 10, true, true, args[2], 1);
   //init_output_v4l2_dev(deviMain, args[3]);
 }
-
 void writeFrameToFramebuffer(const unsigned char* frameData) {
   int fbfd = open("/dev/fb0", O_RDWR);
   if (fbfd == -1) {
@@ -598,7 +548,6 @@ void writeFrameToFramebuffer(const unsigned char* frameData) {
   munmap(fbmem, screensize);
   close(fbfd);
 }
-
 /*void overlayRGBA32OnRGB24(unsigned char* rgb24, const unsigned char* rgba32, int width, int height, int numThreads = std::thread::hardware_concurrency()) {
   const int numPixels = width * height;
   const int numBytesRGB24 = numPixels * 3;
@@ -632,7 +581,6 @@ void writeFrameToFramebuffer(const unsigned char* frameData) {
     t.join();
   }
 }*/
-
 void overlayRGBA32OnRGB24(unsigned char* rgb24, const unsigned char* rgba32, int width, int height, int numThreads = std::thread::hardware_concurrency()) {
   const int numPixels = width * height;
   const int numBytesRGB24 = numPixels * 3;
@@ -673,10 +621,6 @@ void overlayRGBA32OnRGB24(unsigned char* rgb24, const unsigned char* rgba32, int
     f.wait();
   }
 }
-
-// Allocate new array with alpha channel
-unsigned char* outputWithAlpha = new unsigned char[1280 * 720 * 4];
-
 unsigned char* add_alpha_channel(struct devInfo* deviAlt) {
   // Copy RGB values from deviAlt->outputFrame and set alpha to 128 using parallel algorithm
   std::vector<int> indices(1280 * 720);
@@ -689,7 +633,6 @@ unsigned char* add_alpha_channel(struct devInfo* deviAlt) {
     });
   return outputWithAlpha;
 }
-
 void process_frames(struct devInfo*& deviMain, struct devInfo*& deviAlt, unsigned char*& outputGreyscale, unsigned char*& output, char*& deviName) {
   // TODO: Append adjustable alpha channel to deviAlt->outputFrame (which is stored in an unsigned char array representing an RGB24 image frame with a resolution of 1280x720) on this very line! :)
   // Copy RGB values from deviAlt->outputFrame and set alpha to 128 (the commented section below is single-threaded)
@@ -719,7 +662,6 @@ void process_frames(struct devInfo*& deviMain, struct devInfo*& deviAlt, unsigne
   overlayRGBA32OnRGB24(deviMain->outputFrame, deviAlt->outputFrame, deviMain->startingWidth, deviMain->startingHeight, num_threads);
   writeFrameToFramebuffer(deviMain->outputFrame);
 }
-
 int main(const int argc, char **argv) {
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
   // start [main] loop

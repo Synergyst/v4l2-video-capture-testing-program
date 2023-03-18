@@ -11,8 +11,8 @@ for m in {0..1} ; do
   sleep 1
   v4l2-ctl -d /dev/video$m -V
   sleep 1
-  #v4l2-ctl -d /dev/video$m -v pixelformat=RGB3
-  v4l2-ctl -d /dev/video$m -v pixelformat=UYVY
+  v4l2-ctl -d /dev/video$m -v pixelformat=RGB3
+  #v4l2-ctl -d /dev/video$m -v pixelformat=UYVY
   sleep 2
 done
 for m in {0..1} ; do
