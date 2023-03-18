@@ -21,7 +21,7 @@ export LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/usr/local/cuda-10.2/lib64:/us
 #fi
 
 if ! command -v /usr/local/cuda-10.2/bin/nvcc; then
-  g++ -o ~/projects/v4l2-capture-test/bin/ARM/Debug/v4l2-capture-test -O3 -std=gnu++20 -fopenmp v4l2-capture-test.cpp -I/usr/include/aarch64-linux-gnu -lm -ldl -lpthread `pkg-config --libs libavutil libavcodec libavformat libavdevice libswscale libv4l2`
+  g++ -o ~/projects/v4l2-capture-test/bin/ARM/Debug/v4l2-capture-test -O3 -std=gnu++20 -fopenmp v4l2-capture-test.cpp -I/usr/include/aarch64-linux-gnu -lm -ldl -lpthread `pkg-config --libs libavutil libavcodec libavformat libavdevice libswscale libv4l2 tbb`
 else
   /usr/local/cuda-10.2/bin/nvcc -I/usr/local/cuda-10.2/include -I/usr/local/cuda-10.2/samples/common/inc -L/usr/local/cuda-10.2/lib64 -o ~/projects/v4l2-capture-test/bin/ARM/Debug/v4l2-capture-test -O3 v4l2-capture.cu -ldl -lv4l2 -lpthread -lcudart
 fi
