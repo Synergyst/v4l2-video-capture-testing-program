@@ -109,6 +109,9 @@
       <FileType>CppCode</FileType>
     </None>
   </ItemGroup>
+  <ItemGroup>
+    <Text Include="raspberry-pi-boot-config.txt" />
+  </ItemGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">
     <RemotePostBuildEvent>
       <Command>mkdir -p ~/projects/$(ProjectName)/bin/ARM/Debug/ ; touch ~/projects/$(ProjectName)/v4l2-capture-test.cpp ~/projects/$(ProjectName)/build.sh ; chmod +x ~/projects/$(ProjectName)/*.sh ; dos2unix ~/projects/$(ProjectName)/* ; cp ~/projects/$(ProjectName)/v4l2-capture-test.cpp ~/projects/$(ProjectName)/v4l2-capture.cu ; ~/projects/$(ProjectName)/build.sh</Command>

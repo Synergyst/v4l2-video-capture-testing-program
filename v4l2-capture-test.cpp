@@ -117,9 +117,11 @@ struct v4l2_format fmtOut;
 unsigned char* finalOutputFrame;
 unsigned char* finalOutputFrameGreyscale;
 int byteScaler = 3;
+int defaultWidth = 1920, defaultHeight = 1080;
 const int num_threads = 4;
-// Allocate new array with alpha channel
-unsigned char* outputWithAlpha = new unsigned char[1280 * 720 * 4];
+unsigned char* outputWithAlpha = new unsigned char[defaultWidth * defaultHeight * 4];
+std::vector<std::string> devNames;
+bool isDualInput = false;
 
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
@@ -392,9 +394,8 @@ int get_frame(struct buffer* buffers, struct devInfo* devInfos, captureType capT
   assert(buf.index < devInfos->n_buffers);
   //frame_to_stdout((unsigned char*)buffers[buf.index].start, (devInfos->startingWidth * devInfos->startingHeight * 2));
   //rescale_bilinear_from_yuyv((unsigned char*)buffers[buf.index].start, devInfos->startingWidth, devInfos->startingHeight, devInfos->outputFrameGreyscaleScaled, devInfos->scaledOutWidth, devInfos->scaledOutHeight);
-  //frame_to_stdout(devInfos->outputFrameGreyscaleScaled, (devInfos->scaledOutWidth * devInfos->scaledOutHeight));
 
-  std::memcpy(devInfos->outputFrame, (unsigned char*)buffers[buf.index].start, 1280 * 720 * 3);
+  std::memcpy(devInfos->outputFrame, (unsigned char*)buffers[buf.index].start, devInfos->startingWidth * devInfos->startingHeight * 3);
 
   //if (devInfos->frame_number % devInfos->framerateDivisor == 0) devInfos->frame_number++;
   if (-1 == xioctl(devInfos->fd, VIDIOC_QBUF, &buf))
@@ -434,8 +435,8 @@ int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_f
   devInfos->frame_number = 0,
     devInfos->framerate = 30,
     devInfos->framerateDivisor = 1,
-    devInfos->startingWidth = 1280,
-    devInfos->startingHeight = 720,
+    devInfos->startingWidth = defaultWidth,
+    devInfos->startingHeight = defaultHeight,
     devInfos->startingSize = (devInfos->startingWidth * devInfos->startingHeight * byteScaler),
     devInfos->force_format = force_format,
     devInfos->targetFramerate = targetFramerate,
@@ -467,13 +468,22 @@ void combine_multiple_frames(unsigned char*& input, unsigned char*& inputAlt, un
   std::memcpy(output + size, inputAlt, size);
 }
 void commandline_usage(const int argcnt, char** args) {
-  /*if (argcnt != 6) {
-    fprintf(stderr, "[main] Usage: %s <V4L2 main device> <V4L2 alt device> <V4L2 out device> <scaled down width> <scaled down height>\n\nExample: %s /dev/video0 /dev/video1 /dev/video2 640 360\n", args[0], args[0]);
+  switch (argcnt) {
+  case 3:
+    devNames.push_back(args[1]);
+    devNames.push_back(args[2]);
+    isDualInput = false;
+    break;
+  case 4:
+    devNames.push_back(args[1]);
+    devNames.push_back(args[2]);
+    devNames.push_back(args[3]);
+    isDualInput = true;
+    break;
+  default:
+    fprintf(stderr, "[main] Usage:\n\t%s <V4L2 main device> <V4L2 alt device> </dev/fb out device>\n\t%s <V4L2 main device> </dev/fb out device>\nExample:\n\t%s /dev/video0 /dev/video1 /dev/fb0\n\t%s /dev/video0 /dev/fb0\n", args[0], args[0], args[0], args[0]);
     exit(1);
-  }*/
-  if (argcnt != 4) {
-    fprintf(stderr, "[main] Usage: %s <V4L2 main device> <V4L2 alt device> </dev/fb out device>\n\nExample: %s /dev/video0 /dev/video1 /dev/fb0\n", args[0], args[0]);
-    exit(1);
+    break;
   }
 }
 void write_outputs(unsigned char*& output, char*& outDev, int width, int height) {
@@ -488,11 +498,10 @@ void cleanup_vars() {
 void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct devInfo*& deviAlt, struct buffer*& bufAlt, int argCnt, char **args) {
   commandline_usage(argCnt, args);
   fprintf(stderr, "[main] Initializing..\n");
-  //init_net();
   // allocate memory for structs
   init_vars(deviMain, bufMain, 3, 10, true, true, args[1], 0);
-  init_vars(deviAlt, bufAlt, 3, 10, true, true, args[2], 1);
-  //init_output_v4l2_dev(deviMain, args[3]);
+  if (isDualInput)
+    init_vars(deviAlt, bufAlt, 3, 10, true, true, args[2], 1);
 }
 void writeFrameToFramebuffer(const unsigned char* frameData) {
   int fbfd = open("/dev/fb0", O_RDWR);
@@ -502,8 +511,8 @@ void writeFrameToFramebuffer(const unsigned char* frameData) {
   }
   struct fb_var_screeninfo vinfo;
   ioctl(fbfd, FBIOGET_VSCREENINFO, &vinfo);
-  if (vinfo.bits_per_pixel != 16 || vinfo.xres != 1280 || vinfo.yres != 720) {
-    perror("Error: framebuffer does not accept RGB24 frames with 1280x720 resolution");
+  if (vinfo.bits_per_pixel != 16 || vinfo.xres != devInfoMain->startingWidth || vinfo.yres != devInfoMain->startingHeight) {
+    fprintf(stderr, "Error: framebuffer does not accept RGB24 frames with %dx%d resolution\n", devInfoMain->startingWidth, devInfoMain->startingHeight);
     exit(1);
   }
   long int screensize = vinfo.xres * vinfo.yres * 2;
@@ -607,7 +616,7 @@ void overlayRGBA32OnRGB24(unsigned char* rgb24, const unsigned char* rgba32, int
 }
 unsigned char* add_alpha_channel(struct devInfo* deviAlt) {
   // Copy RGB values from deviAlt->outputFrame and set alpha to 128 using parallel algorithm
-  std::vector<int> indices(1280 * 720);
+  std::vector<int> indices(devInfoMain->startingWidth * devInfoMain->startingHeight);
   std::iota(indices.begin(), indices.end(), 0); // Fill vector with [0, 1280*720)
   std::for_each(std::execution::par, indices.begin(), indices.end(), [&](int i) {
     outputWithAlpha[i * 4] = deviAlt->outputFrame[i * 3];
@@ -617,37 +626,20 @@ unsigned char* add_alpha_channel(struct devInfo* deviAlt) {
   });
   return outputWithAlpha;
 }
-void process_frames(struct devInfo*& deviMain, struct devInfo*& deviAlt, unsigned char*& outputGreyscale, unsigned char*& output, char*& deviName) {
-  // TODO: Append adjustable alpha channel to deviAlt->outputFrame (which is stored in an unsigned char array representing an RGB24 image frame with a resolution of 1280x720) on this very line! :)
+void process_frames(struct devInfo*& deviMain, struct devInfo*& deviAlt, std::string deviName) {
   // Copy RGB values from deviAlt->outputFrame and set alpha to 128 (the commented section below is single-threaded)
-  for (int i = 0; i < 1280 * 720; i++) {
-    outputWithAlpha[i * 4] = deviAlt->outputFrame[i * 3];
-    outputWithAlpha[i * 4 + 1] = deviAlt->outputFrame[i * 3 + 1];
-    outputWithAlpha[i * 4 + 2] = deviAlt->outputFrame[i * 3 + 2];
-    outputWithAlpha[i * 4 + 3] = 128;
+  if (isDualInput) {
+    for (int i = 0; i < devInfoMain->startingWidth * devInfoMain->startingHeight; i++) {
+      outputWithAlpha[i * 4] = deviAlt->outputFrame[i * 3];
+      outputWithAlpha[i * 4 + 1] = deviAlt->outputFrame[i * 3 + 1];
+      outputWithAlpha[i * 4 + 2] = deviAlt->outputFrame[i * 3 + 2];
+      outputWithAlpha[i * 4 + 3] = 128;
+    }
+    overlayRGBA32OnRGB24(deviMain->outputFrame, outputWithAlpha, deviMain->startingWidth, deviMain->startingHeight, num_threads);
+    writeFrameToFramebuffer(deviMain->outputFrame);
+  } else {
+    writeFrameToFramebuffer(deviMain->outputFrame);
   }
-  // multi-threaded operation version
-  /*const int region_width = 1280 / num_threads;
-  std::vector<std::jthread> threads(num_threads);
-  for (int i = 0; i < num_threads; i++) {
-    const int region_start = i * region_width;
-    const int region_end = (i == num_threads - 1) ? 1280 : (i + 1) * region_width;
-    //threads[i] = std::jthread([&](std::stop_token token) {
-    threads[i] = std::jthread([&]() {
-      // Process region of the frame
-      //overlayRGBA32OnRGB24(deviMain->outputFrame + region_start * 3, outputWithAlpha + region_start * 4, region_end - region_start, 720, token);
-      overlayRGBA32OnRGB24(deviMain->outputFrame + region_start * 3, outputWithAlpha + region_start * 4, region_end - region_start, 720, num_threads);
-    });
-  }
-  // Wait for all threads to finish before writing to framebuffer
-  for (auto& thread : threads) {
-    thread.join();
-  }*/
-  overlayRGBA32OnRGB24(deviMain->outputFrame, outputWithAlpha, deviMain->startingWidth, deviMain->startingHeight, num_threads);
-  writeFrameToFramebuffer(deviMain->outputFrame);
-  /*overlayRGBA32OnRGB24(deviMain->outputFrame, deviAlt->outputFrame, deviMain->startingWidth, deviMain->startingHeight, num_threads);
-  writeFrameToFramebuffer(deviMain->outputFrame);
-  writeFrameToFramebuffer(deviAlt->outputFrame);*/
 }
 int main(const int argc, char **argv) {
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
@@ -660,10 +652,15 @@ int main(const int argc, char **argv) {
     while (shouldLoop) {
       if (frame_number % 2 == 0) {
         background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
-        background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
+        if (isDualInput)
+          background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
         background_task_cap_main.wait();
-        background_task_cap_alt.wait();
-        process_frames(devInfoMain, devInfoAlt, finalOutputFrameGreyscale, finalOutputFrame, argv[3]);
+        if (isDualInput) {
+          background_task_cap_alt.wait();
+          process_frames(devInfoMain, devInfoAlt, devNames.at(2));
+        } else {
+          process_frames(devInfoMain, devInfoAlt, devNames.at(1));
+        }
       }
       frame_number++;
     }
