@@ -78,38 +78,16 @@
   <ItemGroup>
     <None Include="build.sh" />
     <None Include="hdmi-setup.sh" />
-    <None Include="openmp.cu" />
     <None Include="runner.sh" />
-    <None Include="setup-uvc.sh" />
     <None Include="v4l2-capture-test.cpp">
       <CppLanguageStandard Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">gnu++20</CppLanguageStandard>
-    </None>
-    <None Include="v4l2-video-capture-testing-program-porting.rs" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="v4l2-ctl.h" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="v4l2edid.cpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="Makefile">
-      <FileType>Document</FileType>
     </None>
   </ItemGroup>
   <ItemGroup>
     <None Include="1080P50EDID.txt" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="uvc.h" />
-    <None Include="v4l2-mmal-uvc.h" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="v4l2-mmal-uvc.c">
-      <FileType>CppCode</FileType>
-    </None>
-  </ItemGroup>
-  <ItemGroup>
+    <Text Include="1080P60EDID.txt" />
     <Text Include="raspberry-pi-boot-config.txt" />
   </ItemGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">
