@@ -355,7 +355,34 @@ int get_frame(struct buffer* buffers, struct devInfo* devInfos, captureType capT
     }
   }
   assert(buf.index < devInfos->n_buffers);
-  std::memcpy(devInfos->outputFrame, (unsigned char*)buffers[buf.index].start, devInfos->startingSize); // copy frame data to frame buffer
+  if (devInfos->index == 1) {
+    unsigned char* preP = (unsigned char*)buffers[buf.index].start;
+    const size_t numPixels = devInfos->startingWidth * devInfos->startingHeight;
+    std::vector<int> indices(numPixels);
+    std::iota(indices.begin(), indices.end(), 0);
+    std::for_each(std::execution::par, indices.begin(), indices.end(), [&](int i) {
+      int idx = i * 8; // Processing 8 pixels at a time
+      if (idx + 7 < numPixels) {
+        uint8x8x3_t rgb = vld3_u8(&preP[idx * 3]);
+        uint8x8x4_t rgba;
+        rgba.val[0] = rgb.val[0];
+        rgba.val[1] = rgb.val[1];
+        rgba.val[2] = rgb.val[2];
+        rgba.val[3] = vdup_n_u8(alpha_channel_amount);
+        vst4_u8(&outputWithAlpha[idx * 4], rgba);
+      } else {
+        // Process the remaining pixels
+        for (; idx < numPixels; ++idx) {
+          outputWithAlpha[idx * 4] = preP[idx * 3];
+          outputWithAlpha[idx * 4 + 1] = preP[idx * 3 + 1];
+          outputWithAlpha[idx * 4 + 2] = preP[idx * 3 + 2];
+          outputWithAlpha[idx * 4 + 3] = alpha_channel_amount;
+        }
+      }
+    });
+  } else {
+    std::memcpy(devInfos->outputFrame, (unsigned char*)buffers[buf.index].start, buffers[buf.index].length); // copy frame data to frame buffer
+  }
   //if (devInfos->frame_number % devInfos->framerateDivisor == 0) devInfos->frame_number++;
   if (-1 == xioctl(devInfos->fd, VIDIOC_QBUF, &buf))
     errno_exit("VIDIOC_QBUF");
@@ -481,31 +508,6 @@ void writeFrameToFramebuffer(const unsigned char* frameData, const char* frameBu
   munmap(fbmem, screensize);
   close(fbfd);
 }
-void add_alpha_channel(struct devInfo* devInfos, unsigned char* m_outputWithAlpha) {
-  int numPixels = devInfos->startingWidth * devInfos->startingHeight;
-  std::vector<int> indices(numPixels);
-  std::iota(indices.begin(), indices.end(), 0);
-  std::for_each(std::execution::par, indices.begin(), indices.end(), [&](int i) {
-    int idx = i * 8; // Processing 8 pixels at a time
-    if (idx + 7 < numPixels) {
-      uint8x8x3_t rgb = vld3_u8(&devInfos->outputFrame[idx * 3]);
-      uint8x8x4_t rgba;
-      rgba.val[0] = rgb.val[0];
-      rgba.val[1] = rgb.val[1];
-      rgba.val[2] = rgb.val[2];
-      rgba.val[3] = vdup_n_u8(alpha_channel_amount);
-      vst4_u8(&m_outputWithAlpha[idx * 4], rgba);
-    } else {
-      // Process the remaining pixels
-      for (; idx < numPixels; ++idx) {
-        m_outputWithAlpha[idx * 4] = devInfos->outputFrame[idx * 3];
-        m_outputWithAlpha[idx * 4 + 1] = devInfos->outputFrame[idx * 3 + 1];
-        m_outputWithAlpha[idx * 4 + 2] = devInfos->outputFrame[idx * 3 + 2];
-        m_outputWithAlpha[idx * 4 + 3] = alpha_channel_amount;
-      }
-    }
-  });
-}
 void overlayRGBA32OnRGB24(unsigned char* rgb24, int width, int height, int numThreads = std::thread::hardware_concurrency()) {
   const int numPixels = width * height;
   std::vector<std::future<void>> futures(numThreads);
@@ -555,7 +557,6 @@ int main(const int argc, char **argv) {
         background_task_cap_alt.wait();
       }
       background_task_cap_main.wait();
-      add_alpha_channel(devInfoAlt, outputWithAlpha);
       overlayRGBA32OnRGB24(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight);
       writeFrameToFramebuffer(devInfoMain->outputFrame, fbDevName);
     }
