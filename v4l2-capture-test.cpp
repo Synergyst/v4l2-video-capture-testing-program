@@ -47,20 +47,22 @@
 #include <linux/fb.h>
 #include <execution>
 #include <numeric>
+#include <arm_neon.h> // For SIMD instructions
 
 #define V4L_ALLFORMATS  3
 #define V4L_RAWFORMATS  1
 #define V4L_COMPFORMATS 2
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
-#define NUM_THREADS 4
+#define NUM_THREADS std::thread::hardware_concurrency()
+#define IS_RGB_DEVICE false // change in case capture device is really RGB24 and not BGR24
+int ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1920, defaultHeight = 1080, alpha_channel_amount = 127;
+unsigned char* outputWithAlpha = new unsigned char[defaultWidth * defaultHeight * 4];
+unsigned char* prevOutputFrame = new unsigned char[defaultWidth * defaultHeight * byteScaler];
+bool isDualInput = false;
 std::atomic<bool> shouldLoop;
 std::future<int> background_task_cap_main;
 std::future<int> background_task_cap_alt;
 std::vector<std::string> devNames;
-const bool isDeviceRGB = false; // change in case capture device is really RGB24 and not BGR24
-int ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1920, defaultHeight = 1080;
-unsigned char* outputWithAlpha = new unsigned char[defaultWidth * defaultHeight * 4];
-bool isDualInput = false;
 enum captureType {
   /*
    * TODO: Handle framerate divisor value differences between the two different models of
@@ -86,13 +88,11 @@ struct devInfo {
   unsigned int n_buffers;
   double frameDelayMicros,
     frameDelayMillis;
-  bool isTC358743 = true,
-    isThermalCamera = true;
+  bool isTC358743 = true;
   struct v4l2_requestbuffers req;
   enum v4l2_buf_type type;
   int index;
-  unsigned char *outputFrame,
-    *outputFrameGreyscaleUnscaled;
+  unsigned char *outputFrame;
   char* device;
 };
 struct buffer* buffersMain;
@@ -280,7 +280,7 @@ int init_dev_stage2(struct buffer*& buffers, struct devInfo*& devInfos) {
         devInfos->frameDelayMillis = (1000 / devInfos->framerate);
         int rawInputThroughput = (float)((float)(devInfos->framerate * devInfos->startingSize * 2.0F) / 125000.0F); // Measured in megabits/sec based on input framerate
         int rawOutputThroughput = (float)((((float)devInfos->framerate / devInfos->framerateDivisor) * devInfos->startingSize) / 125000.0F); // Measured in megabits/sec based on output framerate
-        fprintf(stderr, "[cap%d] device_name: %s, isTC358743: %d, isThermalCamera: %d, startingWidth: %d, startingHeight: %d, startingSize: %d, framerate: %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", devInfos->index, devInfos->device, devInfos->isTC358743, devInfos->isThermalCamera, devInfos->startingWidth, devInfos->startingHeight, devInfos->startingSize, devInfos->framerate, devInfos->framerateDivisor, devInfos->targetFramerate, rawInputThroughput, rawOutputThroughput);
+        fprintf(stderr, "[cap%d] device_name: %s, isTC358743: %d, startingWidth: %d, startingHeight: %d, startingSize: %d, framerate(actual): %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", devInfos->index, devInfos->device, devInfos->isTC358743, devInfos->startingWidth, devInfos->startingHeight, devInfos->startingSize, devInfos->framerate, devInfos->framerateDivisor, devInfos->targetFramerate, rawInputThroughput, rawOutputThroughput);
       }
     } else {
       memset(&std, 0, sizeof std);
@@ -400,7 +400,6 @@ int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_f
     devInfos->targetFramerate = targetFramerate,
     devInfos->fd = -1,
     devInfos->isTC358743 = isTC358743,
-    devInfos->isThermalCamera = isThermalCamera,
     devInfos->index = index;
   init_dev_stage1(buffersMain, devInfos);
   bufs = (buffer*)calloc(devInfos->req.count, sizeof(*bufs));
@@ -442,8 +441,8 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
   if (isDualInput)
     init_vars(deviAlt, bufAlt, 3, 10, true, true, args[2], 1);
 }
-void writeFrameToFramebuffer(const unsigned char* frameData) {
-  int fbfd = open("/dev/fb0", O_RDWR);
+void writeFrameToFramebuffer(const unsigned char* frameData, const char* frameBufferDevName = "/dev/fb0") {
+  int fbfd = open(frameBufferDevName, O_RDWR);
   if (fbfd == -1) {
     perror("Error: cannot open framebuffer device");
     exit(1);
@@ -460,110 +459,105 @@ void writeFrameToFramebuffer(const unsigned char* frameData) {
     perror("Error: failed to mmap framebuffer device to memory");
     exit(1);
   }
-  char* currentPixel = fbmem;
   for (int y = 0; y < vinfo.yres; y++) {
-    for (int x = 0; x < vinfo.xres; x++) {
+    for (int x = 0; x < vinfo.xres; x += 8) { // Process 8 pixels at a time
       int pixelOffset = y * vinfo.xres * 3 + x * 3;
-      unsigned char r = 0, g = 0, b = 0;
-      if (isDeviceRGB) {
-        r = frameData[pixelOffset];
-        g = frameData[pixelOffset + 1];
-        b = frameData[pixelOffset + 2];
-      } else {
-        b = frameData[pixelOffset];
-        g = frameData[pixelOffset + 1];
-        r = frameData[pixelOffset + 2];
+      uint8x8x3_t rgb = vld3_u8(&frameData[pixelOffset]);
+      if (!IS_RGB_DEVICE) {
+        // Swap red and blue channels
+        uint8x8_t tmp = rgb.val[0];
+        rgb.val[0] = rgb.val[2];
+        rgb.val[2] = tmp;
       }
-      unsigned short pixel = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-      *(unsigned short*)currentPixel = pixel;
-      currentPixel += 2;
+      uint8x8_t r = vshr_n_u8(rgb.val[0], 3);
+      uint8x8_t g = vshr_n_u8(rgb.val[1], 2);
+      uint8x8_t b = vshr_n_u8(rgb.val[2], 3);
+      uint16x8_t pixel = vshlq_n_u16(vmovl_u8(r), 11);
+      pixel = vsliq_n_u16(pixel, vmovl_u8(g), 5);
+      pixel = vorrq_u16(pixel, vmovl_u8(b));
+      vst1q_u16(reinterpret_cast<uint16_t*>(fbmem + y * vinfo.xres * 2 + x * 2), pixel);
     }
   }
   munmap(fbmem, screensize);
   close(fbfd);
 }
-void overlayRGBA32OnRGB24(unsigned char* rgb24, const unsigned char* rgba32, int width, int height, int numThreads = std::thread::hardware_concurrency()) {
+void add_alpha_channel(struct devInfo* devInfos, unsigned char* m_outputWithAlpha) {
+  int numPixels = devInfos->startingWidth * devInfos->startingHeight;
+  std::vector<int> indices(numPixels);
+  std::iota(indices.begin(), indices.end(), 0);
+  std::for_each(std::execution::par, indices.begin(), indices.end(), [&](int i) {
+    int idx = i * 8; // Processing 8 pixels at a time
+    if (idx + 7 < numPixels) {
+      uint8x8x3_t rgb = vld3_u8(&devInfos->outputFrame[idx * 3]);
+      uint8x8x4_t rgba;
+      rgba.val[0] = rgb.val[0];
+      rgba.val[1] = rgb.val[1];
+      rgba.val[2] = rgb.val[2];
+      rgba.val[3] = vdup_n_u8(alpha_channel_amount);
+      vst4_u8(&m_outputWithAlpha[idx * 4], rgba);
+    } else {
+      // Process the remaining pixels
+      for (; idx < numPixels; ++idx) {
+        m_outputWithAlpha[idx * 4] = devInfos->outputFrame[idx * 3];
+        m_outputWithAlpha[idx * 4 + 1] = devInfos->outputFrame[idx * 3 + 1];
+        m_outputWithAlpha[idx * 4 + 2] = devInfos->outputFrame[idx * 3 + 2];
+        m_outputWithAlpha[idx * 4 + 3] = alpha_channel_amount;
+      }
+    }
+  });
+}
+void overlayRGBA32OnRGB24(unsigned char* rgb24, int width, int height, int numThreads = std::thread::hardware_concurrency()) {
   const int numPixels = width * height;
-  const int numBytesRGB24 = numPixels * 3;
-  const int numBytesRGBA32 = numPixels * 4;
-  // Create an array of futures to hold the results of each thread.
   std::vector<std::future<void>> futures(numThreads);
   for (int t = 0; t < numThreads; ++t) {
-    const int start = (t * numPixels) / numThreads;
-    const int end = ((t + 1) * numPixels) / numThreads;
-    // Create a packaged task that takes the arguments for the loop and returns void.
+    const int start = ((t * numPixels) / numThreads), end = (((t + 1) * numPixels) / numThreads);
     auto task = std::packaged_task<void()>([=] {
-      for (int i = start; i < end; ++i) {
-        const int r1 = rgb24[i * 3];
-        const int g1 = rgb24[i * 3 + 1];
-        const int b1 = rgb24[i * 3 + 2];
-        const int r2 = rgba32[i * 4];
-        const int g2 = rgba32[i * 4 + 1];
-        const int b2 = rgba32[i * 4 + 2];
-        const int alpha = rgba32[i * 4 + 3];
-        if (alpha > 0) {
-          const float alpha_ratio = alpha / 255.0f;
-          const int r = static_cast<int>(r1 * (1 - alpha_ratio) + r2 * alpha_ratio);
-          const int g = static_cast<int>(g1 * (1 - alpha_ratio) + g2 * alpha_ratio);
-          const int b = static_cast<int>(b1 * (1 - alpha_ratio) + b2 * alpha_ratio);
-          rgb24[i * 3] = static_cast<unsigned char>(r);
-          rgb24[i * 3 + 1] = static_cast<unsigned char>(g);
-          rgb24[i * 3 + 2] = static_cast<unsigned char>(b);
-        }
+      for (int i = start; i < end; i += 8) {
+        uint8x8x3_t rgb = vld3_u8(&rgb24[i * 3]);
+        uint8x8_t r1 = rgb.val[0];
+        uint8x8_t g1 = rgb.val[1];
+        uint8x8_t b1 = rgb.val[2];
+        uint8x8x4_t rgba2 = vld4_u8(&outputWithAlpha[i * 4]);
+        uint8x8_t r2 = rgba2.val[0];
+        uint8x8_t g2 = rgba2.val[1];
+        uint8x8_t b2 = rgba2.val[2];
+        uint8x8_t alpha = rgba2.val[3];
+        uint16x8_t alpha_ratio = vmovl_u8(alpha);
+        uint16x8_t inv_alpha_ratio = vsubq_u16(vdupq_n_u16(255), alpha_ratio);
+        uint16x8_t r16 = vaddq_u16(vmull_u8(r1, vqmovn_u16(inv_alpha_ratio)), vmull_u8(r2, vqmovn_u16(alpha_ratio)));
+        uint16x8_t g16 = vaddq_u16(vmull_u8(g1, vqmovn_u16(inv_alpha_ratio)), vmull_u8(g2, vqmovn_u16(alpha_ratio)));
+        uint16x8_t b16 = vaddq_u16(vmull_u8(b1, vqmovn_u16(inv_alpha_ratio)), vmull_u8(b2, vqmovn_u16(alpha_ratio)));
+        r16 = vrshrq_n_u16(r16, 8);
+        g16 = vrshrq_n_u16(g16, 8);
+        b16 = vrshrq_n_u16(b16, 8);
+        rgb.val[0] = vqmovn_u16(r16);
+        rgb.val[1] = vqmovn_u16(g16);
+        rgb.val[2] = vqmovn_u16(b16);
+        vst3_u8(&rgb24[i * 3], rgb);
       }
     });
-    // Get a future from the packaged task and add it to the array.
     futures[t] = task.get_future();
-    // Move the packaged task into a new thread and execute it.
     std::thread(std::move(task)).detach();
   }
-  // Wait for all the threads to finish.
-  for (auto& f : futures) {
-    f.wait();
-  }
-}
-unsigned char* add_alpha_channel(struct devInfo* deviAlt) {
-  std::vector<int> indices(devInfoMain->startingWidth * devInfoMain->startingHeight);
-  std::iota(indices.begin(), indices.end(), 0); // Fill vector with [0, devInfoMain->startingWidth * devInfoMain->startingHeight)
-  std::for_each(std::execution::par, indices.begin(), indices.end(), [&](int i) {
-    outputWithAlpha[i * 4] = deviAlt->outputFrame[i * 3];
-    outputWithAlpha[i * 4 + 1] = deviAlt->outputFrame[i * 3 + 1];
-    outputWithAlpha[i * 4 + 2] = deviAlt->outputFrame[i * 3 + 2];
-    outputWithAlpha[i * 4 + 3] = 127;
-  });
-  return outputWithAlpha;
-}
-void process_frames(struct devInfo*& deviMain, struct devInfo*& deviAlt, std::string deviName) {
-  if (isDualInput) {
-    for (int i = 0; i < devInfoMain->startingWidth * devInfoMain->startingHeight; i++) {
-      outputWithAlpha[i * 4] = deviAlt->outputFrame[i * 3];
-      outputWithAlpha[i * 4 + 1] = deviAlt->outputFrame[i * 3 + 1];
-      outputWithAlpha[i * 4 + 2] = deviAlt->outputFrame[i * 3 + 2];
-      outputWithAlpha[i * 4 + 3] = 128; // alpha value
-    }
-    overlayRGBA32OnRGB24(deviMain->outputFrame, outputWithAlpha, deviMain->startingWidth, deviMain->startingHeight, NUM_THREADS);
-    writeFrameToFramebuffer(deviMain->outputFrame);
-  } else {
-    writeFrameToFramebuffer(deviMain->outputFrame);
-  }
+  for (auto& f : futures) f.wait();
 }
 int main(const int argc, char **argv) {
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
   sleep(1);
   fprintf(stderr, "\n[main] Starting main loop now\n");
   shouldLoop.store(true);
+  const char* fbDevName = devNames.at(isDualInput ? 2 : 1).c_str();
   while (shouldLoop) {
     if (frame_number % 2 == 0) {
       background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain, CHEAP_CONVERTER_BOX);
-      if (isDualInput)
-        background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
-      background_task_cap_main.wait();
       if (isDualInput) {
+        background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt, CHEAP_CONVERTER_BOX);
         background_task_cap_alt.wait();
-        process_frames(devInfoMain, devInfoAlt, devNames.at(2));
-      } else {
-        process_frames(devInfoMain, devInfoAlt, devNames.at(1));
       }
+      background_task_cap_main.wait();
+      add_alpha_channel(devInfoAlt, outputWithAlpha);
+      overlayRGBA32OnRGB24(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight);
+      writeFrameToFramebuffer(devInfoMain->outputFrame, fbDevName);
     }
     frame_number++;
   }

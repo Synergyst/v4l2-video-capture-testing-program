@@ -92,7 +92,30 @@
   </ItemGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">
     <RemotePostBuildEvent>
-      <Command>mkdir -p ~/projects/$(ProjectName)/bin/ARM/Debug/ ; touch ~/projects/$(ProjectName)/v4l2-capture-test.cpp ~/projects/$(ProjectName)/build.sh ; chmod +x ~/projects/$(ProjectName)/*.sh ; dos2unix ~/projects/$(ProjectName)/* ; cp ~/projects/$(ProjectName)/v4l2-capture-test.cpp ~/projects/$(ProjectName)/v4l2-capture.cu ; ~/projects/$(ProjectName)/build.sh</Command>
+      <Command>mkdir -p ~/projects/v4l2-capture-test/bin/ARM/Debug/ ; touch ~/projects/v4l2-capture-test/v4l2-capture-test.cpp ~/projects/v4l2-capture-test/build.sh ; dos2unix ~/projects/v4l2-capture-test/* ; chmod +x ~/projects/v4l2-capture-test/*.sh ; ~/projects/v4l2-capture-test/build.sh</Command>
+    </RemotePostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
+    <RemotePreBuildEvent>
+      <Command>
+      </Command>
+    </RemotePreBuildEvent>
+    <PreBuildEvent>
+      <Command>
+      </Command>
+    </PreBuildEvent>
+    <RemotePostBuildEvent>
+      <Command>mkdir -p ~/projects/v4l2-capture-test/bin/ARM/Debug/ ; touch ~/projects/v4l2-capture-test/v4l2-capture-test.cpp ~/projects/v4l2-capture-test/build.sh ; dos2unix ~/projects/v4l2-capture-test/* ; chmod +x ~/projects/v4l2-capture-test/*.sh ; ~/projects/v4l2-capture-test/build.sh</Command>
+    </RemotePostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
+    <RemotePostBuildEvent>
+      <Command>mkdir -p ~/projects/v4l2-capture-test/bin/ARM/Debug/ ; touch ~/projects/v4l2-capture-test/v4l2-capture-test.cpp ~/projects/v4l2-capture-test/build.sh ; dos2unix ~/projects/v4l2-capture-test/* ; chmod +x ~/projects/v4l2-capture-test/*.sh ; ~/projects/v4l2-capture-test/build.sh</Command>
+    </RemotePostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">
+    <RemotePostBuildEvent>
+      <Command>mkdir -p ~/projects/v4l2-capture-test/bin/ARM/Debug/ ; touch ~/projects/v4l2-capture-test/v4l2-capture-test.cpp ~/projects/v4l2-capture-test/build.sh ; dos2unix ~/projects/v4l2-capture-test/* ; chmod +x ~/projects/v4l2-capture-test/*.sh ; ~/projects/v4l2-capture-test/build.sh</Command>
     </RemotePostBuildEvent>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
