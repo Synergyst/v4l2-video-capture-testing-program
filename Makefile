@@ -24,7 +24,7 @@ OBJS = $(addsuffix .o, $(basename $(notdir $(SOURCES))))
 UNAME_S := $(shell uname -s)
 
 CXXFLAGS = -std=gnu++20 -I$(IMGUI_DIR) -I$(IMGUI_DIR)/backends
-CXXFLAGS += -g -Wall -Wformat -O3 -mcpu=native -ftree-vectorize -flax-vector-conversions
+CXXFLAGS += -g -Wall -Wformat -O3 -mcpu=native -ftree-vectorize -flax-vector-conversions -fopenmp
 LIBS = -lm -ldl -lpthread `pkg-config --libs libavutil libavcodec libavformat libavdevice libswscale libv4l2 tbb`
 
 ##---------------------------------------------------------------------

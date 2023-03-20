@@ -78,6 +78,7 @@
   <ItemGroup>
     <None Include="build.sh" />
     <None Include="hdmi-setup.sh" />
+    <None Include="Makefile" />
     <None Include="runner.sh" />
     <None Include="v4l2-capture-test.cpp">
       <CppLanguageStandard Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">gnu++20</CppLanguageStandard>

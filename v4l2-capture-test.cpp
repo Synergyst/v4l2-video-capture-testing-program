@@ -61,7 +61,7 @@
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 #define IS_RGB_DEVICE false // change in case capture device is really RGB24 and not BGR24
 int fbfd = -1, ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1920, defaultHeight = 1080, alpha_channel_amount = 244;
-size_t numPixels = defaultWidth * defaultHeight;
+int numPixels = defaultWidth * defaultHeight;
 unsigned char* outputWithAlpha = new unsigned char[defaultWidth * defaultHeight * 4];
 unsigned char* prevOutputFrame = new unsigned char[defaultWidth * defaultHeight * byteScaler];
 const int num_threads = std::thread::hardware_concurrency() - 1;
@@ -105,6 +105,9 @@ long int screensize;
 size_t stride;
 char* fbmem;
 bool done;
+int circle_center_x = defaultWidth / 2;
+int circle_center_y = defaultHeight / 2;
+int circle_diameter = 5, circle_thickness = 1, circle_red = 0, circle_green = 0, circle_blue = 0;
 
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
@@ -482,7 +485,7 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
     exit(1);
   }
   ioctl(fbfd, FBIOGET_VSCREENINFO, &vinfo);
-  if (vinfo.bits_per_pixel != 16 || vinfo.xres != devInfoMain->startingWidth || vinfo.yres != devInfoMain->startingHeight) {
+  if (vinfo.bits_per_pixel != 16 || vinfo.xres != (unsigned int)devInfoMain->startingWidth || vinfo.yres != (unsigned int)devInfoMain->startingHeight) {
     fprintf(stderr, "Error: framebuffer does not accept RGB24 frames with %dx%d resolution\n", devInfoMain->startingWidth, devInfoMain->startingHeight);
     exit(1);
   }
@@ -538,12 +541,12 @@ int startImGuiThread() {
 #endif
   // Setup window
   SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
   SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
   SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
-  SDL_Window* window = SDL_CreateWindow("Dear ImGui SDL2+OpenGL example", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, window_flags);
+  SDL_Window* window = SDL_CreateWindow("Configuration", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, window_flags);
   SDL_GLContext gl_context = SDL_GL_CreateContext(window);
   SDL_GL_MakeCurrent(window, gl_context);
   SDL_GL_SetSwapInterval(1); // Enable vsync
@@ -584,9 +587,6 @@ int startImGuiThread() {
   //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
   //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
   //IM_ASSERT(font != NULL);
-  // Our state
-  bool show_demo_window = true;
-  bool show_another_window = false;
   ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
   // Main loop
   bool done = false;
@@ -608,34 +608,21 @@ int startImGuiThread() {
     ImGui_ImplOpenGL2_NewFrame();
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
-    // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
-    if (show_demo_window)
-      ImGui::ShowDemoWindow(&show_demo_window);
-    // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
-    {
-      static float f = 0.0f;
-      static int counter = 0;
-      ImGui::Begin("Hello, world!");                          // Create a window called "Hello, world!" and append into it.
-      ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
-      ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
-      ImGui::Checkbox("Another Window", &show_another_window);
-      ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
-      ImGui::ColorEdit3("clear color", (float*)&clear_color); // Edit 3 floats representing a color
-      if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
-        counter++;
-      ImGui::SameLine();
-      ImGui::Text("counter = %d", counter);
-      ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
-      ImGui::End();
-    }
-    // 3. Show another simple window.
-    if (show_another_window) {
-      ImGui::Begin("Another Window", &show_another_window);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
-      ImGui::Text("Hello from another window!");
-      if (ImGui::Button("Close Me"))
-        show_another_window = false;
-      ImGui::End();
-    }
+    //
+    ImGui::Begin("configuration");
+    ImGui::Checkbox("dual-in", &isDualInput);
+    ImGui::SliderInt("alpha_channel_amount", &alpha_channel_amount, 0, 255);
+    ImGui::SliderInt("diameter", &circle_diameter, 1, defaultHeight);
+    ImGui::SliderInt("circle_thickness", &circle_thickness, 1, 255);
+    ImGui::SliderInt("circle_red", &circle_red, 0, 255);
+    ImGui::SliderInt("circle_green", &circle_green, 0, 255);
+    ImGui::SliderInt("circle_blue", &circle_blue, 0, 255);
+    ImGui::SliderInt("circle_center_x", &circle_center_x, circle_diameter / 2, defaultWidth - (circle_diameter / 2));
+    ImGui::SliderInt("circle_center_y", &circle_center_y, circle_diameter / 2, defaultHeight - (circle_diameter / 2));
+    ImGui::ColorEdit3("clear color", (float*)&clear_color);
+    ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
+    ImGui::End();
+    //
     // Rendering
     ImGui::Render();
     glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
@@ -667,7 +654,6 @@ int startImGuiThread() {
 int main(const int argc, char **argv) {
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
   fprintf(stderr, "\n[main] Starting main loop now\n");
-  uint16_t* outputRGB565LEFrame = new uint16_t[numPixels];
   std::thread bgThread(startImGuiThread);
   bgThread.detach();
   while (shouldLoop) {
@@ -678,8 +664,6 @@ int main(const int argc, char **argv) {
         background_task_cap_alt.wait();
       }
       background_task_cap_main.wait();
-      int center_x = devInfoMain->startingWidth / 2;
-      int center_y = devInfoMain->startingHeight / 2;
       if (isDualInput) {
 #pragma omp parallel for simd num_threads(num_threads)
         for (int t = 0; t < num_threads; ++t) {
@@ -714,10 +698,10 @@ int main(const int argc, char **argv) {
         }
         for (auto& f : futures) f.wait();
       }
-      draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, center_x, center_y, 16, 1, 255, 255, 255);
+      draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
 #pragma omp parallel for simd num_threads(num_threads)
-      for (int y = 0; y < vinfo.yres; y++) {
-        for (int x = 0; x < vinfo.xres; x += 8) { // Process 8 pixels at a time
+      for (int y = 0; y < (int)vinfo.yres; y++) {
+        for (int x = 0; x < (int)vinfo.xres; x += 8) { // Process 8 pixels at a time
           int pixelOffset = y * vinfo.xres * 3 + x * 3;
           uint8x8x3_t rgb = vld3_u8(&devInfoMain->outputFrame[pixelOffset]);
           if (!IS_RGB_DEVICE) {
