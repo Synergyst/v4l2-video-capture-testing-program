@@ -48,24 +48,26 @@
 #include <execution>
 #include <numeric>
 #include <arm_neon.h> // For SIMD instructions
-#include "imgui.h"
-#include "imgui_impl_sdl2.h"
-#include "imgui_impl_opengl2.h"
+#include "imgui.docking/imgui.h"
+#include "imgui.docking/backends/imgui_impl_sdl2.h"
+#include "imgui.docking/backends/imgui_impl_opengl2.h"
 #include <stdio.h>
 #include <SDL.h>
 #include <SDL_opengl.h>
+#include <bcm_host.h>
 
 #define V4L_ALLFORMATS  3
 #define V4L_RAWFORMATS  1
 #define V4L_COMPFORMATS 2
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 #define IS_RGB_DEVICE false // change in case capture device is really RGB24 and not BGR24
-int fbfd = -1, ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1920, defaultHeight = 1080, alpha_channel_amount = 244;
-int numPixels = defaultWidth * defaultHeight;
+int fbfd = -1, ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1920, defaultHeight = 1080, alpha_channel_amount = 244, allDevicesTargetFramerate = 30, numPixels = defaultWidth * defaultHeight;
+const int def_circle_center_x = defaultWidth / 2, def_circle_center_y = defaultHeight / 2, def_circle_diameter = 5, def_circle_thickness = 1, def_circle_red = 0, def_circle_green = 0, def_circle_blue = 0;
+int circle_center_x = def_circle_center_x, circle_center_y = def_circle_center_y, circle_diameter = def_circle_diameter, circle_thickness = def_circle_thickness, circle_red = def_circle_red, circle_green = def_circle_green, circle_blue = def_circle_blue;
 unsigned char* outputWithAlpha = new unsigned char[defaultWidth * defaultHeight * 4];
 unsigned char* prevOutputFrame = new unsigned char[defaultWidth * defaultHeight * byteScaler];
 const int num_threads = std::thread::hardware_concurrency() - 1;
-bool isDualInput = false;
+bool isDualInput = false, done = false;
 std::atomic<bool> shouldLoop;
 std::future<int> background_task_cap_main;
 std::future<int> background_task_cap_alt;
@@ -104,11 +106,79 @@ struct fb_fix_screeninfo finfo;
 long int screensize;
 size_t stride;
 char* fbmem;
-bool done;
-int circle_center_x = defaultWidth / 2;
-int circle_center_y = defaultHeight / 2;
-int circle_diameter = 5, circle_thickness = 1, circle_red = 0, circle_green = 0, circle_blue = 0;
 
+/*class ImageDisplayer {
+public:
+  ImageDisplayer(int width, int height) : width_(width), height_(height) {
+    std::cout << "BCM host init.." << std::endl;
+    bcm_host_init();
+    std::cout << "BCM host init complete." << std::endl;
+
+    std::cout << "Dispmanx opening.." << std::endl;
+    display_handle_ = vc_dispmanx_display_open(0);
+    if (display_handle_ == 0) {
+      std::cerr << "Failed to open Dispmanx display." << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    std::cout << "Dispmanx opened." << std::endl << display_handle_;
+
+    std::cout << "Dispmanx resource creating.." << std::endl;
+    //resource_handle_ = vc_dispmanx_resource_create(VC_IMAGE_RGB888, width_, height_, nullptr);
+    resource_handle_ = vc_dispmanx_resource_create(VC_IMAGE_RGB565, width_, height_, nullptr);
+    if (resource_handle_ == 0) {
+      std::cerr << "Failed to create Dispmanx resource." << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    std::cout << "Dispmanx resource created." << std::endl;
+
+    element_handle_ = 0;
+  }
+
+  ~ImageDisplayer() {
+    if (element_handle_ != 0) {
+      stop_displaying();
+    }
+
+    vc_dispmanx_resource_delete(resource_handle_);
+
+    vc_dispmanx_display_close(display_handle_);
+
+    bcm_host_deinit();
+  }
+
+  void display_rgb24_image(const unsigned char* image) {
+    DISPMANX_UPDATE_HANDLE_T update_handle = vc_dispmanx_update_start(0);
+
+    VC_RECT_T dst_rect;
+    vc_dispmanx_rect_set(&dst_rect, 0, 0, width_, height_);
+
+    VC_RECT_T src_rect;
+    vc_dispmanx_rect_set(&src_rect, 0, 0, width_ << 16, height_ << 16);
+
+    vc_dispmanx_resource_write_data(resource_handle_, VC_IMAGE_RGB888, width_ * 3, const_cast<unsigned char*>(image), &src_rect);
+
+    if (element_handle_ == 0) {
+      element_handle_ = vc_dispmanx_element_add(
+        update_handle, display_handle_, 0, &dst_rect, resource_handle_, &src_rect, DISPMANX_PROTECTION_NONE, nullptr, nullptr, DISPMANX_NO_ROTATE);
+    }
+
+    vc_dispmanx_update_submit_sync(update_handle);
+  }
+
+  void stop_displaying() {
+    DISPMANX_UPDATE_HANDLE_T update_handle = vc_dispmanx_update_start(0);
+    vc_dispmanx_element_remove(update_handle, element_handle_);
+    vc_dispmanx_update_submit_sync(update_handle);
+    element_handle_ = 0;
+  }
+
+private:
+  int width_;
+  int height_;
+  DISPMANX_DISPLAY_HANDLE_T display_handle_;
+  DISPMANX_RESOURCE_HANDLE_T resource_handle_;
+  DISPMANX_ELEMENT_HANDLE_T element_handle_;
+};*/
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
   exit(EXIT_FAILURE);
@@ -287,9 +357,11 @@ int init_dev_stage2(struct buffer*& buffers, struct devInfo*& devInfos) {
         devInfos->framerateDivisor = (devInfos->framerate / devInfos->targetFramerate);
         devInfos->frameDelayMicros = (1000000 / devInfos->framerate);
         devInfos->frameDelayMillis = (1000 / devInfos->framerate);
-        int rawInputThroughput = (float)((float)(devInfos->framerate * devInfos->startingSize * 2.0F) / 125000.0F); // Measured in megabits/sec based on input framerate
+        int rawInputThroughput = (float)((float)(devInfos->framerate * devInfos->startingSize) / 125000.0F); // Measured in megabits/sec based on input framerate
         int rawOutputThroughput = (float)((((float)devInfos->framerate / devInfos->framerateDivisor) * devInfos->startingSize) / 125000.0F); // Measured in megabits/sec based on output framerate
-        fprintf(stderr, "[cap%d] device_name: %s, isTC358743: %d, startingWidth: %d, startingHeight: %d, startingSize: %d, framerate(actual): %u, framerateDivisor: %d, targetFramerate: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", devInfos->index, devInfos->device, devInfos->isTC358743, devInfos->startingWidth, devInfos->startingHeight, devInfos->startingSize, devInfos->framerate, devInfos->framerateDivisor, devInfos->targetFramerate, rawInputThroughput, rawOutputThroughput);
+        fprintf(stderr, "[cap%d] device_name: %s, startingWidth: %d, startingHeight: %d, startingSize: %d, framerate(actual): %u, framerateDivisor: %d, targetFramerate: %d, frameDelayMicros: %f, frameDelayMillis: %f\n",
+          devInfos->index, devInfos->device, devInfos->startingWidth, devInfos->startingHeight, devInfos->startingSize, devInfos->framerate, devInfos->framerateDivisor, devInfos->targetFramerate, devInfos->frameDelayMicros, devInfos->frameDelayMillis);
+        fprintf(stderr, "[cap%d] device_name: %s, isTC358743: %d, rawInputThroughput: ~%dMb/sec, rawOutputThroughput: ~%dMb/sec\n", devInfos->index, devInfos->device, devInfos->isTC358743, rawInputThroughput, rawOutputThroughput);
       }
     } else {
       memset(&std, 0, sizeof std);
@@ -333,8 +405,8 @@ int get_frame(struct buffer* buffers, struct devInfo* devInfos) {
   FD_ZERO(&fds);
   FD_SET(devInfos->fd, &fds);
   // Timeout period to wait for device to respond
-  tv.tv_sec = 1;
-  tv.tv_usec = 0;
+  tv.tv_sec = 0;
+  tv.tv_usec = devInfos->frameDelayMicros;
   r = select(devInfos->fd + 1, &fds, NULL, NULL, &tv);
   if (-1 == r) {
     if (EINTR == errno)
@@ -474,9 +546,9 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
   commandline_usage(argCnt, args);
   fprintf(stderr, "[main] Initializing..\n");
   // allocate memory for structs
-  init_vars(deviMain, bufMain, 3, 10, true, true, args[1], 0);
+  init_vars(deviMain, bufMain, 3, allDevicesTargetFramerate, true, true, args[1], 0);
   if (isDualInput)
-    init_vars(deviAlt, bufAlt, 3, 10, true, true, args[2], 1);
+    init_vars(deviAlt, bufAlt, 3, allDevicesTargetFramerate, true, true, args[2], 1);
   shouldLoop.store(true);
   numPixels = devInfoMain->startingWidth * devInfoMain->startingHeight;
   fbfd = open(devNames.at(isDualInput ? 2 : 1).c_str(), O_RDWR);
@@ -489,7 +561,9 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
     fprintf(stderr, "Error: framebuffer does not accept RGB24 frames with %dx%d resolution\n", devInfoMain->startingWidth, devInfoMain->startingHeight);
     exit(1);
   }
-  screensize = vinfo.xres * vinfo.yres * 2;
+  //screensize = vinfo.xres * vinfo.yres * 4; // size for 32 BPP
+  fprintf(stderr, "Actual frame buffer configuration: BPP: %u, xres: %u, yres: %u\n", vinfo.bits_per_pixel, vinfo.xres, vinfo.yres);
+  screensize = vinfo.xres * vinfo.yres * 2; // original size for RGB565LE
   // Get the fixed frame buffer information
   if (ioctl(fbfd, FBIOGET_FSCREENINFO, &finfo) == -1) {
     perror("Error getting fixed frame buffer information");
@@ -531,65 +605,72 @@ void draw_hollow_circle(unsigned char* image, int width, int height, int x, int 
 }
 int startImGuiThread() {
   // Setup SDL
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0) {
-    printf("Error: %s\n", SDL_GetError());
-    return -1;
-  }
-  // From 2.0.18: Enable native IME.
+  SDL_Window* window;
+  ImGuiIO io;
+  SDL_WindowFlags window_flags;
+  SDL_GLContext gl_context;
+  ImGuiStyle style;
+  ImVec4 clear_color;
+  {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0) {
+      printf("Error: %s\n", SDL_GetError());
+      return -1;
+    }
+    // From 2.0.18: Enable native IME.
 #ifdef SDL_HINT_IME_SHOW_UI
-  SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
+    SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
 #endif
-  // Setup window
-  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
-  SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-  SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
-  SDL_Window* window = SDL_CreateWindow("Configuration", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, window_flags);
-  SDL_GLContext gl_context = SDL_GL_CreateContext(window);
-  SDL_GL_MakeCurrent(window, gl_context);
-  SDL_GL_SetSwapInterval(1); // Enable vsync
-  // Setup Dear ImGui context
-  IMGUI_CHECKVERSION();
-  ImGui::CreateContext();
-  ImGuiIO& io = ImGui::GetIO(); (void)io;
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
-  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
-  io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windows
-  //io.ConfigViewportsNoAutoMerge = true;
-  //io.ConfigViewportsNoTaskBarIcon = true;
-  // Setup Dear ImGui style
-  ImGui::StyleColorsDark();
-  //ImGui::StyleColorsLight();
-  // When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
-  ImGuiStyle& style = ImGui::GetStyle();
-  if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-    style.WindowRounding = 5.0f;
-    style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+    // Setup window
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    window_flags = (SDL_WindowFlags)(SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+    window = SDL_CreateWindow("Configuration", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 460, 460, window_flags);
+    gl_context = SDL_GL_CreateContext(window);
+    SDL_GL_MakeCurrent(window, gl_context);
+    SDL_GL_SetSwapInterval(1); // Enable vsync
+    // Setup Dear ImGui context
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    io = ImGui::GetIO(); (void)io;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windows
+    //io.ConfigViewportsNoAutoMerge = true;
+    //io.ConfigViewportsNoTaskBarIcon = true;
+    // Setup Dear ImGui style
+    ImGui::StyleColorsDark();
+    //ImGui::StyleColorsLight();
+    // When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
+    style = ImGui::GetStyle();
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+      style.WindowRounding = 5.0f;
+      style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+    }
+    // Setup Platform/Renderer backends
+    ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
+    ImGui_ImplOpenGL2_Init();
+    // Load Fonts
+    // - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use ImGui::PushFont()/PopFont() to select them.
+    // - AddFontFromFileTTF() will return the ImFont* so you can store it if you need to select the font among multiple.
+    // - If the file cannot be loaded, the function will return NULL. Please handle those errors in your application (e.g. use an assertion, or display an error and quit).
+    // - The fonts will be rasterized at a given size (w/ oversampling) and stored into a texture when calling ImFontAtlas::Build()/GetTexDataAsXXXX(), which ImGui_ImplXXXX_NewFrame below will call.
+    // - Use '#define IMGUI_ENABLE_FREETYPE' in your imconfig file to use Freetype for higher quality font rendering.
+    // - Read 'docs/FONTS.md' for more instructions and details.
+    // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
+    //io.Fonts->AddFontDefault();
+    //io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\segoeui.ttf", 18.0f);
+    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
+    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Roboto-Medium.ttf", 16.0f);
+    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
+    //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
+    //IM_ASSERT(font != NULL);
+    clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
   }
-  // Setup Platform/Renderer backends
-  ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
-  ImGui_ImplOpenGL2_Init();
-  // Load Fonts
-  // - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use ImGui::PushFont()/PopFont() to select them.
-  // - AddFontFromFileTTF() will return the ImFont* so you can store it if you need to select the font among multiple.
-  // - If the file cannot be loaded, the function will return NULL. Please handle those errors in your application (e.g. use an assertion, or display an error and quit).
-  // - The fonts will be rasterized at a given size (w/ oversampling) and stored into a texture when calling ImFontAtlas::Build()/GetTexDataAsXXXX(), which ImGui_ImplXXXX_NewFrame below will call.
-  // - Use '#define IMGUI_ENABLE_FREETYPE' in your imconfig file to use Freetype for higher quality font rendering.
-  // - Read 'docs/FONTS.md' for more instructions and details.
-  // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
-  //io.Fonts->AddFontDefault();
-  //io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\segoeui.ttf", 18.0f);
-  //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
-  //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Roboto-Medium.ttf", 16.0f);
-  //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
-  //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
-  //IM_ASSERT(font != NULL);
-  ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
   // Main loop
-  bool done = false;
   while (!done) {
     // Poll and handle events (inputs, window resize, etc.)
     // You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
@@ -609,16 +690,19 @@ int startImGuiThread() {
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
     //
-    ImGui::Begin("configuration");
-    ImGui::Checkbox("dual-in", &isDualInput);
+    ImGui::Begin("configuration / test object(s)");
+    if (devNames.size() > 2)
+      ImGui::Checkbox("dual-in", &isDualInput);
     ImGui::SliderInt("alpha_channel_amount", &alpha_channel_amount, 0, 255);
     ImGui::SliderInt("diameter", &circle_diameter, 1, defaultHeight);
-    ImGui::SliderInt("circle_thickness", &circle_thickness, 1, 255);
+    ImGui::SliderInt("circle_thickness", &circle_thickness, 1, circle_diameter / 2);
     ImGui::SliderInt("circle_red", &circle_red, 0, 255);
     ImGui::SliderInt("circle_green", &circle_green, 0, 255);
     ImGui::SliderInt("circle_blue", &circle_blue, 0, 255);
     ImGui::SliderInt("circle_center_x", &circle_center_x, circle_diameter / 2, defaultWidth - (circle_diameter / 2));
     ImGui::SliderInt("circle_center_y", &circle_center_y, circle_diameter / 2, defaultHeight - (circle_diameter / 2));
+    if (ImGui::Button("reset"))
+      circle_center_x = def_circle_center_x, circle_center_y = def_circle_center_y, circle_diameter = def_circle_diameter, circle_thickness = def_circle_thickness, circle_red = def_circle_red, circle_green = def_circle_green, circle_blue = def_circle_blue;
     ImGui::ColorEdit3("clear color", (float*)&clear_color);
     ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
     ImGui::End();
@@ -653,6 +737,7 @@ int startImGuiThread() {
 }
 int main(const int argc, char **argv) {
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
+  //ImageDisplayer displayer(devInfoMain->startingWidth, devInfoMain->startingHeight);
   fprintf(stderr, "\n[main] Starting main loop now\n");
   std::thread bgThread(startImGuiThread);
   bgThread.detach();
@@ -692,13 +777,53 @@ int main(const int argc, char **argv) {
               rgb.val[2] = vqmovn_u16(b16);
               vst3_u8(&devInfoMain->outputFrame[i * 3], rgb);
             }
-            });
+          });
           futures[t] = task.get_future();
           std::thread(std::move(task)).detach();
         }
         for (auto& f : futures) f.wait();
       }
       draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
+      /*std::vector<int> indices(numPixels);
+      std::iota(indices.begin(), indices.end(), 0);
+      std::for_each(std::execution::par, indices.begin(), indices.end(), [&](int i) {
+        int idx = i * 8; // Processing 8 pixels at a time
+        if (idx + 7 < numPixels) {
+          uint8x8x3_t rgb = vld3_u8(&devInfoMain->outputFrame[idx * 3]);
+          uint8x8x4_t rgba;
+          rgba.val[0] = rgb.val[0];
+          rgba.val[1] = rgb.val[1];
+          rgba.val[2] = rgb.val[2];
+          rgba.val[3] = vdup_n_u8(alpha_channel_amount);
+          vst4_u8(&outputWithAlpha[idx * 4], rgba);
+        } else {
+          // Process the remaining pixels
+          for (; idx < numPixels; ++idx) {
+            outputWithAlpha[idx * 4] = devInfoMain->outputFrame[idx * 3];
+            outputWithAlpha[idx * 4 + 1] = devInfoMain->outputFrame[idx * 3 + 1];
+            outputWithAlpha[idx * 4 + 2] = devInfoMain->outputFrame[idx * 3 + 2];
+            outputWithAlpha[idx * 4 + 3] = alpha_channel_amount;
+          }
+        }
+      });
+      char* currentPixel = fbmem;
+      for (unsigned int y = 0; y < vinfo.yres; y++) {
+        for (unsigned int x = 0; x < vinfo.xres; x++) {
+          int pixelOffset = y * vinfo.xres * 3 + x * 3;
+          unsigned char r = devInfoMain->outputFrame[pixelOffset];
+          unsigned char g = devInfoMain->outputFrame[pixelOffset + 1];
+          unsigned char b = devInfoMain->outputFrame[pixelOffset + 2];
+          unsigned short pixel = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+          *(unsigned short*)currentPixel = pixel;
+          currentPixel += 2;
+        }
+      }*/
+      /*char* currentPixel = fbmem;
+      for (int p = 0; p < numPixels; p++) {
+        *(uint32_t*)currentPixel = outputWithAlpha[p];
+      }*/
+      //displayer.display_rgb24_image(devInfoMain->outputFrame);
+      //display_rgb24_image(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight);
 #pragma omp parallel for simd num_threads(num_threads)
       for (int y = 0; y < (int)vinfo.yres; y++) {
         for (int x = 0; x < (int)vinfo.xres; x += 8) { // Process 8 pixels at a time
@@ -722,6 +847,7 @@ int main(const int argc, char **argv) {
     }
     frame_number++;
   }
+  //displayer.stop_displaying();
   cleanup_vars();
   return 0;
 }
