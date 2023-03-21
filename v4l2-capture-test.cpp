@@ -61,12 +61,12 @@
 #define V4L_COMPFORMATS 2
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 #define IS_RGB_DEVICE false // change in case capture device is really RGB24 and not BGR24
-int fbfd = -1, ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1920, defaultHeight = 1080, alpha_channel_amount = 255, allDevicesTargetFramerate = 30, numPixels = defaultWidth * defaultHeight;
+int fbfd = -1, ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1920, defaultHeight = 1080, alpha_channel_amount = 0, allDevicesTargetFramerate = 30, numPixels = defaultWidth * defaultHeight;
 const int def_circle_center_x = defaultWidth / 2, def_circle_center_y = defaultHeight / 2, def_circle_diameter = 5, def_circle_thickness = 1, def_circle_red = 0, def_circle_green = 0, def_circle_blue = 0;
 int circle_center_x = def_circle_center_x, circle_center_y = def_circle_center_y, circle_diameter = def_circle_diameter, circle_thickness = def_circle_thickness, circle_red = def_circle_red, circle_green = def_circle_green, circle_blue = def_circle_blue;
 unsigned char* outputWithAlpha = new unsigned char[defaultWidth * defaultHeight * 4];
 unsigned char* prevOutputFrame = new unsigned char[defaultWidth * defaultHeight * byteScaler];
-const int num_threads = std::thread::hardware_concurrency();
+const int num_threads = std::thread::hardware_concurrency() + 1;
 //const int num_threads = std::thread::hardware_concurrency() / 2;
 bool isDualInput = false, done = false;
 std::atomic<bool> shouldLoop;
@@ -375,7 +375,7 @@ int get_frame(struct buffer* buffers, struct devInfo* devInfos) {
     }
   }
   assert(buf.index < devInfos->n_buffers);
-  if (devInfos->index == 1) {
+  /*if (devInfos->index == 1) {
     unsigned char* preP = (unsigned char*)buffers[buf.index].start;
     std::vector<int> indices(numPixels);
     std::iota(indices.begin(), indices.end(), 0);
@@ -401,7 +401,8 @@ int get_frame(struct buffer* buffers, struct devInfo* devInfos) {
     });
   } else {
     std::memcpy(devInfos->outputFrame, (unsigned char*)buffers[buf.index].start, buffers[buf.index].length); // copy frame data to frame buffer
-  }
+  }*/
+  std::memcpy(devInfos->outputFrame, (unsigned char*)buffers[buf.index].start, buffers[buf.index].length); // copy frame data to frame buffer
   //if (devInfos->frame_number % devInfos->framerateDivisor == 0) devInfos->frame_number++;
   if (-1 == xioctl(devInfos->fd, VIDIOC_QBUF, &buf))
     errno_exit("VIDIOC_QBUF");
@@ -809,19 +810,24 @@ void old_rgb888_to_rgb565lefbmem(const unsigned char* src) {
   }
 }
 void neon_overlay_rgba32_on_rgb24() {
+#pragma omp parallel for simd num_threads(num_threads)
   for (int t = 0; t < num_threads; ++t) {
     const int start = ((t * numPixels) / num_threads), end = (((t + 1) * numPixels) / num_threads);
     auto task = std::packaged_task<void()>([=] {
       for (int i = start; i < end; i += 8) {
+        background_task_cap_main.wait();
         uint8x8x3_t rgb = vld3_u8(&devInfoMain->outputFrame[i * 3]);
         uint8x8_t r1 = rgb.val[0];
         uint8x8_t g1 = rgb.val[1];
         uint8x8_t b1 = rgb.val[2];
-        uint8x8x4_t rgba2 = vld4_u8(&outputWithAlpha[i * 4]);
-        uint8x8_t r2 = rgba2.val[0];
-        uint8x8_t g2 = rgba2.val[1];
-        uint8x8_t b2 = rgba2.val[2];
-        uint8x8_t alpha = rgba2.val[3];
+        background_task_cap_alt.wait();
+        uint8x8x3_t rgb2 = vld3_u8(&devInfoAlt->outputFrame[i * 3]);
+        //uint8x8x4_t rgba2 = vld4_u8(&outputWithAlpha[i * 4]);
+        uint8x8_t r2 = rgb2.val[0];
+        uint8x8_t g2 = rgb2.val[1];
+        uint8x8_t b2 = rgb2.val[2];
+        uint8x8_t alpha = vdup_n_u8(alpha_channel_amount);
+        //uint8x8_t alpha = rgba2.val[3];
         uint16x8_t alpha_ratio = vmovl_u8(alpha);
         uint16x8_t inv_alpha_ratio = vsubq_u16(vdupq_n_u16(255), alpha_ratio);
         uint16x8_t r16 = vaddq_u16(vmull_u8(r1, vqmovn_u16(inv_alpha_ratio)), vmull_u8(r2, vqmovn_u16(alpha_ratio)));
@@ -877,27 +883,38 @@ int main(const int argc, char **argv) {
   fprintf(stderr, "\n[main] Starting main loop now\n");
   std::thread bgThread(startImGuiThread);
   bgThread.detach();
+  //draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
+  bool work_display_flop = true;
   while (shouldLoop) {
-    if (frame_number % 2 == 0) {
+    if (isDualInput) {
       background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
-      if (isDualInput) {
-        background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt);
-        background_task_cap_alt.wait();
-      }
-      background_task_cap_main.wait();
-      if (isDualInput) {
-        neon_overlay_rgba32_on_rgb24();
-      }
-      /*draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
-      if (experimentalMode) {
-      } else {
-        old_rgb888_to_rgb565lefbmem(devInfoMain->outputFrame);
-      }*/
+      background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt);
+      //background_task_cap_main.wait();
+      //background_task_cap_alt.wait();
+      neon_overlay_rgba32_on_rgb24();
     } else {
-      bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
-      memcpy(fbmem, rgb565le, devInfoMain->startingWidth * devInfoMain->startingHeight * 2);
+      background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
+      background_task_cap_main.wait();
     }
-    frame_number++;
+    bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
+    memcpy(fbmem, rgb565le, devInfoMain->startingWidth * devInfoMain->startingHeight * 2);
+    /*if (work_display_flop) {
+      if (isDualInput) {
+        background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
+        background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt);
+        //background_task_cap_main.wait();
+        //background_task_cap_alt.wait();
+        neon_overlay_rgba32_on_rgb24();
+        bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
+      } else {
+        background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
+        background_task_cap_main.wait();
+        bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
+      }
+    } else {
+      memcpy(fbmem, rgb565le, devInfoMain->startingWidth * devInfoMain->startingHeight * 2);
+    }*/
+    work_display_flop ^= true;
   }
   cleanup_vars();
   return 0;
