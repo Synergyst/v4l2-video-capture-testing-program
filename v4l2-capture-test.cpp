@@ -61,12 +61,13 @@
 #define V4L_COMPFORMATS 2
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 #define IS_RGB_DEVICE false // change in case capture device is really RGB24 and not BGR24
-int fbfd = -1, ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1920, defaultHeight = 1080, alpha_channel_amount = 244, allDevicesTargetFramerate = 30, numPixels = defaultWidth * defaultHeight;
+int fbfd = -1, ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1920, defaultHeight = 1080, alpha_channel_amount = 255, allDevicesTargetFramerate = 30, numPixels = defaultWidth * defaultHeight;
 const int def_circle_center_x = defaultWidth / 2, def_circle_center_y = defaultHeight / 2, def_circle_diameter = 5, def_circle_thickness = 1, def_circle_red = 0, def_circle_green = 0, def_circle_blue = 0;
 int circle_center_x = def_circle_center_x, circle_center_y = def_circle_center_y, circle_diameter = def_circle_diameter, circle_thickness = def_circle_thickness, circle_red = def_circle_red, circle_green = def_circle_green, circle_blue = def_circle_blue;
 unsigned char* outputWithAlpha = new unsigned char[defaultWidth * defaultHeight * 4];
 unsigned char* prevOutputFrame = new unsigned char[defaultWidth * defaultHeight * byteScaler];
-const int num_threads = std::thread::hardware_concurrency() - 1;
+const int num_threads = std::thread::hardware_concurrency();
+//const int num_threads = std::thread::hardware_concurrency() / 2;
 bool isDualInput = false, done = false;
 std::atomic<bool> shouldLoop;
 std::future<int> background_task_cap_main;
@@ -106,79 +107,17 @@ struct fb_fix_screeninfo finfo;
 long int screensize;
 size_t stride;
 char* fbmem;
+bool experimentalMode = false;
+uint16_t *rgb565le = new uint16_t[defaultWidth * defaultHeight * 2];
 
-/*class ImageDisplayer {
-public:
-  ImageDisplayer(int width, int height) : width_(width), height_(height) {
-    std::cout << "BCM host init.." << std::endl;
-    bcm_host_init();
-    std::cout << "BCM host init complete." << std::endl;
-
-    std::cout << "Dispmanx opening.." << std::endl;
-    display_handle_ = vc_dispmanx_display_open(0);
-    if (display_handle_ == 0) {
-      std::cerr << "Failed to open Dispmanx display." << std::endl;
-      std::exit(EXIT_FAILURE);
-    }
-    std::cout << "Dispmanx opened." << std::endl << display_handle_;
-
-    std::cout << "Dispmanx resource creating.." << std::endl;
-    //resource_handle_ = vc_dispmanx_resource_create(VC_IMAGE_RGB888, width_, height_, nullptr);
-    resource_handle_ = vc_dispmanx_resource_create(VC_IMAGE_RGB565, width_, height_, nullptr);
-    if (resource_handle_ == 0) {
-      std::cerr << "Failed to create Dispmanx resource." << std::endl;
-      std::exit(EXIT_FAILURE);
-    }
-    std::cout << "Dispmanx resource created." << std::endl;
-
-    element_handle_ = 0;
-  }
-
-  ~ImageDisplayer() {
-    if (element_handle_ != 0) {
-      stop_displaying();
-    }
-
-    vc_dispmanx_resource_delete(resource_handle_);
-
-    vc_dispmanx_display_close(display_handle_);
-
-    bcm_host_deinit();
-  }
-
-  void display_rgb24_image(const unsigned char* image) {
-    DISPMANX_UPDATE_HANDLE_T update_handle = vc_dispmanx_update_start(0);
-
-    VC_RECT_T dst_rect;
-    vc_dispmanx_rect_set(&dst_rect, 0, 0, width_, height_);
-
-    VC_RECT_T src_rect;
-    vc_dispmanx_rect_set(&src_rect, 0, 0, width_ << 16, height_ << 16);
-
-    vc_dispmanx_resource_write_data(resource_handle_, VC_IMAGE_RGB888, width_ * 3, const_cast<unsigned char*>(image), &src_rect);
-
-    if (element_handle_ == 0) {
-      element_handle_ = vc_dispmanx_element_add(
-        update_handle, display_handle_, 0, &dst_rect, resource_handle_, &src_rect, DISPMANX_PROTECTION_NONE, nullptr, nullptr, DISPMANX_NO_ROTATE);
-    }
-
-    vc_dispmanx_update_submit_sync(update_handle);
-  }
-
-  void stop_displaying() {
-    DISPMANX_UPDATE_HANDLE_T update_handle = vc_dispmanx_update_start(0);
-    vc_dispmanx_element_remove(update_handle, element_handle_);
-    vc_dispmanx_update_submit_sync(update_handle);
-    element_handle_ = 0;
-  }
-
-private:
-  int width_;
-  int height_;
-  DISPMANX_DISPLAY_HANDLE_T display_handle_;
-  DISPMANX_RESOURCE_HANDLE_T resource_handle_;
-  DISPMANX_ELEMENT_HANDLE_T element_handle_;
-};*/
+/*uint16x3_t rgb888torgb565(uint8x3_t rgb888Pixel) {
+  uint16x3_t rgb565_rgb;
+  rgb565_rgb.val[0] = ((rgb888Pixel.val[2] >> 3) & 0x1f);
+  rgb565_rgb.val[1] = (((rgb888Pixel.val[1] >> 2) & 0x3f) << 5);
+  rgb565_rgb.val[2] = (((rgb888Pixel.val[0] >> 3) & 0x1f) << 11);
+  return rgb565_rgb;
+  //return (uint16x3_t){ (rgb888Pixel.val[2] >> 3) & 0x1f, ((rgb888Pixel.val[1] >> 2) & 0x3f) << 5, ((rgb888Pixel.val[0] >> 3) & 0x1f) << 11 };
+}*/
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
   exit(EXIT_FAILURE);
@@ -406,7 +345,7 @@ int get_frame(struct buffer* buffers, struct devInfo* devInfos) {
   FD_SET(devInfos->fd, &fds);
   // Timeout period to wait for device to respond
   tv.tv_sec = 0;
-  tv.tv_usec = devInfos->frameDelayMicros;
+  tv.tv_usec = devInfos->frameDelayMicros*3;
   r = select(devInfos->fd + 1, &fds, NULL, NULL, &tv);
   if (-1 == r) {
     if (EINTR == errno)
@@ -561,16 +500,13 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
     fprintf(stderr, "Error: framebuffer does not accept RGB24 frames with %dx%d resolution\n", devInfoMain->startingWidth, devInfoMain->startingHeight);
     exit(1);
   }
-  //screensize = vinfo.xres * vinfo.yres * 4; // size for 32 BPP
   fprintf(stderr, "Actual frame buffer configuration: BPP: %u, xres: %u, yres: %u\n", vinfo.bits_per_pixel, vinfo.xres, vinfo.yres);
   screensize = vinfo.xres * vinfo.yres * 2; // original size for RGB565LE
-  // Get the fixed frame buffer information
+  stride = vinfo.xres * 2; // stride for RGB565LE format
   if (ioctl(fbfd, FBIOGET_FSCREENINFO, &finfo) == -1) {
     perror("Error getting fixed frame buffer information");
     exit(EXIT_FAILURE);
   }
-  // Calculate the stride
-  stride = finfo.line_length / (vinfo.bits_per_pixel / 8);
   fbmem = (char*)mmap(0, screensize, PROT_READ | PROT_WRITE, MAP_SHARED, fbfd, 0);
   if (fbmem == MAP_FAILED) {
     perror("Error: failed to mmap framebuffer device to memory");
@@ -691,6 +627,7 @@ int startImGuiThread() {
     ImGui::NewFrame();
     //
     ImGui::Begin("configuration / test object(s)");
+    ImGui::Checkbox("experimental mode", &experimentalMode);
     if (devNames.size() > 2)
       ImGui::Checkbox("dual-in", &isDualInput);
     ImGui::SliderInt("alpha_channel_amount", &alpha_channel_amount, 0, 255);
@@ -735,9 +672,208 @@ int startImGuiThread() {
   SDL_Quit();
   return 0;
 }
+// Convert an RGB24 pixel to RGB565LE format
+/*unsigned short convertPixel(unsigned char r, unsigned char g, unsigned char b) {
+  unsigned short r5 = (r * 31 + 127) / 255;
+  unsigned short g6 = (g * 63 + 127) / 255;
+  unsigned short b5 = (b * 31 + 127) / 255;
+  return (r5 << 11) | (g6 << 5) | b5;
+}*/
+std::mutex mtx;
+void rgb888_to_rgb565le_threaded(const unsigned char* src, uint16_t* dst, int width, int height, int start, int end) {
+  const int num_pixels = end - start;
+  src += start * 3;
+  dst += start;
+  int i = 0;
+
+  // Process 8 pixels at a time using NEON intrinsics
+  for (; i <= num_pixels - 8; i += 8, src += 8 * 3, dst += 8) {
+    uint8x8x3_t rgb888 = vld3_u8(src);
+
+    uint16x8_t r = vshrq_n_u16(vmovl_u8(rgb888.val[0]), 3);
+    uint16x8_t g = vshrq_n_u16(vmovl_u8(rgb888.val[1]), 2);
+    uint16x8_t b = vshrq_n_u16(vmovl_u8(rgb888.val[2]), 3);
+
+    uint16x8_t rgb565 = vorrq_u16(vorrq_u16(vshlq_n_u16(r, 11), vshlq_n_u16(g, 5)), b);
+    vst1q_u16(dst, rgb565);
+  }
+
+  // Process remaining pixels
+  for (; i < num_pixels; ++i, src += 3, ++dst) {
+    uint16_t r = (src[0] >> 3) << 11;
+    uint16_t g = (src[1] >> 2) << 5;
+    uint16_t b = (src[2] >> 3);
+
+    dst[0] = r | g | b;
+  }
+}
+void rgb888_to_rgb565le_multithreaded(const unsigned char* src, uint16_t* dst, int width, int height) {
+  int num_pixels = width * height;
+  int pixels_per_thread = num_pixels / num_threads;
+  std::vector<std::thread> threads;
+
+  for (int i = 0; i < num_threads; ++i) {
+    int start = i * pixels_per_thread;
+    int end = (i == num_threads - 1) ? num_pixels : start + pixels_per_thread;
+
+    threads.emplace_back(std::thread(rgb888_to_rgb565le_threaded, src, dst, width, height, start, end));
+  }
+
+  // Wait for all threads to finish
+  for (auto& t : threads) {
+    t.join();
+  }
+}
+void bgr888_to_rgb565le_threaded(const unsigned char* src, uint16_t* dst, int width, int height, int start, int end) {
+  const int num_pixels = end - start;
+  src += start * 3;
+  dst += start;
+  int i = 0;
+
+  // Process 8 pixels at a time using NEON intrinsics
+  for (; i <= num_pixels - 8; i += 8, src += 8 * 3, dst += 8) {
+    uint8x8x3_t rgb888 = vld3_u8(src);
+    uint16x8_t b = vshrq_n_u16(vmovl_u8(rgb888.val[0]), 3);
+    uint16x8_t g = vshrq_n_u16(vmovl_u8(rgb888.val[1]), 2);
+    uint16x8_t r = vshrq_n_u16(vmovl_u8(rgb888.val[2]), 3);
+    uint16x8_t rgb565 = vorrq_u16(vorrq_u16(vshlq_n_u16(r, 11), vshlq_n_u16(g, 5)), b);
+    vst1q_u16(dst, rgb565);
+  }
+  // Process remaining pixels
+  for (; i < num_pixels; ++i, src += 3, ++dst) {
+    uint16_t b = (src[0] >> 3) << 11;
+    uint16_t g = (src[1] >> 2) << 5;
+    uint16_t r = (src[2] >> 3);
+    dst[0] = r | g | b;
+  }
+}
+void bgr888_to_rgb565le_multithreaded(const unsigned char* src, uint16_t* dst, int width, int height) {
+  int num_pixels = width * height;
+  int pixels_per_thread = num_pixels / num_threads;
+  std::vector<std::thread> threads;
+  for (int i = 0; i < num_threads; ++i) {
+    int start = i * pixels_per_thread;
+    int end = (i == num_threads - 1) ? num_pixels : start + pixels_per_thread;
+    threads.emplace_back(std::thread(bgr888_to_rgb565le_threaded, src, dst, width, height, start, end));
+  }
+  // Wait for all threads to finish
+  for (auto& t : threads) {
+    t.join();
+  }
+}
+void rgb888_to_rgb565le(const unsigned char* src, uint16_t* dst, int width, int height) {
+  const int num_pixels = width * height;
+  int i = 0;
+
+  // Process 8 pixels at a time using NEON intrinsics
+  for (; i <= num_pixels - 8; i += 8, src += 8 * 3, dst += 8) {
+    uint8x8x3_t rgb888 = vld3_u8(src);
+
+    uint16x8_t b = vshrq_n_u16(vmovl_u8(rgb888.val[0]), 3);
+    uint16x8_t g = vshrq_n_u16(vmovl_u8(rgb888.val[1]), 2);
+    uint16x8_t r = vshrq_n_u16(vmovl_u8(rgb888.val[2]), 3);
+
+    uint16x8_t rgb565 = vorrq_u16(vorrq_u16(vshlq_n_u16(r, 11), vshlq_n_u16(g, 5)), b);
+    vst1q_u16(dst, rgb565);
+  }
+
+  // Process remaining pixels
+  for (; i < num_pixels; ++i, src += 3, ++dst) {
+    uint16_t b = (src[0] >> 3) << 11;
+    uint16_t g = (src[1] >> 2) << 5;
+    uint16_t r = (src[2] >> 3);
+
+    dst[0] = r | g | b;
+  }
+}
+void old_rgb888_to_rgb565lefbmem(const unsigned char* src) {
+#pragma omp parallel for simd num_threads(num_threads)
+  for (int y = 0; y < (int)vinfo.yres; y++) {
+    for (int x = 0; x < (int)vinfo.xres; x += 8) { // Process 8 pixels at a time
+      int pixelOffset = y * vinfo.xres * 3 + x * 3;
+      uint8x8x3_t rgb = vld3_u8(&src[pixelOffset]);
+      if (!IS_RGB_DEVICE) {
+        // Swap red and blue channels
+        uint8x8_t tmp = rgb.val[0];
+        rgb.val[0] = rgb.val[2];
+        rgb.val[2] = tmp;
+      }
+      uint8x8_t r = vshr_n_u8(rgb.val[0], 3);
+      uint8x8_t g = vshr_n_u8(rgb.val[1], 2);
+      uint8x8_t b = vshr_n_u8(rgb.val[2], 3);
+      uint16x8_t pixel = vshlq_n_u16(vmovl_u8(r), 11);
+      pixel = vsliq_n_u16(pixel, vmovl_u8(g), 5);
+      pixel = vorrq_u16(pixel, vmovl_u8(b));
+      vst1q_u16(reinterpret_cast<uint16_t*>(fbmem + y * vinfo.xres * 2 + x * 2), pixel);
+    }
+  }
+}
+void neon_overlay_rgba32_on_rgb24() {
+  for (int t = 0; t < num_threads; ++t) {
+    const int start = ((t * numPixels) / num_threads), end = (((t + 1) * numPixels) / num_threads);
+    auto task = std::packaged_task<void()>([=] {
+      for (int i = start; i < end; i += 8) {
+        uint8x8x3_t rgb = vld3_u8(&devInfoMain->outputFrame[i * 3]);
+        uint8x8_t r1 = rgb.val[0];
+        uint8x8_t g1 = rgb.val[1];
+        uint8x8_t b1 = rgb.val[2];
+        uint8x8x4_t rgba2 = vld4_u8(&outputWithAlpha[i * 4]);
+        uint8x8_t r2 = rgba2.val[0];
+        uint8x8_t g2 = rgba2.val[1];
+        uint8x8_t b2 = rgba2.val[2];
+        uint8x8_t alpha = rgba2.val[3];
+        uint16x8_t alpha_ratio = vmovl_u8(alpha);
+        uint16x8_t inv_alpha_ratio = vsubq_u16(vdupq_n_u16(255), alpha_ratio);
+        uint16x8_t r16 = vaddq_u16(vmull_u8(r1, vqmovn_u16(inv_alpha_ratio)), vmull_u8(r2, vqmovn_u16(alpha_ratio)));
+        uint16x8_t g16 = vaddq_u16(vmull_u8(g1, vqmovn_u16(inv_alpha_ratio)), vmull_u8(g2, vqmovn_u16(alpha_ratio)));
+        uint16x8_t b16 = vaddq_u16(vmull_u8(b1, vqmovn_u16(inv_alpha_ratio)), vmull_u8(b2, vqmovn_u16(alpha_ratio)));
+        r16 = vrshrq_n_u16(r16, 8);
+        g16 = vrshrq_n_u16(g16, 8);
+        b16 = vrshrq_n_u16(b16, 8);
+        rgb.val[0] = vqmovn_u16(r16);
+        rgb.val[1] = vqmovn_u16(g16);
+        rgb.val[2] = vqmovn_u16(b16);
+        vst3_u8(&devInfoMain->outputFrame[i * 3], rgb);
+      }
+      });
+    futures[t] = task.get_future();
+    std::thread(std::move(task)).detach();
+  }
+  for (auto& f : futures) if (f.valid()) f.wait();
+}
+/*void experimental_conversion_rgb24() {
+#pragma omp parallel for simd num_threads(num_threads)
+  for (int y = 0; y < (int)vinfo.yres; y++) {
+    for (int x = 0; x < (int)vinfo.xres; x += 8) {
+      uint8x16x3_t rgb = vld3q_u8(&devInfoMain->outputFrame[y * vinfo.xres * 3 + x * 3]);
+      if (!IS_RGB_DEVICE) {
+        // Swap red and blue channels
+        uint8x16_t tmp = rgb.val[0];
+        rgb.val[0] = rgb.val[2];
+        rgb.val[2] = tmp;
+      }
+      uint8x8_t r_lo = vget_low_u8(rgb.val[0]);
+      uint8x8_t r_hi = vget_high_u8(rgb.val[0]);
+      uint8x8_t g_lo = vget_low_u8(rgb.val[1]);
+      uint8x8_t g_hi = vget_high_u8(rgb.val[1]);
+      uint8x8_t b_lo = vget_low_u8(rgb.val[2]);
+      uint8x8_t b_hi = vget_high_u8(rgb.val[2]);
+      uint16x8_t pixel_lo = vshlq_n_u16(vmovl_u8(r_lo), 11);
+      pixel_lo = vsliq_n_u16(pixel_lo, vmovl_u8(g_lo), 5);
+      pixel_lo = vorrq_u16(pixel_lo, vmovl_u8(b_lo));
+      uint16x8_t pixel_hi = vshlq_n_u16(vmovl_u8(r_hi), 11);
+      pixel_hi = vsliq_n_u16(pixel_hi, vmovl_u8(g_hi), 5);
+      pixel_hi = vorrq_u16(pixel_hi, vmovl_u8(b_hi));
+      uint16x8x2_t pixels = { { pixel_lo, pixel_hi } };
+      char* output_row = fbmem + y * vinfo.xres * 2 + x * 2;
+      uint8_t* output_row_aligned = reinterpret_cast<uint8_t*>(
+        output_row + ((uintptr_t)output_row & 15));
+      vst1q_u16_x2(reinterpret_cast<uint16_t*>(output_row_aligned), pixels);
+    }
+  }
+}*/
 int main(const int argc, char **argv) {
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
-  //ImageDisplayer displayer(devInfoMain->startingWidth, devInfoMain->startingHeight);
   fprintf(stderr, "\n[main] Starting main loop now\n");
   std::thread bgThread(startImGuiThread);
   bgThread.detach();
@@ -750,104 +886,19 @@ int main(const int argc, char **argv) {
       }
       background_task_cap_main.wait();
       if (isDualInput) {
-#pragma omp parallel for simd num_threads(num_threads)
-        for (int t = 0; t < num_threads; ++t) {
-          const int start = ((t * numPixels) / num_threads), end = (((t + 1) * numPixels) / num_threads);
-          auto task = std::packaged_task<void()>([=] {
-            for (int i = start; i < end; i += 8) {
-              uint8x8x3_t rgb = vld3_u8(&devInfoMain->outputFrame[i * 3]);
-              uint8x8_t r1 = rgb.val[0];
-              uint8x8_t g1 = rgb.val[1];
-              uint8x8_t b1 = rgb.val[2];
-              uint8x8x4_t rgba2 = vld4_u8(&outputWithAlpha[i * 4]);
-              uint8x8_t r2 = rgba2.val[0];
-              uint8x8_t g2 = rgba2.val[1];
-              uint8x8_t b2 = rgba2.val[2];
-              uint8x8_t alpha = rgba2.val[3];
-              uint16x8_t alpha_ratio = vmovl_u8(alpha);
-              uint16x8_t inv_alpha_ratio = vsubq_u16(vdupq_n_u16(255), alpha_ratio);
-              uint16x8_t r16 = vaddq_u16(vmull_u8(r1, vqmovn_u16(inv_alpha_ratio)), vmull_u8(r2, vqmovn_u16(alpha_ratio)));
-              uint16x8_t g16 = vaddq_u16(vmull_u8(g1, vqmovn_u16(inv_alpha_ratio)), vmull_u8(g2, vqmovn_u16(alpha_ratio)));
-              uint16x8_t b16 = vaddq_u16(vmull_u8(b1, vqmovn_u16(inv_alpha_ratio)), vmull_u8(b2, vqmovn_u16(alpha_ratio)));
-              r16 = vrshrq_n_u16(r16, 8);
-              g16 = vrshrq_n_u16(g16, 8);
-              b16 = vrshrq_n_u16(b16, 8);
-              rgb.val[0] = vqmovn_u16(r16);
-              rgb.val[1] = vqmovn_u16(g16);
-              rgb.val[2] = vqmovn_u16(b16);
-              vst3_u8(&devInfoMain->outputFrame[i * 3], rgb);
-            }
-          });
-          futures[t] = task.get_future();
-          std::thread(std::move(task)).detach();
-        }
-        for (auto& f : futures) f.wait();
+        neon_overlay_rgba32_on_rgb24();
       }
-      draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
-      /*std::vector<int> indices(numPixels);
-      std::iota(indices.begin(), indices.end(), 0);
-      std::for_each(std::execution::par, indices.begin(), indices.end(), [&](int i) {
-        int idx = i * 8; // Processing 8 pixels at a time
-        if (idx + 7 < numPixels) {
-          uint8x8x3_t rgb = vld3_u8(&devInfoMain->outputFrame[idx * 3]);
-          uint8x8x4_t rgba;
-          rgba.val[0] = rgb.val[0];
-          rgba.val[1] = rgb.val[1];
-          rgba.val[2] = rgb.val[2];
-          rgba.val[3] = vdup_n_u8(alpha_channel_amount);
-          vst4_u8(&outputWithAlpha[idx * 4], rgba);
-        } else {
-          // Process the remaining pixels
-          for (; idx < numPixels; ++idx) {
-            outputWithAlpha[idx * 4] = devInfoMain->outputFrame[idx * 3];
-            outputWithAlpha[idx * 4 + 1] = devInfoMain->outputFrame[idx * 3 + 1];
-            outputWithAlpha[idx * 4 + 2] = devInfoMain->outputFrame[idx * 3 + 2];
-            outputWithAlpha[idx * 4 + 3] = alpha_channel_amount;
-          }
-        }
-      });
-      char* currentPixel = fbmem;
-      for (unsigned int y = 0; y < vinfo.yres; y++) {
-        for (unsigned int x = 0; x < vinfo.xres; x++) {
-          int pixelOffset = y * vinfo.xres * 3 + x * 3;
-          unsigned char r = devInfoMain->outputFrame[pixelOffset];
-          unsigned char g = devInfoMain->outputFrame[pixelOffset + 1];
-          unsigned char b = devInfoMain->outputFrame[pixelOffset + 2];
-          unsigned short pixel = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-          *(unsigned short*)currentPixel = pixel;
-          currentPixel += 2;
-        }
+      /*draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
+      if (experimentalMode) {
+      } else {
+        old_rgb888_to_rgb565lefbmem(devInfoMain->outputFrame);
       }*/
-      /*char* currentPixel = fbmem;
-      for (int p = 0; p < numPixels; p++) {
-        *(uint32_t*)currentPixel = outputWithAlpha[p];
-      }*/
-      //displayer.display_rgb24_image(devInfoMain->outputFrame);
-      //display_rgb24_image(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight);
-#pragma omp parallel for simd num_threads(num_threads)
-      for (int y = 0; y < (int)vinfo.yres; y++) {
-        for (int x = 0; x < (int)vinfo.xres; x += 8) { // Process 8 pixels at a time
-          int pixelOffset = y * vinfo.xres * 3 + x * 3;
-          uint8x8x3_t rgb = vld3_u8(&devInfoMain->outputFrame[pixelOffset]);
-          if (!IS_RGB_DEVICE) {
-            // Swap red and blue channels
-            uint8x8_t tmp = rgb.val[0];
-            rgb.val[0] = rgb.val[2];
-            rgb.val[2] = tmp;
-          }
-          uint8x8_t r = vshr_n_u8(rgb.val[0], 3);
-          uint8x8_t g = vshr_n_u8(rgb.val[1], 2);
-          uint8x8_t b = vshr_n_u8(rgb.val[2], 3);
-          uint16x8_t pixel = vshlq_n_u16(vmovl_u8(r), 11);
-          pixel = vsliq_n_u16(pixel, vmovl_u8(g), 5);
-          pixel = vorrq_u16(pixel, vmovl_u8(b));
-          vst1q_u16(reinterpret_cast<uint16_t*>(fbmem + y * vinfo.xres * 2 + x * 2), pixel);
-        }
-      }
+    } else {
+      bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
+      memcpy(fbmem, rgb565le, devInfoMain->startingWidth * devInfoMain->startingHeight * 2);
     }
     frame_number++;
   }
-  //displayer.stop_displaying();
   cleanup_vars();
   return 0;
 }
