@@ -345,7 +345,7 @@ int get_frame(struct buffer* buffers, struct devInfo* devInfos) {
   FD_SET(devInfos->fd, &fds);
   // Timeout period to wait for device to respond
   tv.tv_sec = 0;
-  tv.tv_usec = devInfos->frameDelayMicros*3;
+  tv.tv_usec = devInfos->frameDelayMicros*2;
   r = select(devInfos->fd + 1, &fds, NULL, NULL, &tv);
   if (-1 == r) {
     if (EINTR == errno)
@@ -497,13 +497,17 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
     exit(1);
   }
   ioctl(fbfd, FBIOGET_VSCREENINFO, &vinfo);
-  if (vinfo.bits_per_pixel != 16 || vinfo.xres != (unsigned int)devInfoMain->startingWidth || vinfo.yres != (unsigned int)devInfoMain->startingHeight) {
+  /*if (vinfo.bits_per_pixel != 16 || vinfo.xres != (unsigned int)devInfoMain->startingWidth || vinfo.yres != (unsigned int)devInfoMain->startingHeight) {
     fprintf(stderr, "Error: framebuffer does not accept RGB24 frames with %dx%d resolution\n", devInfoMain->startingWidth, devInfoMain->startingHeight);
     exit(1);
   }
-  fprintf(stderr, "Actual frame buffer configuration: BPP: %u, xres: %u, yres: %u\n", vinfo.bits_per_pixel, vinfo.xres, vinfo.yres);
   screensize = vinfo.xres * vinfo.yres * 2; // original size for RGB565LE
-  stride = vinfo.xres * 2; // stride for RGB565LE format
+  stride = vinfo.xres * 2; // stride for RGB565LE format*/
+  screensize = vinfo.xres * vinfo.yres * (vinfo.bits_per_pixel / 8);
+  stride = vinfo.xres * (vinfo.bits_per_pixel / 8);
+  fprintf(stderr, "Actual frame buffer configuration: BPP: %u, xres: %u, yres: %u, screensize: %ld, stride: %lu\n", vinfo.bits_per_pixel, vinfo.xres, vinfo.yres, screensize, stride);
+  if (vinfo.bits_per_pixel != 16)
+    fprintf(stderr, "WARN: Latency will likely be increased as we are not running in a 16-BPP display mode!\nThis could be due to having the vc4-kms-v3d driver is commented out in your /boot/config.txt\n");
   if (ioctl(fbfd, FBIOGET_FSCREENINFO, &finfo) == -1) {
     perror("Error getting fixed frame buffer information");
     exit(EXIT_FAILURE);
@@ -841,7 +845,7 @@ void neon_overlay_rgba32_on_rgb24() {
         rgb.val[2] = vqmovn_u16(b16);
         vst3_u8(&devInfoMain->outputFrame[i * 3], rgb);
       }
-      });
+    });
     futures[t] = task.get_future();
     std::thread(std::move(task)).detach();
   }
@@ -878,43 +882,66 @@ void neon_overlay_rgba32_on_rgb24() {
     }
   }
 }*/
+void convertRGB24toRGBA32_NEON(unsigned char* input, unsigned char* output, int width, int height) {
+  const int vectorSize = 16;
+  std::vector<std::thread> threads(num_threads);
+#pragma omp parallel for simd num_threads(num_threads)
+  for (int i = 0; i < num_threads; i++) {
+    int start = i * height / num_threads;
+    int end = (i + 1) * height / num_threads;
+    threads[i] = std::thread([=]() {
+      for (int y = start; y < end; y++) {
+        uint8x16_t r, g, b, a;
+        for (int x = 0; x < width; x += vectorSize) {
+          uint8x16x3_t rgb = vld3q_u8(&input[(y * width + x) * 3]);
+          r = rgb.val[0];
+          g = rgb.val[1];
+          b = rgb.val[2];
+          a = vdupq_n_u8(0xff);
+          uint8x16x4_t rgba = { r, g, b, a };
+          vst4q_u8(&output[(y * width + x) * 4], rgba);
+        }
+      }
+    });
+  }
+  for (int i = 0; i < num_threads; i++) {
+    threads[i].join();
+  }
+}
 int main(const int argc, char **argv) {
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
   fprintf(stderr, "\n[main] Starting main loop now\n");
-  std::thread bgThread(startImGuiThread);
-  bgThread.detach();
-  //draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
-  bool work_display_flop = true;
+  if (getenv("DISPLAY")) {
+    fprintf(stderr, "DISPLAY=%s\n", getenv("DISPLAY"));
+    std::thread bgThread(startImGuiThread);
+    bgThread.detach();
+  } else {
+    fprintf(stderr, "DISPLAY was not set.\n");
+    setenv("DISPLAY", "192.168.168.80:0", true);
+    fprintf(stderr, "DISPLAY=%s\n", getenv("DISPLAY"));
+    std::thread bgThread(startImGuiThread);
+    bgThread.detach();
+  }
   while (shouldLoop) {
     if (isDualInput) {
       background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
       background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt);
-      //background_task_cap_main.wait();
-      //background_task_cap_alt.wait();
       neon_overlay_rgba32_on_rgb24();
     } else {
       background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
       background_task_cap_main.wait();
     }
+    draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
     bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
-    memcpy(fbmem, rgb565le, devInfoMain->startingWidth * devInfoMain->startingHeight * 2);
-    /*if (work_display_flop) {
-      if (isDualInput) {
-        background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
-        background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt);
-        //background_task_cap_main.wait();
-        //background_task_cap_alt.wait();
-        neon_overlay_rgba32_on_rgb24();
-        bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
-      } else {
-        background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
-        background_task_cap_main.wait();
-        bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
-      }
+    memcpy(fbmem, rgb565le, screensize);
+    /*if (vinfo.bits_per_pixel == 16) {
+      draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
+      bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
+      memcpy(fbmem, rgb565le, screensize);
     } else {
-      memcpy(fbmem, rgb565le, devInfoMain->startingWidth * devInfoMain->startingHeight * 2);
+      convertRGB24toRGBA32_NEON(devInfoMain->outputFrame, outputWithAlpha, devInfoMain->startingWidth, devInfoMain->startingHeight);
+      memcpy(fbmem, outputWithAlpha, screensize);
     }*/
-    work_display_flop ^= true;
   }
   cleanup_vars();
   return 0;
