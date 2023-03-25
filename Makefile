@@ -11,7 +11,8 @@
 #   pacman -S mingw-w64-i686-SDL2
 #
 
-CXX = g++
+#CXX = g++
+CXX = arm-linux-gnueabihf-g++-10
 #CXX = clang++
 
 EXE = v4l2-capture-test
@@ -23,9 +24,11 @@ SOURCES += $(IMGUI_DIR)/backends/imgui_impl_sdl2.cpp $(IMGUI_DIR)/backends/imgui
 OBJS = $(addsuffix .o, $(basename $(notdir $(SOURCES))))
 UNAME_S := $(shell uname -s)
 
-CXXFLAGS = -std=gnu++20 -I$(IMGUI_DIR) -I$(IMGUI_DIR)/backends -I/usr/local/include/drm/
-CXXFLAGS += -g -Wall -Wformat -O3 -mcpu=native -ftree-vectorize -flax-vector-conversions -fopenmp
-LIBS = -lm -ldl -lpthread `pkg-config --libs libv4l2 tbb bcm_host`
+CXXFLAGS = -std=gnu++20 -I$(IMGUI_DIR) -I$(IMGUI_DIR)/backends
+CXXFLAGS += -I/usr/local/include/drm -I/opt/vc/include -I/opt/vc/include/interface/vchiq_arm -I/opt/vc/src/hello_pi/libs/ilclient
+CXXFLAGS += -g -Wall -Wformat -O3 -ftree-vectorize -flax-vector-conversions -fopenmp
+#CXXFLAGS += -g -Wall -Wformat -O3 -mcpu=native -ftree-vectorize -flax-vector-conversions -fopenmp
+LIBS = -L/opt/vc/lib -lm -ldl -lpthread `pkg-config --libs libv4l2 tbb bcm_host`
 
 ##---------------------------------------------------------------------
 ## BUILD FLAGS PER PLATFORM

@@ -55,6 +55,7 @@
 #include <SDL.h>
 #include <SDL_opengl.h>
 #include <bcm_host.h>
+#include <ilclient.h>
 
 #define V4L_ALLFORMATS  3
 #define V4L_RAWFORMATS  1
@@ -63,10 +64,10 @@
 #define IS_RGB_DEVICE false // change in case capture device is really RGB24 and not BGR24
 int fbfd = -1, ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1920, defaultHeight = 1080, alpha_channel_amount = 0, allDevicesTargetFramerate = 30, numPixels = defaultWidth * defaultHeight;
 const int def_circle_center_x = defaultWidth / 2, def_circle_center_y = defaultHeight / 2, def_circle_diameter = 5, def_circle_thickness = 1, def_circle_red = 0, def_circle_green = 0, def_circle_blue = 0;
-int circle_center_x = def_circle_center_x, circle_center_y = def_circle_center_y, circle_diameter = def_circle_diameter, circle_thickness = def_circle_thickness, circle_red = def_circle_red, circle_green = def_circle_green, circle_blue = def_circle_blue;
+int circle_center_x = def_circle_center_x, circle_center_y = def_circle_center_y, circle_diameter = def_circle_diameter, circle_thickness = def_circle_thickness, circle_red = def_circle_red, circle_green = def_circle_green, circle_blue = def_circle_blue, configRefreshDelay = 33;
 unsigned char* outputWithAlpha = new unsigned char[defaultWidth * defaultHeight * 4];
 unsigned char* prevOutputFrame = new unsigned char[defaultWidth * defaultHeight * byteScaler];
-const int num_threads = std::thread::hardware_concurrency() + 1;
+int num_threads = std::thread::hardware_concurrency() + 1;
 //const int num_threads = std::thread::hardware_concurrency() / 2;
 bool isDualInput = false, done = false;
 std::atomic<bool> shouldLoop;
@@ -518,6 +519,65 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
     exit(1);
   }
 }
+/*union FloatInt {
+  float f;
+  uint32_t i;
+};
+float fast_sqrt_neon(float x) {
+  float half_x = 0.5f * x;
+  float y = x;
+  FloatInt tmp1, tmp2;
+  tmp1.f = y;
+  tmp1.i = 0x5f3759df - (tmp1.i >> 1);
+  tmp2.i = tmp1.i;
+  y = tmp2.f;
+  float32x4_t v_y = vdupq_n_f32(y);
+  float32x4_t v_x = vdupq_n_f32(x);
+  float32x4_t v_half_x = vdupq_n_f32(half_x);
+  v_y = vmulq_f32(v_y, vdupq_n_f32(1.5f) - vmulq_f32(v_half_x, vmulq_f32(v_y, vmulq_f32(v_y, v_y))));
+  v_y = vmulq_f32(v_y, vdupq_n_f32(1.5f) - vmulq_f32(v_half_x, vmulq_f32(v_y, vmulq_f32(v_y, v_y))));
+  float32x4_t v_result = vmulq_f32(v_x, v_y);
+  v_result = vbslq_f32(vcltq_f32(v_result, vdupq_n_f32(0.0f)), vdupq_n_f32(0.0f), v_result);
+  return vgetq_lane_f32(v_result, 0);
+}*/
+/*void draw_hollow_circle_neon(unsigned char* image, int width, int height, int x, int y, int diameter, int thickness, unsigned char red, unsigned char green, unsigned char blue) {
+  int radius = diameter / 2;
+  int x_min = x - radius;
+  int y_min = y - radius;
+  uint8x8_t r = vmov_n_u8(red);
+  uint8x8_t g = vmov_n_u8(green);
+  uint8x8_t b = vmov_n_u8(blue);
+  uint8x8_t thickness_start = vmov_n_u8(radius - thickness);
+  uint8x8_t thickness_end = vmov_n_u8(radius);
+  for (int j = y_min; j < y_min + diameter; j += 8) {
+    int dx[8], dy[8];
+    float distance[8];
+    for (int i = x_min; i < x_min + diameter; i += 8) {
+      for (int k = 0; k < 8; k++) {
+        dx[k] = i + k - x;
+        dy[k] = j + k - y;
+        distance[k] = fast_sqrt_neon(dx[k] * dx[k] + dy[k] * dy[k]);
+      }
+      uint8x8_t d = vmov_n_u8(0);
+      uint8x16_t d = vmovq_n_u8(0);
+      for (int k = 0; k < 8; k++) {
+        uint8x8_t d_k = vmov_n_u8((uint8_t)distance[k]);
+        d = vsetq_lane_u8(vget_lane_u8(d_k, 0), d, k);
+        d = vsetq_lane_u8(vget_lane_u8(d_k, 1), d, k + 8);
+      }
+      uint8x8x3_t pixel = vld3_u8(&image[3 * (j * width + i)]);
+      uint8x8_t pixel_r = pixel.val[0];
+      uint8x8_t pixel_g = pixel.val[1];
+      uint8x8_t pixel_b = pixel.val[2];
+      uint8x8_t mask = vcge_u8(vmin_u8(vmax_u8(vld1_u8((const uint8_t*)(dy + j - y_min)), thickness_start), thickness_end), d);
+      pixel_r = vbsl_u8(mask, r, pixel_r);
+      pixel_g = vbsl_u8(mask, g, pixel_g);
+      pixel_b = vbsl_u8(mask, b, pixel_b);
+      uint8x8x3_t interleaved_pixels = vzip_u8(vzip_u8(pixel_r, pixel_g), pixel_b);
+      vst3_u8(&image[3 * (j * width + i)], interleaved_pixels);
+    }
+  }
+}*/
 void draw_hollow_circle(unsigned char* image, int width, int height, int x, int y, int diameter, int thickness, unsigned char red, unsigned char green, unsigned char blue) {
   // Calculate the radius of the circle
   int radius = diameter / 2;
@@ -531,6 +591,7 @@ void draw_hollow_circle(unsigned char* image, int width, int height, int x, int 
       // Calculate the distance between this pixel and the center of the circle
       int dx = i - x;
       int dy = j - y;
+      //double distance = fast_sqrt_neon((dx * dx + dy * dy) * 0.25F);
       double distance = std::sqrt(dx * dx + dy * dy);
       // Check if the pixel is within the thickness of the circle
       if (distance >= radius - thickness && distance <= radius) {
@@ -544,73 +605,65 @@ void draw_hollow_circle(unsigned char* image, int width, int height, int x, int 
     }
   }
 }
-int startImGuiThread() {
+/*int startImGuiThread() {
   // Setup SDL
-  SDL_Window* window;
-  ImGuiIO io;
-  SDL_WindowFlags window_flags;
-  SDL_GLContext gl_context;
-  ImGuiStyle style;
-  ImVec4 clear_color;
-  {
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0) {
-      printf("Error: %s\n", SDL_GetError());
-      return -1;
-    }
-    // From 2.0.18: Enable native IME.
-#ifdef SDL_HINT_IME_SHOW_UI
-    SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
-#endif
-    // Setup window
-    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
-    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-    window_flags = (SDL_WindowFlags)(SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
-    window = SDL_CreateWindow("Configuration", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 460, 460, window_flags);
-    gl_context = SDL_GL_CreateContext(window);
-    SDL_GL_MakeCurrent(window, gl_context);
-    SDL_GL_SetSwapInterval(1); // Enable vsync
-    // Setup Dear ImGui context
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    io = ImGui::GetIO(); (void)io;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
-    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windows
-    //io.ConfigViewportsNoAutoMerge = true;
-    //io.ConfigViewportsNoTaskBarIcon = true;
-    // Setup Dear ImGui style
-    ImGui::StyleColorsDark();
-    //ImGui::StyleColorsLight();
-    // When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
-    style = ImGui::GetStyle();
-    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-      style.WindowRounding = 5.0f;
-      style.Colors[ImGuiCol_WindowBg].w = 1.0f;
-    }
-    // Setup Platform/Renderer backends
-    ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
-    ImGui_ImplOpenGL2_Init();
-    // Load Fonts
-    // - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use ImGui::PushFont()/PopFont() to select them.
-    // - AddFontFromFileTTF() will return the ImFont* so you can store it if you need to select the font among multiple.
-    // - If the file cannot be loaded, the function will return NULL. Please handle those errors in your application (e.g. use an assertion, or display an error and quit).
-    // - The fonts will be rasterized at a given size (w/ oversampling) and stored into a texture when calling ImFontAtlas::Build()/GetTexDataAsXXXX(), which ImGui_ImplXXXX_NewFrame below will call.
-    // - Use '#define IMGUI_ENABLE_FREETYPE' in your imconfig file to use Freetype for higher quality font rendering.
-    // - Read 'docs/FONTS.md' for more instructions and details.
-    // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
-    //io.Fonts->AddFontDefault();
-    //io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\segoeui.ttf", 18.0f);
-    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
-    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Roboto-Medium.ttf", 16.0f);
-    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
-    //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
-    //IM_ASSERT(font != NULL);
-    clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0) {
+    printf("Error: %s\n", SDL_GetError());
+    return -1;
   }
+  // From 2.0.18: Enable native IME.
+#ifdef SDL_HINT_IME_SHOW_UI
+  SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
+#endif
+  // Setup window
+  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, vinfo.bits_per_pixel);
+  SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+  SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+  SDL_Window* window = SDL_CreateWindow("Configuration", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 460, 460, window_flags);
+  SDL_GLContext gl_context = SDL_GL_CreateContext(window);
+  SDL_GL_MakeCurrent(window, gl_context);
+  SDL_GL_SetSwapInterval(1); // Enable vsync
+  // Setup Dear ImGui context
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO(); (void)io;
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
+  io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windows
+  //io.ConfigViewportsNoAutoMerge = true;
+  //io.ConfigViewportsNoTaskBarIcon = true;
+  // Setup Dear ImGui style
+  ImGui::StyleColorsDark();
+  //ImGui::StyleColorsLight();
+  // When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
+  ImGuiStyle& style = ImGui::GetStyle();
+  if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+    style.WindowRounding = 5.0f;
+    style.Colors[ImGuiCol_WindowBg].w = 1.0f;
+  }
+  // Setup Platform/Renderer backends
+  ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
+  ImGui_ImplOpenGL2_Init();
+  // Load Fonts
+  // - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use ImGui::PushFont()/PopFont() to select them.
+  // - AddFontFromFileTTF() will return the ImFont* so you can store it if you need to select the font among multiple.
+  // - If the file cannot be loaded, the function will return NULL. Please handle those errors in your application (e.g. use an assertion, or display an error and quit).
+  // - The fonts will be rasterized at a given size (w/ oversampling) and stored into a texture when calling ImFontAtlas::Build()/GetTexDataAsXXXX(), which ImGui_ImplXXXX_NewFrame below will call.
+  // - Use '#define IMGUI_ENABLE_FREETYPE' in your imconfig file to use Freetype for higher quality font rendering.
+  // - Read 'docs/FONTS.md' for more instructions and details.
+  // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
+  //io.Fonts->AddFontDefault();
+  //io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\segoeui.ttf", 18.0f);
+  //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
+  //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Roboto-Medium.ttf", 16.0f);
+  //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
+  //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
+  //IM_ASSERT(font != NULL);
+  ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
   // Main loop
   while (!done) {
     // Poll and handle events (inputs, window resize, etc.)
@@ -632,6 +685,7 @@ int startImGuiThread() {
     ImGui::NewFrame();
     //
     ImGui::Begin("configuration / test object(s)");
+    ImGui::Text("Frame buffer controls");
     ImGui::Checkbox("experimental mode", &experimentalMode);
     if (devNames.size() > 2)
       ImGui::Checkbox("dual-in", &isDualInput);
@@ -646,7 +700,9 @@ int startImGuiThread() {
     if (ImGui::Button("reset"))
       circle_center_x = def_circle_center_x, circle_center_y = def_circle_center_y, circle_diameter = def_circle_diameter, circle_thickness = def_circle_thickness, circle_red = def_circle_red, circle_green = def_circle_green, circle_blue = def_circle_blue;
     ImGui::ColorEdit3("clear color", (float*)&clear_color);
-    ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
+    ImGui::Text("Config window average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
+    ImGui::Text("Config window settings");
+    ImGui::SliderInt("refresh delay (ms)", &configRefreshDelay, 1, 1000);
     ImGui::End();
     //
     // Rendering
@@ -667,6 +723,7 @@ int startImGuiThread() {
       SDL_GL_MakeCurrent(backup_current_window, backup_current_context);
     }
     SDL_GL_SwapWindow(window);
+    std::this_thread::sleep_for(std::chrono::milliseconds(configRefreshDelay));
   }
   // Cleanup
   ImGui_ImplOpenGL2_Shutdown();
@@ -676,7 +733,7 @@ int startImGuiThread() {
   SDL_DestroyWindow(window);
   SDL_Quit();
   return 0;
-}
+}*/
 // Convert an RGB24 pixel to RGB565LE format
 /*unsigned short convertPixel(unsigned char r, unsigned char g, unsigned char b) {
   unsigned short r5 = (r * 31 + 127) / 255;
@@ -684,7 +741,31 @@ int startImGuiThread() {
   unsigned short b5 = (b * 31 + 127) / 255;
   return (r5 << 11) | (g6 << 5) | b5;
 }*/
-std::mutex mtx;
+
+void greyscale_to_sobel(const unsigned char* input, unsigned char* output, int width, int height) {
+  // The maximum value for the Sobel operator
+  //const int maxSobel = 4 * 255;
+  // The Sobel operator as a 3x3 matrix
+  const int sobelX[3][3] = { {-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1} };
+  const int sobelY[3][3] = { {-1, -2, -1}, {0, 0, 0}, {1, 2, 1} };
+  // Iterate over each pixel in the image
+#pragma omp parallel for simd
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      // Apply the Sobel kernel in the x and y directions
+      int gx = sobelX[0][0] * input[(y - 1) * width + x - 1] + sobelX[0][1] * input[(y - 1) * width + x] + sobelX[0][2] * input[(y - 1) * width + x + 1] + sobelX[1][0] * input[y * width + x - 1] + 
+        sobelX[1][1] * input[y * width + x] + sobelX[1][2] * input[y * width + x + 1] + sobelX[2][0] * input[(y + 1) * width + x - 1] + sobelX[2][1] * input[(y + 1) * width + x] + sobelX[2][2] * input[(y + 1) * width + x + 1];
+
+
+      int gy = sobelY[0][0] * input[(y - 1) * width + x - 1] + sobelY[0][1] * input[(y - 1) * width + x] + sobelY[0][2] * input[(y - 1) * width + x + 1] + sobelY[1][0] * input[y * width + x - 1] + 
+        sobelY[1][1] * input[y * width + x] + sobelY[1][2] * input[y * width + x + 1] + sobelY[2][0] * input[(y + 1) * width + x - 1] + sobelY[2][1] * input[(y + 1) * width + x] + sobelY[2][2] * input[(y + 1) * width + x + 1];
+      // Compute the magnitude of the gradient at this pixel
+      output[y * width + x] = (unsigned char)sqrt(gx * gx + gy * gy);
+    }
+  }
+}
+
+/*std::mutex mtx;
 void rgb888_to_rgb565le_threaded(const unsigned char* src, uint16_t* dst, int width, int height, int start, int end) {
   const int num_pixels = end - start;
   src += start * 3;
@@ -850,7 +931,7 @@ void neon_overlay_rgba32_on_rgb24() {
     std::thread(std::move(task)).detach();
   }
   for (auto& f : futures) if (f.valid()) f.wait();
-}
+}*/
 /*void experimental_conversion_rgb24() {
 #pragma omp parallel for simd num_threads(num_threads)
   for (int y = 0; y < (int)vinfo.yres; y++) {
@@ -882,7 +963,7 @@ void neon_overlay_rgba32_on_rgb24() {
     }
   }
 }*/
-void convertRGB24toRGBA32_NEON(unsigned char* input, unsigned char* output, int width, int height) {
+/*void convertRGB24toRGBA32_NEON(unsigned char* input, unsigned char* output, int width, int height) {
   const int vectorSize = 16;
   std::vector<std::thread> threads(num_threads);
 #pragma omp parallel for simd num_threads(num_threads)
@@ -907,11 +988,11 @@ void convertRGB24toRGBA32_NEON(unsigned char* input, unsigned char* output, int 
   for (int i = 0; i < num_threads; i++) {
     threads[i].join();
   }
-}
-int main(const int argc, char **argv) {
+}*/
+int main(const int argc, char** argv) {
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
   fprintf(stderr, "\n[main] Starting main loop now\n");
-  if (getenv("DISPLAY")) {
+  /*if (getenv("DISPLAY")) {
     fprintf(stderr, "DISPLAY=%s\n", getenv("DISPLAY"));
     std::thread bgThread(startImGuiThread);
     bgThread.detach();
@@ -921,27 +1002,28 @@ int main(const int argc, char **argv) {
     fprintf(stderr, "DISPLAY=%s\n", getenv("DISPLAY"));
     std::thread bgThread(startImGuiThread);
     bgThread.detach();
-  }
-  while (shouldLoop) {
-    if (isDualInput) {
-      background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
+  }*/
+  //std::thread bgThread(startImGuiThread);
+  //bgThread.detach();
+  if (!isDualInput)
+    num_threads = num_threads * (num_threads * 3);
+  if (isDualInput) {
+    while (shouldLoop) {
+      /*background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
       background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt);
       neon_overlay_rgba32_on_rgb24();
-    } else {
-      background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
-      background_task_cap_main.wait();
-    }
-    draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
-    bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
-    memcpy(fbmem, rgb565le, screensize);
-    /*if (vinfo.bits_per_pixel == 16) {
-      draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
+      //draw_hollow_circle_neon(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
+      //draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
       bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
-      memcpy(fbmem, rgb565le, screensize);
-    } else {
-      convertRGB24toRGBA32_NEON(devInfoMain->outputFrame, outputWithAlpha, devInfoMain->startingWidth, devInfoMain->startingHeight);
-      memcpy(fbmem, outputWithAlpha, screensize);
-    }*/
+      memcpy(fbmem, rgb565le, screensize);*/
+    }
+  } else {
+    while (shouldLoop) {
+      /*background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
+      background_task_cap_main.wait();
+      bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
+      memcpy(fbmem, rgb565le, screensize);*/
+    }
   }
   cleanup_vars();
   return 0;
