@@ -50,14 +50,11 @@
 #include <execution>
 #include <numeric>
 #include <arm_neon.h> // For SIMD instructions
-#include "imgui.docking/imgui.h"
-#include "imgui.docking/backends/imgui_impl_sdl2.h"
-#include "imgui.docking/backends/imgui_impl_opengl2.h"
 #include <stdio.h>
-#include <SDL.h>
-#include <SDL_opengl.h>
-#include <bcm_host.h>
-#include <ilclient.h>
+#include "bcm_host.h"
+extern "C" {
+#include "/opt/vc/src/hello_pi/libs/ilclient/ilclient.h"
+}
 
 #define V4L_ALLFORMATS  3
 #define V4L_RAWFORMATS  1
@@ -109,10 +106,133 @@ struct fb_var_screeninfo vinfo;
 struct fb_fix_screeninfo finfo;
 long int screensize;
 size_t stride;
-char* fbmem;
 bool experimentalMode = false;
 uint16_t *rgb565le = new uint16_t[defaultWidth * defaultHeight * 2];
 std::mutex mtx;
+
+int video_decode_test(char* filename) {
+  OMX_VIDEO_PARAM_PORTFORMATTYPE format;
+  OMX_TIME_CONFIG_CLOCKSTATETYPE cstate;
+  COMPONENT_T* video_decode = NULL, *video_scheduler = NULL, * video_render = NULL, *clock = NULL;
+  COMPONENT_T* list[5];
+  TUNNEL_T tunnel[4];
+  ILCLIENT_T* client;
+  FILE* in;
+  int status = 0;
+  unsigned int data_len = 0;
+  memset(list, 0, sizeof(list));
+  memset(tunnel, 0, sizeof(tunnel));
+  if ((in = fopen(filename, "rb")) == NULL)
+    return -2;
+  if ((client = ilclient_init()) == NULL) {
+    fclose(in);
+    return -3;
+  }
+  if (OMX_Init() != OMX_ErrorNone) {
+    ilclient_destroy(client);
+    fclose(in);
+    return -4;
+  }
+  // create video_decode
+  if (ilclient_create_component(client, &video_decode, "video_decode", static_cast<ILCLIENT_CREATE_FLAGS_T>(ILCLIENT_DISABLE_ALL_PORTS | ILCLIENT_ENABLE_INPUT_BUFFERS)) != 0)
+    status = -14;
+  list[0] = video_decode;
+  // create video_render
+  if (status == 0 && ilclient_create_component(client, &video_render, "video_render", ILCLIENT_DISABLE_ALL_PORTS) != 0)
+    status = -14;
+  list[1] = video_render;
+  // create clock
+  if (status == 0 && ilclient_create_component(client, &clock, "clock", ILCLIENT_DISABLE_ALL_PORTS) != 0)
+    status = -14;
+  list[2] = clock;
+  memset(&cstate, 0, sizeof(cstate));
+  cstate.nSize = sizeof(cstate);
+  cstate.nVersion.nVersion = OMX_VERSION;
+  cstate.eState = OMX_TIME_ClockStateWaitingForStartTime;
+  cstate.nWaitMask = 1;
+  if (clock != NULL && OMX_SetParameter(ILC_GET_HANDLE(clock), OMX_IndexConfigTimeClockState, &cstate) != OMX_ErrorNone)
+    status = -13;
+  // create video_scheduler
+  if (status == 0 && ilclient_create_component(client, &video_scheduler, "video_scheduler", ILCLIENT_DISABLE_ALL_PORTS) != 0)
+    status = -14;
+  list[3] = video_scheduler;
+  set_tunnel(tunnel, video_decode, 131, video_scheduler, 10);
+  set_tunnel(tunnel + 1, video_scheduler, 11, video_render, 90);
+  set_tunnel(tunnel + 2, clock, 80, video_scheduler, 12);
+  // setup clock tunnel first
+  if (status == 0 && ilclient_setup_tunnel(tunnel + 2, 0, 0) != 0)
+    status = -15;
+  else
+    ilclient_change_component_state(clock, OMX_StateExecuting);
+  if (status == 0)
+    ilclient_change_component_state(video_decode, OMX_StateIdle);
+  memset(&format, 0, sizeof(OMX_VIDEO_PARAM_PORTFORMATTYPE));
+  format.nSize = sizeof(OMX_VIDEO_PARAM_PORTFORMATTYPE);
+  format.nVersion.nVersion = OMX_VERSION;
+  format.nPortIndex = 130;
+  format.eCompressionFormat = OMX_VIDEO_CodingAVC;
+  if (status == 0 && OMX_SetParameter(ILC_GET_HANDLE(video_decode), OMX_IndexParamVideoPortFormat, &format) == OMX_ErrorNone && ilclient_enable_port_buffers(video_decode, 130, NULL, NULL, NULL) == 0) {
+    OMX_BUFFERHEADERTYPE* buf;
+    int port_settings_changed = 0;
+    int first_packet = 1;
+    ilclient_change_component_state(video_decode, OMX_StateExecuting);
+    while ((buf = ilclient_get_input_buffer(video_decode, 130, 1)) != NULL) {
+      // feed data and wait until we get port settings changed
+      unsigned char* dest = buf->pBuffer;
+      data_len += fread(dest, 1, buf->nAllocLen - data_len, in);
+      if (port_settings_changed == 0 && ((data_len > 0 && ilclient_remove_event(video_decode, OMX_EventPortSettingsChanged, 131, 0, 0, 1) == 0) || (data_len == 0 && ilclient_wait_for_event(video_decode, OMX_EventPortSettingsChanged, 131, 0, 0, 1, ILCLIENT_EVENT_ERROR | ILCLIENT_PARAMETER_CHANGED, 10000) == 0))) {
+        port_settings_changed = 1;
+        if (ilclient_setup_tunnel(tunnel, 0, 0) != 0) {
+          status = -7;
+          break;
+        }
+        ilclient_change_component_state(video_scheduler, OMX_StateExecuting);
+        // now setup tunnel to video_render
+        if (ilclient_setup_tunnel(tunnel + 1, 0, 1000) != 0) {
+          status = -12;
+          break;
+        }
+        ilclient_change_component_state(video_render, OMX_StateExecuting);
+      }
+      if (!data_len)
+        break;
+      buf->nFilledLen = data_len;
+      data_len = 0;
+      buf->nOffset = 0;
+      if (first_packet) {
+        buf->nFlags = OMX_BUFFERFLAG_STARTTIME;
+        first_packet = 0;
+      }
+      else {
+        buf->nFlags = OMX_BUFFERFLAG_TIME_UNKNOWN;
+      }
+      if (OMX_EmptyThisBuffer(ILC_GET_HANDLE(video_decode), buf) != OMX_ErrorNone) {
+        status = -6;
+        break;
+      }
+    }
+    buf->nFilledLen = 0;
+    buf->nFlags = OMX_BUFFERFLAG_TIME_UNKNOWN | OMX_BUFFERFLAG_EOS;
+    if (OMX_EmptyThisBuffer(ILC_GET_HANDLE(video_decode), buf) != OMX_ErrorNone)
+      status = -20;
+    // wait for EOS from render
+    ilclient_wait_for_event(video_render, OMX_EventBufferFlag, 90, 0, OMX_BUFFERFLAG_EOS, 0, ILCLIENT_BUFFER_FLAG_EOS, -1);
+    // need to flush the renderer to allow video_decode to disable its input port
+    ilclient_flush_tunnels(tunnel, 0);
+  }
+  fclose(in);
+  ilclient_disable_tunnel(tunnel);
+  ilclient_disable_tunnel(tunnel + 1);
+  ilclient_disable_tunnel(tunnel + 2);
+  ilclient_disable_port_buffers(video_decode, 130, NULL, NULL, NULL);
+  ilclient_teardown_tunnels(tunnel);
+  ilclient_state_transition(list, OMX_StateIdle);
+  ilclient_state_transition(list, OMX_StateLoaded);
+  ilclient_cleanup_components(list);
+  OMX_Deinit();
+  ilclient_destroy(client);
+  return status;
+}
 
 // Some functions to be used later which are maybe a bit more polished though not in use currently:
 uint16_t rgb888torgb565_pixel(const std::array<uint8_t, 3>& rgb888Pixel) {
@@ -568,19 +688,17 @@ int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_f
 }
 void commandline_usage(const int argcnt, char** args) {
   switch (argcnt) {
+  case 2:
+    devNames.push_back(args[1]);
+    isDualInput = false;
+    break;
   case 3:
     devNames.push_back(args[1]);
     devNames.push_back(args[2]);
-    isDualInput = false;
-    break;
-  case 4:
-    devNames.push_back(args[1]);
-    devNames.push_back(args[2]);
-    devNames.push_back(args[3]);
     isDualInput = true;
     break;
   default:
-    fprintf(stderr, "[main] Usage:\n\t%s <V4L2 main device> <V4L2 alt device> </dev/fb out device>\n\t%s <V4L2 main device> </dev/fb out device>\nExample:\n\t%s /dev/video0 /dev/video1 /dev/fb0\n\t%s /dev/video0 /dev/fb0\n", args[0], args[0], args[0], args[0]);
+    fprintf(stderr, "[main] Usage:\n\t%s <V4L2 main device> <V4L2 alt device>\n\t%s <V4L2 main device>\nExample:\n\t%s /dev/video0 /dev/video1\n\t%s /dev/video0\n", args[0], args[0], args[0], args[0]);
     exit(1);
     break;
   }
@@ -589,8 +707,6 @@ void cleanup_vars() {
   deinit_bufs(buffersMain, devInfoMain);
   deinit_bufs(buffersAlt, devInfoAlt);
   delete[] outputWithAlpha;
-  munmap(fbmem, screensize);
-  close(fbfd);
 }
 void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct devInfo*& deviAlt, struct buffer*& bufAlt, int argCnt, char **args) {
   commandline_usage(argCnt, args);
@@ -601,163 +717,6 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
     init_vars(deviAlt, bufAlt, 3, allDevicesTargetFramerate, true, true, args[2], 1);
   shouldLoop.store(true);
   numPixels = devInfoMain->startingWidth * devInfoMain->startingHeight;
-  fbfd = open(devNames.at(isDualInput ? 2 : 1).c_str(), O_RDWR);
-  if (fbfd == -1) {
-    perror("Error: cannot open framebuffer device");
-    exit(1);
-  }
-  ioctl(fbfd, FBIOGET_VSCREENINFO, &vinfo);
-  /*if (vinfo.bits_per_pixel != 16 || vinfo.xres != (unsigned int)devInfoMain->startingWidth || vinfo.yres != (unsigned int)devInfoMain->startingHeight) {
-    fprintf(stderr, "Error: framebuffer does not accept RGB24 frames with %dx%d resolution\n", devInfoMain->startingWidth, devInfoMain->startingHeight);
-    exit(1);
-  }
-  screensize = vinfo.xres * vinfo.yres * 2; // original size for RGB565LE
-  stride = vinfo.xres * 2; // stride for RGB565LE format*/
-  screensize = vinfo.xres * vinfo.yres * (vinfo.bits_per_pixel / 8);
-  stride = vinfo.xres * (vinfo.bits_per_pixel / 8);
-  fprintf(stderr, "Actual frame buffer configuration: BPP: %u, xres: %u, yres: %u, screensize: %ld, stride: %u\n", vinfo.bits_per_pixel, vinfo.xres, vinfo.yres, screensize, stride);
-  if (vinfo.bits_per_pixel != 16) {
-    fprintf(stderr, "WARN: Latency will likely be increased as we are not running in a 16-BPP display mode!\nThis could be due to having the vc4-kms-v3d driver is commented out in your /boot/config.txt\n");
-    // TODO: stop talking to the frame buffer, then run this shell command, and then check if we are actually in 16-BPP mode before continuing, else fail and exit: fbset -fb /dev/fb0 -depth 16
-  }
-  if (ioctl(fbfd, FBIOGET_FSCREENINFO, &finfo) == -1) {
-    perror("Error getting fixed frame buffer information");
-    exit(EXIT_FAILURE);
-  }
-  fbmem = (char*)mmap(0, screensize, PROT_READ | PROT_WRITE, MAP_SHARED, fbfd, 0);
-  if (fbmem == MAP_FAILED) {
-    perror("Error: failed to mmap framebuffer device to memory");
-    exit(1);
-  }
-}
-int startImGuiThread() {
-  // Setup SDL
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0) {
-    printf("Error: %s\n", SDL_GetError());
-    return -1;
-  }
-  // From 2.0.18: Enable native IME.
-#ifdef SDL_HINT_IME_SHOW_UI
-  SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
-#endif
-  // Setup window
-  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, vinfo.bits_per_pixel);
-  SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-  SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
-  SDL_Window* window = SDL_CreateWindow("Configuration", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 460, 460, window_flags);
-  SDL_GLContext gl_context = SDL_GL_CreateContext(window);
-  SDL_GL_MakeCurrent(window, gl_context);
-  SDL_GL_SetSwapInterval(1); // Enable vsync
-  // Setup Dear ImGui context
-  IMGUI_CHECKVERSION();
-  ImGui::CreateContext();
-  ImGuiIO& io = ImGui::GetIO(); (void)io;
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
-  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
-  io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windows
-  //io.ConfigViewportsNoAutoMerge = true;
-  //io.ConfigViewportsNoTaskBarIcon = true;
-  // Setup Dear ImGui style
-  ImGui::StyleColorsDark();
-  //ImGui::StyleColorsLight();
-  // When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
-  ImGuiStyle& style = ImGui::GetStyle();
-  if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-    style.WindowRounding = 5.0f;
-    style.Colors[ImGuiCol_WindowBg].w = 1.0f;
-  }
-  // Setup Platform/Renderer backends
-  ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
-  ImGui_ImplOpenGL2_Init();
-  // Load Fonts
-  // - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use ImGui::PushFont()/PopFont() to select them.
-  // - AddFontFromFileTTF() will return the ImFont* so you can store it if you need to select the font among multiple.
-  // - If the file cannot be loaded, the function will return NULL. Please handle those errors in your application (e.g. use an assertion, or display an error and quit).
-  // - The fonts will be rasterized at a given size (w/ oversampling) and stored into a texture when calling ImFontAtlas::Build()/GetTexDataAsXXXX(), which ImGui_ImplXXXX_NewFrame below will call.
-  // - Use '#define IMGUI_ENABLE_FREETYPE' in your imconfig file to use Freetype for higher quality font rendering.
-  // - Read 'docs/FONTS.md' for more instructions and details.
-  // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
-  //io.Fonts->AddFontDefault();
-  //io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\segoeui.ttf", 18.0f);
-  //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
-  //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Roboto-Medium.ttf", 16.0f);
-  //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
-  //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
-  //IM_ASSERT(font != NULL);
-  ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
-  // Main loop
-  while (!done) {
-    // Poll and handle events (inputs, window resize, etc.)
-    // You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
-    // - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application, or clear/overwrite your copy of the mouse data.
-    // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application, or clear/overwrite your copy of the keyboard data.
-    // Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
-    SDL_Event event;
-    while (SDL_PollEvent(&event)) {
-      ImGui_ImplSDL2_ProcessEvent(&event);
-      if (event.type == SDL_QUIT)
-        done = true;
-      if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE && event.window.windowID == SDL_GetWindowID(window))
-        done = true;
-    }
-    // Start the Dear ImGui frame
-    ImGui_ImplOpenGL2_NewFrame();
-    ImGui_ImplSDL2_NewFrame();
-    ImGui::NewFrame();
-    //
-    ImGui::Begin("configuration / test object(s)");
-    ImGui::Text("Frame buffer controls");
-    ImGui::Checkbox("experimental mode", &experimentalMode);
-    if (devNames.size() > 2)
-      ImGui::Checkbox("dual-in", &isDualInput);
-    ImGui::SliderInt("alpha_channel_amount", &alpha_channel_amount, 0, 255);
-    ImGui::SliderInt("diameter", &circle_diameter, 1, defaultHeight);
-    ImGui::SliderInt("circle_thickness", &circle_thickness, 1, circle_diameter / 2);
-    ImGui::SliderInt("circle_red", &circle_red, 0, 255);
-    ImGui::SliderInt("circle_green", &circle_green, 0, 255);
-    ImGui::SliderInt("circle_blue", &circle_blue, 0, 255);
-    ImGui::SliderInt("circle_center_x", &circle_center_x, circle_diameter / 2, defaultWidth - (circle_diameter / 2));
-    ImGui::SliderInt("circle_center_y", &circle_center_y, circle_diameter / 2, defaultHeight - (circle_diameter / 2));
-    if (ImGui::Button("reset"))
-      circle_center_x = def_circle_center_x, circle_center_y = def_circle_center_y, circle_diameter = def_circle_diameter, circle_thickness = def_circle_thickness, circle_red = def_circle_red, circle_green = def_circle_green, circle_blue = def_circle_blue;
-    ImGui::ColorEdit3("clear color", (float*)&clear_color);
-    ImGui::Text("Config window average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
-    ImGui::Text("Config window settings");
-    ImGui::SliderInt("refresh delay (ms)", &configRefreshDelay, 1, 1000);
-    ImGui::End();
-    //
-    // Rendering
-    ImGui::Render();
-    glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
-    glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
-    glClear(GL_COLOR_BUFFER_BIT);
-    //glUseProgram(0); // You may want this if using this code in an OpenGL 3+ context where shaders may be bound
-    ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
-    // Update and Render additional Platform Windows
-    // (Platform functions may change the current OpenGL context, so we save/restore it to make it easier to paste this code elsewhere.
-    //  For this specific demo app we could also call SDL_GL_MakeCurrent(window, gl_context) directly)
-    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-      SDL_Window* backup_current_window = SDL_GL_GetCurrentWindow();
-      SDL_GLContext backup_current_context = SDL_GL_GetCurrentContext();
-      ImGui::UpdatePlatformWindows();
-      ImGui::RenderPlatformWindowsDefault();
-      SDL_GL_MakeCurrent(backup_current_window, backup_current_context);
-    }
-    SDL_GL_SwapWindow(window);
-    std::this_thread::sleep_for(std::chrono::milliseconds(configRefreshDelay));
-  }
-  // Cleanup
-  ImGui_ImplOpenGL2_Shutdown();
-  ImGui_ImplSDL2_Shutdown();
-  ImGui::DestroyContext();
-  SDL_GL_DeleteContext(gl_context);
-  SDL_DestroyWindow(window);
-  SDL_Quit();
-  return 0;
 }
 void rgb888_to_rgb565le_threaded(const unsigned char* src, uint16_t* dst, int width, int height, int start, int end) {
   const int num_pixels = end - start;
@@ -865,28 +824,6 @@ void rgb888_to_rgb565le(const unsigned char* src, uint16_t* dst, int width, int 
     dst[0] = r | g | b;
   }
 }
-void old_rgb888_to_rgb565lefbmem(const unsigned char* src) {
-#pragma omp parallel for simd num_threads(num_threads)
-  for (int y = 0; y < (int)vinfo.yres; y++) {
-    for (int x = 0; x < (int)vinfo.xres; x += 8) { // Process 8 pixels at a time
-      int pixelOffset = y * vinfo.xres * 3 + x * 3;
-      uint8x8x3_t rgb = vld3_u8(&src[pixelOffset]);
-      if (!IS_RGB_DEVICE) {
-        // Swap red and blue channels
-        uint8x8_t tmp = rgb.val[0];
-        rgb.val[0] = rgb.val[2];
-        rgb.val[2] = tmp;
-      }
-      uint8x8_t r = vshr_n_u8(rgb.val[0], 3);
-      uint8x8_t g = vshr_n_u8(rgb.val[1], 2);
-      uint8x8_t b = vshr_n_u8(rgb.val[2], 3);
-      uint16x8_t pixel = vshlq_n_u16(vmovl_u8(r), 11);
-      pixel = vsliq_n_u16(pixel, vmovl_u8(g), 5);
-      pixel = vorrq_u16(pixel, vmovl_u8(b));
-      vst1q_u16(reinterpret_cast<uint16_t*>(fbmem + y * vinfo.xres * 2 + x * 2), pixel);
-    }
-  }
-}
 void neon_overlay_rgba32_on_rgb24() {
 #pragma omp parallel for simd num_threads(num_threads)
   for (int t = 0; t < num_threads; ++t) {
@@ -925,7 +862,7 @@ void neon_overlay_rgba32_on_rgb24() {
   }
   for (auto& f : futures) if (f.valid()) f.wait();
 }
-#ifndef ALIGN_UP
+/*#ifndef ALIGN_UP
 #define ALIGN_UP(x,y) ((x + (y)-1) & ~((y)-1))
 #endif
 typedef struct {
@@ -959,10 +896,9 @@ int test_dispmanx(void) {
   VC_IMAGE_TYPE_T type = VC_IMAGE_RGB565;
   int pitch = ALIGN_UP(defaultWidth * 2, 32);
   int aligned_height = ALIGN_UP(defaultHeight, 16);
-  //VC_DISPMANX_ALPHA_T alpha = { DISPMANX_FLAGS_ALPHA_FROM_SOURCE | DISPMANX_FLAGS_ALPHA_FIXED_ALL_PIXELS, 120, /*alpha 0->255*/ 0 };
   VC_DISPMANX_ALPHA_T alpha = {
     static_cast<DISPMANX_FLAGS_ALPHA_T>(DISPMANX_FLAGS_ALPHA_FROM_SOURCE | DISPMANX_FLAGS_ALPHA_FIXED_ALL_PIXELS),
-    120, /*alpha 0->255*/
+    120,
     0
   };
   vars = &gRectVars;
@@ -987,8 +923,8 @@ int test_dispmanx(void) {
   assert(vars->update);
   vc_dispmanx_rect_set(&src_rect, 0, 0, defaultWidth << 16, defaultHeight << 16);
   vc_dispmanx_rect_set(&dst_rect, (vars->info.width - defaultWidth) / 2, (vars->info.height - defaultHeight) / 2, defaultWidth, defaultHeight);
-  //vars->element = vc_dispmanx_element_add(vars->update, vars->display, 2000, /*layer*/ &dst_rect, vars->resource, &src_rect, DISPMANX_PROTECTION_NONE, &alpha, NULL, /*clamp*/ VC_IMAGE_ROT0);
-  vars->element = vc_dispmanx_element_add(vars->update, vars->display, 2000, /*layer*/ &dst_rect, vars->resource, &src_rect, DISPMANX_PROTECTION_NONE, &alpha, NULL, /*clamp*/ DISPMANX_NO_ROTATE);
+  //vars->element = vc_dispmanx_element_add(vars->update, vars->display, 2000, &dst_rect, vars->resource, &src_rect, DISPMANX_PROTECTION_NONE, &alpha, NULL, VC_IMAGE_ROT0);
+  vars->element = vc_dispmanx_element_add(vars->update, vars->display, 2000, &dst_rect, vars->resource, &src_rect, DISPMANX_PROTECTION_NONE, &alpha, NULL, DISPMANX_NO_ROTATE);
   ret = vc_dispmanx_update_submit_sync(vars->update);
   assert(ret == 0);
   printf("Sleeping for 10 seconds...\n");
@@ -1005,11 +941,53 @@ int test_dispmanx(void) {
   assert(ret == 0);
   return 0;
 }
+void init_dispmanx() {
+  bcm_host_init();
+  display = vc_dispmanx_display_open(0); // Use the primary display
+  resource = vc_dispmanx_resource_create(type, 1920, 1080, &pitch);
+}
+void display_raw_rgb565_image_frame(uint16_t* image_data) {
+  update = vc_dispmanx_update_start(0);
+  vc_dispmanx_rect_set(&src_rect, 0, 0, 1920 << 16, 1080 << 16); // Set the source rect
+  vc_dispmanx_rect_set(&dst_rect, 0, 0, 1920, 1080); // Set the destination rect
+  vc_dispmanx_resource_write_data(resource, type, pitch, image_data, &src_rect);
+  // Remove the previous element if it exists
+  if (element != DISPMANX_NO_HANDLE) {
+    vc_dispmanx_element_remove(update, element);
+  }
+  // Set the background to black
+  uint32_t background_color = 0x00000000;
+  vc_dispmanx_display_set_background(update, display, (background_color >> 16) & 0xFF, (background_color >> 8) & 0xFF, background_color & 0xFF);
+  element = vc_dispmanx_element_add(update, display, 0, &dst_rect, resource, &src_rect, DISPMANX_PROTECTION_NONE, &alpha, NULL, DISPMANX_NO_ROTATE);
+  vc_dispmanx_update_submit_sync(update);
+}
+void deinit_dispmanx() {
+  // Cleanup
+  update = vc_dispmanx_update_start(0);
+  vc_dispmanx_element_remove(update, element);
+  vc_dispmanx_update_submit_sync(update);
+  vc_dispmanx_resource_delete(resource);
+  vc_dispmanx_display_close(display);
+  bcm_host_deinit();
+}
+void generate_rgb565_pattern(uint8_t* image_data, int width, int height) {
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      uint16_t r = (x % 32) << 11;
+      uint16_t g = (y % 64) << 5;
+      uint16_t b = (x + y) % 32;
+      uint16_t color = r | g | b;
+      int index = (y * width + x) * 2;
+      image_data[index] = color & 0xFF;
+      image_data[index + 1] = (color >> 8) & 0xFF;
+    }
+  }
+}*/
 int main(const int argc, char** argv) {
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
+  //init_dispmanx();
+  sleep(1);
   fprintf(stderr, "\n[main] Starting main loop now\n");
-  std::thread bgThread(startImGuiThread);
-  bgThread.detach();
   if (!isDualInput)
     num_threads = num_threads * (num_threads * 3);
   if (isDualInput) {
@@ -1020,16 +998,17 @@ int main(const int argc, char** argv) {
       //draw_hollow_circle_neon(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
       //draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
       bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
-      memcpy(fbmem, rgb565le, screensize);
+      //display_raw_rgb565_image_frame(rgb565le);
     }
   } else {
     while (shouldLoop) {
       background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
       background_task_cap_main.wait();
       bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
-      memcpy(fbmem, rgb565le, screensize);
+      //display_raw_rgb565_image_frame(rgb565le);
     }
   }
+  //deinit_dispmanx();
   cleanup_vars();
   return 0;
 }

@@ -26,11 +26,13 @@ UNAME_S := $(shell uname -s)
 
 CXXFLAGS = -std=gnu++20 -I$(IMGUI_DIR) -I$(IMGUI_DIR)/backends
 CXXFLAGS += -I/usr/local/include/drm -I/opt/vc/include -I/opt/vc/include/interface/vchiq_arm -I/opt/vc/src/hello_pi/libs/ilclient -I/opt/vc/include/interface/vcos/pthreads -I/opt/vc/include/interface/vmcs_host/linux
+CXXFLAGS += -I/opt/vc/include/IL -I/opt/vc/include/vcinclude
 CXXFLAGS += -g -Wall -Wformat -O3 -march=armv8-a -mfpu=neon -ftree-vectorize -flax-vector-conversions -fopenmp
 CXXFLAGS += -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -DTARGET_POSIX -D_LINUX -fPIC -DPIC -D_REENTRANT -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -U_FORTIFY_SOURCE -DHAVE_LIBOPENMAX=2
 CXXFLAGS += -DOMX -DOMX_SKIP64BIT -DUSE_EXTERNAL_OMX -DHAVE_LIBBCM_HOST -DUSE_EXTERNAL_LIBBCM_HOST -DUSE_VCHIQ_ARM -Wno-psabi
 #CXXFLAGS += -g -Wall -Wformat -O3 -mcpu=native -ftree-vectorize -flax-vector-conversions -fopenmp
-LIBS = -L/opt/vc/lib -lm -ldl -lpthread `pkg-config --libs libv4l2 tbb bcm_host` -lbrcmEGL -lbrcmGLESv2 -lopenmaxil -lbcm_host -lvcos -lvchiq_arm -lpthread -lrt -lm
+LIBS = -L/opt/vc/lib -lm -ldl -lpthread `pkg-config --libs libv4l2 tbb bcm_host` -lbrcmEGL -lbrcmGLESv2 -lopenmaxil -lbcm_host -lvcos -lvchiq_arm -lilclient -lpthread -lrt -lm
+LIBS += -L/opt/vc/src/hello_pi/libs/ilclient -L/opt/vc/src/hello_pi/libs/vgfont -L/opt/vc/src/hello_pi/libs/revision
 
 ##---------------------------------------------------------------------
 ## BUILD FLAGS PER PLATFORM
@@ -79,7 +81,7 @@ all: $(EXE)
 	@echo Build complete for $(ECHO_MESSAGE)
 
 $(EXE): $(OBJS)
-	$(CXX) -o $@ $^ $(CXXFLAGS) $(LIBS)
+	$(CXX) -o $@ $^ $(CXXFLAGS) $(LIBS) /opt/vc/src/hello_pi/libs/ilclient/libilclient.a
 
 clean:
 	rm -f $(EXE) $(OBJS)
