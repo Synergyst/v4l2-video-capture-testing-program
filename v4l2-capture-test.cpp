@@ -52,6 +52,9 @@
 #include <arm_neon.h> // For SIMD instructions
 #include <stdio.h>
 #include "bcm_host.h"
+#include <xf86drm.h>
+#include <xf86drmMode.h>
+#include <gbm.h>
 extern "C" {
 #include "/opt/vc/src/hello_pi/libs/ilclient/ilclient.h"
 }
@@ -104,135 +107,12 @@ struct devInfo* devInfoMain;
 struct devInfo* devInfoAlt;
 struct fb_var_screeninfo vinfo;
 struct fb_fix_screeninfo finfo;
+char* fbmem;
 long int screensize;
 size_t stride;
 bool experimentalMode = false;
 uint16_t *rgb565le = new uint16_t[defaultWidth * defaultHeight * 2];
 std::mutex mtx;
-
-int video_decode_test(char* filename) {
-  OMX_VIDEO_PARAM_PORTFORMATTYPE format;
-  OMX_TIME_CONFIG_CLOCKSTATETYPE cstate;
-  COMPONENT_T* video_decode = NULL, *video_scheduler = NULL, * video_render = NULL, *clock = NULL;
-  COMPONENT_T* list[5];
-  TUNNEL_T tunnel[4];
-  ILCLIENT_T* client;
-  FILE* in;
-  int status = 0;
-  unsigned int data_len = 0;
-  memset(list, 0, sizeof(list));
-  memset(tunnel, 0, sizeof(tunnel));
-  if ((in = fopen(filename, "rb")) == NULL)
-    return -2;
-  if ((client = ilclient_init()) == NULL) {
-    fclose(in);
-    return -3;
-  }
-  if (OMX_Init() != OMX_ErrorNone) {
-    ilclient_destroy(client);
-    fclose(in);
-    return -4;
-  }
-  // create video_decode
-  if (ilclient_create_component(client, &video_decode, "video_decode", static_cast<ILCLIENT_CREATE_FLAGS_T>(ILCLIENT_DISABLE_ALL_PORTS | ILCLIENT_ENABLE_INPUT_BUFFERS)) != 0)
-    status = -14;
-  list[0] = video_decode;
-  // create video_render
-  if (status == 0 && ilclient_create_component(client, &video_render, "video_render", ILCLIENT_DISABLE_ALL_PORTS) != 0)
-    status = -14;
-  list[1] = video_render;
-  // create clock
-  if (status == 0 && ilclient_create_component(client, &clock, "clock", ILCLIENT_DISABLE_ALL_PORTS) != 0)
-    status = -14;
-  list[2] = clock;
-  memset(&cstate, 0, sizeof(cstate));
-  cstate.nSize = sizeof(cstate);
-  cstate.nVersion.nVersion = OMX_VERSION;
-  cstate.eState = OMX_TIME_ClockStateWaitingForStartTime;
-  cstate.nWaitMask = 1;
-  if (clock != NULL && OMX_SetParameter(ILC_GET_HANDLE(clock), OMX_IndexConfigTimeClockState, &cstate) != OMX_ErrorNone)
-    status = -13;
-  // create video_scheduler
-  if (status == 0 && ilclient_create_component(client, &video_scheduler, "video_scheduler", ILCLIENT_DISABLE_ALL_PORTS) != 0)
-    status = -14;
-  list[3] = video_scheduler;
-  set_tunnel(tunnel, video_decode, 131, video_scheduler, 10);
-  set_tunnel(tunnel + 1, video_scheduler, 11, video_render, 90);
-  set_tunnel(tunnel + 2, clock, 80, video_scheduler, 12);
-  // setup clock tunnel first
-  if (status == 0 && ilclient_setup_tunnel(tunnel + 2, 0, 0) != 0)
-    status = -15;
-  else
-    ilclient_change_component_state(clock, OMX_StateExecuting);
-  if (status == 0)
-    ilclient_change_component_state(video_decode, OMX_StateIdle);
-  memset(&format, 0, sizeof(OMX_VIDEO_PARAM_PORTFORMATTYPE));
-  format.nSize = sizeof(OMX_VIDEO_PARAM_PORTFORMATTYPE);
-  format.nVersion.nVersion = OMX_VERSION;
-  format.nPortIndex = 130;
-  format.eCompressionFormat = OMX_VIDEO_CodingAVC;
-  if (status == 0 && OMX_SetParameter(ILC_GET_HANDLE(video_decode), OMX_IndexParamVideoPortFormat, &format) == OMX_ErrorNone && ilclient_enable_port_buffers(video_decode, 130, NULL, NULL, NULL) == 0) {
-    OMX_BUFFERHEADERTYPE* buf;
-    int port_settings_changed = 0;
-    int first_packet = 1;
-    ilclient_change_component_state(video_decode, OMX_StateExecuting);
-    while ((buf = ilclient_get_input_buffer(video_decode, 130, 1)) != NULL) {
-      // feed data and wait until we get port settings changed
-      unsigned char* dest = buf->pBuffer;
-      data_len += fread(dest, 1, buf->nAllocLen - data_len, in);
-      if (port_settings_changed == 0 && ((data_len > 0 && ilclient_remove_event(video_decode, OMX_EventPortSettingsChanged, 131, 0, 0, 1) == 0) || (data_len == 0 && ilclient_wait_for_event(video_decode, OMX_EventPortSettingsChanged, 131, 0, 0, 1, ILCLIENT_EVENT_ERROR | ILCLIENT_PARAMETER_CHANGED, 10000) == 0))) {
-        port_settings_changed = 1;
-        if (ilclient_setup_tunnel(tunnel, 0, 0) != 0) {
-          status = -7;
-          break;
-        }
-        ilclient_change_component_state(video_scheduler, OMX_StateExecuting);
-        // now setup tunnel to video_render
-        if (ilclient_setup_tunnel(tunnel + 1, 0, 1000) != 0) {
-          status = -12;
-          break;
-        }
-        ilclient_change_component_state(video_render, OMX_StateExecuting);
-      }
-      if (!data_len)
-        break;
-      buf->nFilledLen = data_len;
-      data_len = 0;
-      buf->nOffset = 0;
-      if (first_packet) {
-        buf->nFlags = OMX_BUFFERFLAG_STARTTIME;
-        first_packet = 0;
-      }
-      else {
-        buf->nFlags = OMX_BUFFERFLAG_TIME_UNKNOWN;
-      }
-      if (OMX_EmptyThisBuffer(ILC_GET_HANDLE(video_decode), buf) != OMX_ErrorNone) {
-        status = -6;
-        break;
-      }
-    }
-    buf->nFilledLen = 0;
-    buf->nFlags = OMX_BUFFERFLAG_TIME_UNKNOWN | OMX_BUFFERFLAG_EOS;
-    if (OMX_EmptyThisBuffer(ILC_GET_HANDLE(video_decode), buf) != OMX_ErrorNone)
-      status = -20;
-    // wait for EOS from render
-    ilclient_wait_for_event(video_render, OMX_EventBufferFlag, 90, 0, OMX_BUFFERFLAG_EOS, 0, ILCLIENT_BUFFER_FLAG_EOS, -1);
-    // need to flush the renderer to allow video_decode to disable its input port
-    ilclient_flush_tunnels(tunnel, 0);
-  }
-  fclose(in);
-  ilclient_disable_tunnel(tunnel);
-  ilclient_disable_tunnel(tunnel + 1);
-  ilclient_disable_tunnel(tunnel + 2);
-  ilclient_disable_port_buffers(video_decode, 130, NULL, NULL, NULL);
-  ilclient_teardown_tunnels(tunnel);
-  ilclient_state_transition(list, OMX_StateIdle);
-  ilclient_state_transition(list, OMX_StateLoaded);
-  ilclient_cleanup_components(list);
-  OMX_Deinit();
-  ilclient_destroy(client);
-  return status;
-}
 
 // Some functions to be used later which are maybe a bit more polished though not in use currently:
 uint16_t rgb888torgb565_pixel(const std::array<uint8_t, 3>& rgb888Pixel) {
@@ -688,17 +568,19 @@ int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_f
 }
 void commandline_usage(const int argcnt, char** args) {
   switch (argcnt) {
-  case 2:
-    devNames.push_back(args[1]);
-    isDualInput = false;
-    break;
   case 3:
     devNames.push_back(args[1]);
     devNames.push_back(args[2]);
+    isDualInput = false;
+    break;
+  case 4:
+    devNames.push_back(args[1]);
+    devNames.push_back(args[2]);
+    devNames.push_back(args[3]);
     isDualInput = true;
     break;
   default:
-    fprintf(stderr, "[main] Usage:\n\t%s <V4L2 main device> <V4L2 alt device>\n\t%s <V4L2 main device>\nExample:\n\t%s /dev/video0 /dev/video1\n\t%s /dev/video0\n", args[0], args[0], args[0], args[0]);
+    fprintf(stderr, "[main] Usage:\n\t%s <V4L2 main device> <V4L2 alt device> </dev/fb out device>\n\t%s <V4L2 main device> </dev/fb out device>\nExample:\n\t%s /dev/video0 /dev/video1 /dev/fb0\n\t%s /dev/video0 /dev/fb0\n", args[0], args[0], args[0], args[0]);
     exit(1);
     break;
   }
@@ -707,6 +589,8 @@ void cleanup_vars() {
   deinit_bufs(buffersMain, devInfoMain);
   deinit_bufs(buffersAlt, devInfoAlt);
   delete[] outputWithAlpha;
+  munmap(fbmem, screensize);
+  close(fbfd);
 }
 void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct devInfo*& deviAlt, struct buffer*& bufAlt, int argCnt, char **args) {
   commandline_usage(argCnt, args);
@@ -717,6 +601,34 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
     init_vars(deviAlt, bufAlt, 3, allDevicesTargetFramerate, true, true, args[2], 1);
   shouldLoop.store(true);
   numPixels = devInfoMain->startingWidth * devInfoMain->startingHeight;
+  sleep(1);
+  fprintf(stderr, "\n");
+  fbfd = open(devNames.at(isDualInput ? 2 : 1).c_str(), O_RDWR);
+  if (fbfd == -1) {
+    fprintf(stderr, "[%s]: Error: cannot open framebuffer device", devNames[devNames.capacity() - 1].c_str());
+    exit(1);
+  }
+  ioctl(fbfd, FBIOGET_VSCREENINFO, &vinfo);
+  /*if (vinfo.bits_per_pixel != 16 || vinfo.xres != (unsigned int)devInfoMain->startingWidth || vinfo.yres != (unsigned int)devInfoMain->startingHeight) {
+    fprintf(stderr, "Error: framebuffer does not accept RGB24 frames with %dx%d resolution\n", devInfoMain->startingWidth, devInfoMain->startingHeight);
+    exit(1);
+  }
+  screensize = vinfo.xres * vinfo.yres * 2; // original size for RGB565LE
+  stride = vinfo.xres * 2; // stride for RGB565LE format*/
+  screensize = vinfo.xres * vinfo.yres * (vinfo.bits_per_pixel / 8);
+  stride = vinfo.xres * (vinfo.bits_per_pixel / 8);
+  fprintf(stderr, "[%s]: Actual frame buffer configuration: BPP: %u, xres: %u, yres: %u, screensize: %ld, stride: %u\n", devNames[devNames.capacity() - 1].c_str(), vinfo.bits_per_pixel, vinfo.xres, vinfo.yres, screensize, stride);
+  if (vinfo.bits_per_pixel != 16)
+    fprintf(stderr, "[%s]: WARN: Latency will likely be increased as we are not running in a 16-BPP display mode!\nThis could be due to having the vc4-kms-v3d driver is commented out in your /boot/config.txt\n", devNames[devNames.capacity() - 1].c_str());
+  if (ioctl(fbfd, FBIOGET_FSCREENINFO, &finfo) == -1) {
+    fprintf(stderr, "[%s]: Error getting fixed frame buffer information\n", devNames[devNames.capacity() - 1].c_str());
+    exit(EXIT_FAILURE);
+  }
+  fbmem = (char*)mmap(0, screensize, PROT_READ | PROT_WRITE, MAP_SHARED, fbfd, 0);
+  if (fbmem == MAP_FAILED) {
+    fprintf(stderr, "[%s]: Error: failed to mmap framebuffer device to memory", devNames[devNames.capacity() - 1].c_str());
+    exit(1);
+  }
 }
 void rgb888_to_rgb565le_threaded(const unsigned char* src, uint16_t* dst, int width, int height, int start, int end) {
   const int num_pixels = end - start;
@@ -862,130 +774,8 @@ void neon_overlay_rgba32_on_rgb24() {
   }
   for (auto& f : futures) if (f.valid()) f.wait();
 }
-/*#ifndef ALIGN_UP
-#define ALIGN_UP(x,y) ((x + (y)-1) & ~((y)-1))
-#endif
-typedef struct {
-  DISPMANX_DISPLAY_HANDLE_T display;
-  DISPMANX_MODEINFO_T info;
-  void* image;
-  DISPMANX_UPDATE_HANDLE_T update;
-  DISPMANX_RESOURCE_HANDLE_T resource;
-  DISPMANX_ELEMENT_HANDLE_T element;
-  uint32_t vc_image_ptr;
-
-} RECT_VARS_T;
-static RECT_VARS_T  gRectVars;
-static void FillRect(VC_IMAGE_TYPE_T type, void* image, int pitch, int aligned_height, int x, int y, int w, int h, int val) {
-  int row;
-  int col;
-  uint16_t* line = (uint16_t*)image + y * (pitch >> 1) + x;
-  for (row = 0; row < h; row++) {
-    for (col = 0; col < w; col++) {
-      line[col] = val;
-    }
-    line += (pitch >> 1);
-  }
-}
-int test_dispmanx(void) {
-  RECT_VARS_T* vars;
-  uint32_t screen = 0;
-  int ret;
-  VC_RECT_T src_rect;
-  VC_RECT_T dst_rect;
-  VC_IMAGE_TYPE_T type = VC_IMAGE_RGB565;
-  int pitch = ALIGN_UP(defaultWidth * 2, 32);
-  int aligned_height = ALIGN_UP(defaultHeight, 16);
-  VC_DISPMANX_ALPHA_T alpha = {
-    static_cast<DISPMANX_FLAGS_ALPHA_T>(DISPMANX_FLAGS_ALPHA_FROM_SOURCE | DISPMANX_FLAGS_ALPHA_FIXED_ALL_PIXELS),
-    120,
-    0
-  };
-  vars = &gRectVars;
-  bcm_host_init();
-  printf("Open display[%i]...\n", screen);
-  vars->display = vc_dispmanx_display_open(screen);
-  ret = vc_dispmanx_display_get_info(vars->display, &vars->info);
-  assert(ret == 0);
-  printf("Display is %d x %d\n", vars->info.width, vars->info.height);
-  vars->image = calloc(1, pitch * defaultHeight);
-  assert(vars->image);
-  FillRect(type, vars->image, pitch, aligned_height, 0, 0, defaultWidth, defaultHeight, 0xFFFF);
-  FillRect(type, vars->image, pitch, aligned_height, 0, 0, defaultWidth, defaultHeight, 0xF800);
-  FillRect(type, vars->image, pitch, aligned_height, 20, 20, defaultWidth - 40, defaultHeight - 40, 0x07E0);
-  FillRect(type, vars->image, pitch, aligned_height, 40, 40, defaultWidth - 80, defaultHeight - 80, 0x001F);
-  vars->resource = vc_dispmanx_resource_create(type, defaultWidth, defaultHeight, &vars->vc_image_ptr);
-  assert(vars->resource);
-  vc_dispmanx_rect_set(&dst_rect, 0, 0, defaultWidth, defaultHeight);
-  ret = vc_dispmanx_resource_write_data(vars->resource, type, pitch, vars->image, &dst_rect);
-  assert(ret == 0);
-  vars->update = vc_dispmanx_update_start(10);
-  assert(vars->update);
-  vc_dispmanx_rect_set(&src_rect, 0, 0, defaultWidth << 16, defaultHeight << 16);
-  vc_dispmanx_rect_set(&dst_rect, (vars->info.width - defaultWidth) / 2, (vars->info.height - defaultHeight) / 2, defaultWidth, defaultHeight);
-  //vars->element = vc_dispmanx_element_add(vars->update, vars->display, 2000, &dst_rect, vars->resource, &src_rect, DISPMANX_PROTECTION_NONE, &alpha, NULL, VC_IMAGE_ROT0);
-  vars->element = vc_dispmanx_element_add(vars->update, vars->display, 2000, &dst_rect, vars->resource, &src_rect, DISPMANX_PROTECTION_NONE, &alpha, NULL, DISPMANX_NO_ROTATE);
-  ret = vc_dispmanx_update_submit_sync(vars->update);
-  assert(ret == 0);
-  printf("Sleeping for 10 seconds...\n");
-  sleep(10);
-  vars->update = vc_dispmanx_update_start(10);
-  assert(vars->update);
-  ret = vc_dispmanx_element_remove(vars->update, vars->element);
-  assert(ret == 0);
-  ret = vc_dispmanx_update_submit_sync(vars->update);
-  assert(ret == 0);
-  ret = vc_dispmanx_resource_delete(vars->resource);
-  assert(ret == 0);
-  ret = vc_dispmanx_display_close(vars->display);
-  assert(ret == 0);
-  return 0;
-}
-void init_dispmanx() {
-  bcm_host_init();
-  display = vc_dispmanx_display_open(0); // Use the primary display
-  resource = vc_dispmanx_resource_create(type, 1920, 1080, &pitch);
-}
-void display_raw_rgb565_image_frame(uint16_t* image_data) {
-  update = vc_dispmanx_update_start(0);
-  vc_dispmanx_rect_set(&src_rect, 0, 0, 1920 << 16, 1080 << 16); // Set the source rect
-  vc_dispmanx_rect_set(&dst_rect, 0, 0, 1920, 1080); // Set the destination rect
-  vc_dispmanx_resource_write_data(resource, type, pitch, image_data, &src_rect);
-  // Remove the previous element if it exists
-  if (element != DISPMANX_NO_HANDLE) {
-    vc_dispmanx_element_remove(update, element);
-  }
-  // Set the background to black
-  uint32_t background_color = 0x00000000;
-  vc_dispmanx_display_set_background(update, display, (background_color >> 16) & 0xFF, (background_color >> 8) & 0xFF, background_color & 0xFF);
-  element = vc_dispmanx_element_add(update, display, 0, &dst_rect, resource, &src_rect, DISPMANX_PROTECTION_NONE, &alpha, NULL, DISPMANX_NO_ROTATE);
-  vc_dispmanx_update_submit_sync(update);
-}
-void deinit_dispmanx() {
-  // Cleanup
-  update = vc_dispmanx_update_start(0);
-  vc_dispmanx_element_remove(update, element);
-  vc_dispmanx_update_submit_sync(update);
-  vc_dispmanx_resource_delete(resource);
-  vc_dispmanx_display_close(display);
-  bcm_host_deinit();
-}
-void generate_rgb565_pattern(uint8_t* image_data, int width, int height) {
-  for (int y = 0; y < height; ++y) {
-    for (int x = 0; x < width; ++x) {
-      uint16_t r = (x % 32) << 11;
-      uint16_t g = (y % 64) << 5;
-      uint16_t b = (x + y) % 32;
-      uint16_t color = r | g | b;
-      int index = (y * width + x) * 2;
-      image_data[index] = color & 0xFF;
-      image_data[index + 1] = (color >> 8) & 0xFF;
-    }
-  }
-}*/
 int main(const int argc, char** argv) {
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
-  //init_dispmanx();
   sleep(1);
   fprintf(stderr, "\n[main] Starting main loop now\n");
   if (!isDualInput)
@@ -998,17 +788,16 @@ int main(const int argc, char** argv) {
       //draw_hollow_circle_neon(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
       //draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
       bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
-      //display_raw_rgb565_image_frame(rgb565le);
+      memcpy(fbmem, rgb565le, screensize);
     }
   } else {
     while (shouldLoop) {
       background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
       background_task_cap_main.wait();
       bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
-      //display_raw_rgb565_image_frame(rgb565le);
+      memcpy(fbmem, rgb565le, screensize);
     }
   }
-  //deinit_dispmanx();
   cleanup_vars();
   return 0;
 }
