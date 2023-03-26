@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <array>
 #include <algorithm>
 #include <vector>
 #include <mutex>
@@ -27,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include <string.h>
 #include <assert.h>
 #include <getopt.h> // getopt_long()
@@ -110,15 +112,122 @@ size_t stride;
 char* fbmem;
 bool experimentalMode = false;
 uint16_t *rgb565le = new uint16_t[defaultWidth * defaultHeight * 2];
+std::mutex mtx;
 
-/*uint16x3_t rgb888torgb565(uint8x3_t rgb888Pixel) {
-  uint16x3_t rgb565_rgb;
-  rgb565_rgb.val[0] = ((rgb888Pixel.val[2] >> 3) & 0x1f);
-  rgb565_rgb.val[1] = (((rgb888Pixel.val[1] >> 2) & 0x3f) << 5);
-  rgb565_rgb.val[2] = (((rgb888Pixel.val[0] >> 3) & 0x1f) << 11);
-  return rgb565_rgb;
-  //return (uint16x3_t){ (rgb888Pixel.val[2] >> 3) & 0x1f, ((rgb888Pixel.val[1] >> 2) & 0x3f) << 5, ((rgb888Pixel.val[0] >> 3) & 0x1f) << 11 };
-}*/
+// Some functions to be used later which are maybe a bit more polished though not in use currently:
+uint16_t rgb888torgb565_pixel(const std::array<uint8_t, 3>& rgb888Pixel) {
+  uint16_t r = ((rgb888Pixel[2] >> 3) & 0x1f);
+  uint16_t g = (((rgb888Pixel[1] >> 2) & 0x3f) << 5);
+  uint16_t b = (((rgb888Pixel[0] >> 3) & 0x1f) << 11);
+  return r | g | b;
+}
+uint16_t bgr888torgb565_pixel(const std::array<uint8_t, 3>& bgr888Pixel) {
+  uint16_t b = ((bgr888Pixel[2] >> 3) & 0x1f);
+  uint16_t g = (((bgr888Pixel[1] >> 2) & 0x3f) << 5);
+  uint16_t r = (((bgr888Pixel[0] >> 3) & 0x1f) << 11);
+  return r | g | b;
+}
+uint16_t rgb888torgb565_pixel_neon(const uint8x8_t& rgb888Pixel) {
+  uint8_t r8 = vget_lane_u8(rgb888Pixel, 2);
+  uint8_t g8 = vget_lane_u8(rgb888Pixel, 1);
+  uint8_t b8 = vget_lane_u8(rgb888Pixel, 0);
+  uint16_t r = ((r8 >> 3) & 0x1f);
+  uint16_t g = (((g8 >> 2) & 0x3f) << 5);
+  uint16_t b = (((b8 >> 3) & 0x1f) << 11);
+  return r | g | b;
+}
+uint16_t bgr888torgb565_pixel_neon(const uint8x8_t& bgr888Pixel) {
+  uint8_t b8 = vget_lane_u8(bgr888Pixel, 2);
+  uint8_t g8 = vget_lane_u8(bgr888Pixel, 1);
+  uint8_t r8 = vget_lane_u8(bgr888Pixel, 0);
+  uint16_t r = ((r8 >> 3) & 0x1f);
+  uint16_t g = (((g8 >> 2) & 0x3f) << 5);
+  uint16_t b = (((b8 >> 3) & 0x1f) << 11);
+  return r | g | b;
+}
+uint16x8_t rgb888torgb565_8pixels_neon(const uint8x8x3_t& rgb888Pixels) {
+  // Load 8 R, G, and B values from the input structure
+  uint8x8_t r8 = rgb888Pixels.val[2];
+  uint8x8_t g8 = rgb888Pixels.val[1];
+  uint8x8_t b8 = rgb888Pixels.val[0];
+  // Convert RGB888 values to RGB565
+  uint16x8_t r = vshll_n_u8(r8, 8); // Shift left by 8 to prepare for merging with G and B
+  r = vshrq_n_u16(r, 11); // Shift right by 3 (masking with 0x1F) and then by 8 (to be in the final position)
+  uint16x8_t g = vshll_n_u8(g8, 8); // Shift left by 8 to prepare for merging with R and B
+  g = vshrq_n_u16(g, 10); // Shift right by 2 (masking with 0x3F) and then by 8 (to be in the final position)
+  uint16x8_t b = vshll_n_u8(b8, 8); // Shift left by 8 to prepare for merging with R and G
+  b = vshrq_n_u16(b, 13); // Shift right by 3 (masking with 0x1F)
+  // Combine R, G, and B channels
+  uint16x8_t rgb565 = vorrq_u16(r, g);
+  rgb565 = vorrq_u16(rgb565, b);
+  return rgb565;
+}
+uint16x8_t bgr888torgb565_8pixels_neon(const uint8x8x3_t& bgr888Pixels) {
+  // Load 8 B, G, and R values from the input structure
+  uint8x8_t b8 = bgr888Pixels.val[2];
+  uint8x8_t g8 = bgr888Pixels.val[1];
+  uint8x8_t r8 = bgr888Pixels.val[0];
+  // Convert BGR888 values to RGB565
+  uint16x8_t r = vshll_n_u8(r8, 8); // Shift left by 8 to prepare for merging with G and B
+  r = vshrq_n_u16(r, 11); // Shift right by 3 (masking with 0x1F) and then by 8 (to be in the final position)
+  uint16x8_t g = vshll_n_u8(g8, 8); // Shift left by 8 to prepare for merging with R and B
+  g = vshrq_n_u16(g, 10); // Shift right by 2 (masking with 0x3F) and then by 8 (to be in the final position)
+  uint16x8_t b = vshll_n_u8(b8, 8); // Shift left by 8 to prepare for merging with R and G
+  b = vshrq_n_u16(b, 13); // Shift right by 3 (masking with 0x1F)
+  // Combine B, G, and R channels
+  uint16x8_t rgb565 = vorrq_u16(r, g);
+  rgb565 = vorrq_u16(rgb565, b);
+  return rgb565;
+}
+// there's likely better ways to do this for the test_load_8pixels function; untested
+template <int I>
+void print_rgb565_pixel(const uint16x8_t& rgb565Pixels) {
+  uint16_t pixel = vgetq_lane_u16(rgb565Pixels, I);
+  std::cout << "RGB565 pixel " << I + 1 << ": " << std::hex << pixel << std::endl;
+  if constexpr (I > 0) {
+    print_rgb565_pixel<I - 1>(rgb565Pixels);
+  }
+}
+int test_load_8pixels() {
+  // Create 8 RGB888 pixels as input
+  uint8_t r_values[8] = { 255, 0, 0, 255, 255, 127, 63, 31 };
+  uint8_t g_values[8] = { 0, 255, 0, 255, 127, 255, 127, 63 };
+  uint8_t b_values[8] = { 0, 0, 255, 255, 127, 63, 255, 255 };
+  // Load the RGB888 values into a uint8x8x3_t structure
+  uint8x8_t r8 = vld1_u8(r_values);
+  uint8x8_t g8 = vld1_u8(g_values);
+  uint8x8_t b8 = vld1_u8(b_values);
+  uint8x8x3_t rgb888Pixels = { r8, g8, b8 };
+  // Call the function to convert the RGB888 pixels to RGB565
+  uint16x8_t rgb565Pixels = rgb888torgb565_8pixels_neon(rgb888Pixels);
+  // Print the converted RGB565 pixel values
+  print_rgb565_pixel<7>(rgb565Pixels);
+  return 0;
+}
+// Should work better as an example function
+void convert_rgb888_to_rgb565_neon(const std::vector<uint8_t>& rgb888Data, std::vector<uint16_t>& rgb565Data) {
+  size_t numPixels = rgb888Data.size() / 3;
+  for (size_t i = 0; i < numPixels; i += 8) {
+    uint8x8_t r8 = vld1_u8(&rgb888Data[i * 3]);
+    uint8x8_t g8 = vld1_u8(&rgb888Data[i * 3 + 1]);
+    uint8x8_t b8 = vld1_u8(&rgb888Data[i * 3 + 2]);
+    uint8x8x3_t rgb888Pixels = { r8, g8, b8 };
+    uint16x8_t rgb565Pixels = rgb888torgb565_8pixels_neon(rgb888Pixels);
+    vst1q_u16(&rgb565Data[i], rgb565Pixels);
+  }
+}
+void convert_bgr888_to_bgr565_neon(const std::vector<uint8_t>& bgr888Data, std::vector<uint16_t>& bgr565Data) {
+  size_t numPixels = bgr888Data.size() / 3;
+  for (size_t i = 0; i < numPixels; i += 8) {
+    uint8x8_t b8 = vld1_u8(&bgr888Data[i * 3]);
+    uint8x8_t g8 = vld1_u8(&bgr888Data[i * 3 + 1]);
+    uint8x8_t r8 = vld1_u8(&bgr888Data[i * 3 + 2]);
+    uint8x8x3_t bgr888Pixels = { r8, g8, b8 };
+    uint16x8_t bgr565Pixels = bgr888torgb565_8pixels_neon(bgr888Pixels);
+    vst1q_u16(&bgr565Data[i], bgr565Pixels);
+  }
+}
+// End of new test functions
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
   exit(EXIT_FAILURE);
@@ -506,9 +615,11 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
   stride = vinfo.xres * 2; // stride for RGB565LE format*/
   screensize = vinfo.xres * vinfo.yres * (vinfo.bits_per_pixel / 8);
   stride = vinfo.xres * (vinfo.bits_per_pixel / 8);
-  fprintf(stderr, "Actual frame buffer configuration: BPP: %u, xres: %u, yres: %u, screensize: %ld, stride: %lu\n", vinfo.bits_per_pixel, vinfo.xres, vinfo.yres, screensize, stride);
-  if (vinfo.bits_per_pixel != 16)
+  fprintf(stderr, "Actual frame buffer configuration: BPP: %u, xres: %u, yres: %u, screensize: %ld, stride: %u\n", vinfo.bits_per_pixel, vinfo.xres, vinfo.yres, screensize, stride);
+  if (vinfo.bits_per_pixel != 16) {
     fprintf(stderr, "WARN: Latency will likely be increased as we are not running in a 16-BPP display mode!\nThis could be due to having the vc4-kms-v3d driver is commented out in your /boot/config.txt\n");
+    // TODO: stop talking to the frame buffer, then run this shell command, and then check if we are actually in 16-BPP mode before continuing, else fail and exit: fbset -fb /dev/fb0 -depth 16
+  }
   if (ioctl(fbfd, FBIOGET_FSCREENINFO, &finfo) == -1) {
     perror("Error getting fixed frame buffer information");
     exit(EXIT_FAILURE);
@@ -519,93 +630,7 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
     exit(1);
   }
 }
-/*union FloatInt {
-  float f;
-  uint32_t i;
-};
-float fast_sqrt_neon(float x) {
-  float half_x = 0.5f * x;
-  float y = x;
-  FloatInt tmp1, tmp2;
-  tmp1.f = y;
-  tmp1.i = 0x5f3759df - (tmp1.i >> 1);
-  tmp2.i = tmp1.i;
-  y = tmp2.f;
-  float32x4_t v_y = vdupq_n_f32(y);
-  float32x4_t v_x = vdupq_n_f32(x);
-  float32x4_t v_half_x = vdupq_n_f32(half_x);
-  v_y = vmulq_f32(v_y, vdupq_n_f32(1.5f) - vmulq_f32(v_half_x, vmulq_f32(v_y, vmulq_f32(v_y, v_y))));
-  v_y = vmulq_f32(v_y, vdupq_n_f32(1.5f) - vmulq_f32(v_half_x, vmulq_f32(v_y, vmulq_f32(v_y, v_y))));
-  float32x4_t v_result = vmulq_f32(v_x, v_y);
-  v_result = vbslq_f32(vcltq_f32(v_result, vdupq_n_f32(0.0f)), vdupq_n_f32(0.0f), v_result);
-  return vgetq_lane_f32(v_result, 0);
-}*/
-/*void draw_hollow_circle_neon(unsigned char* image, int width, int height, int x, int y, int diameter, int thickness, unsigned char red, unsigned char green, unsigned char blue) {
-  int radius = diameter / 2;
-  int x_min = x - radius;
-  int y_min = y - radius;
-  uint8x8_t r = vmov_n_u8(red);
-  uint8x8_t g = vmov_n_u8(green);
-  uint8x8_t b = vmov_n_u8(blue);
-  uint8x8_t thickness_start = vmov_n_u8(radius - thickness);
-  uint8x8_t thickness_end = vmov_n_u8(radius);
-  for (int j = y_min; j < y_min + diameter; j += 8) {
-    int dx[8], dy[8];
-    float distance[8];
-    for (int i = x_min; i < x_min + diameter; i += 8) {
-      for (int k = 0; k < 8; k++) {
-        dx[k] = i + k - x;
-        dy[k] = j + k - y;
-        distance[k] = fast_sqrt_neon(dx[k] * dx[k] + dy[k] * dy[k]);
-      }
-      uint8x8_t d = vmov_n_u8(0);
-      uint8x16_t d = vmovq_n_u8(0);
-      for (int k = 0; k < 8; k++) {
-        uint8x8_t d_k = vmov_n_u8((uint8_t)distance[k]);
-        d = vsetq_lane_u8(vget_lane_u8(d_k, 0), d, k);
-        d = vsetq_lane_u8(vget_lane_u8(d_k, 1), d, k + 8);
-      }
-      uint8x8x3_t pixel = vld3_u8(&image[3 * (j * width + i)]);
-      uint8x8_t pixel_r = pixel.val[0];
-      uint8x8_t pixel_g = pixel.val[1];
-      uint8x8_t pixel_b = pixel.val[2];
-      uint8x8_t mask = vcge_u8(vmin_u8(vmax_u8(vld1_u8((const uint8_t*)(dy + j - y_min)), thickness_start), thickness_end), d);
-      pixel_r = vbsl_u8(mask, r, pixel_r);
-      pixel_g = vbsl_u8(mask, g, pixel_g);
-      pixel_b = vbsl_u8(mask, b, pixel_b);
-      uint8x8x3_t interleaved_pixels = vzip_u8(vzip_u8(pixel_r, pixel_g), pixel_b);
-      vst3_u8(&image[3 * (j * width + i)], interleaved_pixels);
-    }
-  }
-}*/
-void draw_hollow_circle(unsigned char* image, int width, int height, int x, int y, int diameter, int thickness, unsigned char red, unsigned char green, unsigned char blue) {
-  // Calculate the radius of the circle
-  int radius = diameter / 2;
-  // Calculate the coordinates of the top-left corner of the bounding box
-  int x_min = x - radius;
-  int y_min = y - radius;
-  // Iterate over every pixel in the bounding box
-#pragma omp parallel for simd num_threads(num_threads)
-  for (int i = x_min; i < x_min + diameter; i++) {
-    for (int j = y_min; j < y_min + diameter; j++) {
-      // Calculate the distance between this pixel and the center of the circle
-      int dx = i - x;
-      int dy = j - y;
-      //double distance = fast_sqrt_neon((dx * dx + dy * dy) * 0.25F);
-      double distance = std::sqrt(dx * dx + dy * dy);
-      // Check if the pixel is within the thickness of the circle
-      if (distance >= radius - thickness && distance <= radius) {
-        // Calculate the index of the first byte of this pixel in the image data array
-        int index = 3 * (j * width + i);
-        // Set the color of the pixel to the desired RGB value
-        image[index] = red;
-        image[index + 1] = green;
-        image[index + 2] = blue;
-      }
-    }
-  }
-}
-/*int startImGuiThread() {
+int startImGuiThread() {
   // Setup SDL
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0) {
     printf("Error: %s\n", SDL_GetError());
@@ -733,39 +758,7 @@ void draw_hollow_circle(unsigned char* image, int width, int height, int x, int 
   SDL_DestroyWindow(window);
   SDL_Quit();
   return 0;
-}*/
-// Convert an RGB24 pixel to RGB565LE format
-/*unsigned short convertPixel(unsigned char r, unsigned char g, unsigned char b) {
-  unsigned short r5 = (r * 31 + 127) / 255;
-  unsigned short g6 = (g * 63 + 127) / 255;
-  unsigned short b5 = (b * 31 + 127) / 255;
-  return (r5 << 11) | (g6 << 5) | b5;
-}*/
-
-void greyscale_to_sobel(const unsigned char* input, unsigned char* output, int width, int height) {
-  // The maximum value for the Sobel operator
-  //const int maxSobel = 4 * 255;
-  // The Sobel operator as a 3x3 matrix
-  const int sobelX[3][3] = { {-1, 0, 1}, {-2, 0, 2}, {-1, 0, 1} };
-  const int sobelY[3][3] = { {-1, -2, -1}, {0, 0, 0}, {1, 2, 1} };
-  // Iterate over each pixel in the image
-#pragma omp parallel for simd
-  for (int y = 0; y < height; ++y) {
-    for (int x = 0; x < width; ++x) {
-      // Apply the Sobel kernel in the x and y directions
-      int gx = sobelX[0][0] * input[(y - 1) * width + x - 1] + sobelX[0][1] * input[(y - 1) * width + x] + sobelX[0][2] * input[(y - 1) * width + x + 1] + sobelX[1][0] * input[y * width + x - 1] + 
-        sobelX[1][1] * input[y * width + x] + sobelX[1][2] * input[y * width + x + 1] + sobelX[2][0] * input[(y + 1) * width + x - 1] + sobelX[2][1] * input[(y + 1) * width + x] + sobelX[2][2] * input[(y + 1) * width + x + 1];
-
-
-      int gy = sobelY[0][0] * input[(y - 1) * width + x - 1] + sobelY[0][1] * input[(y - 1) * width + x] + sobelY[0][2] * input[(y - 1) * width + x + 1] + sobelY[1][0] * input[y * width + x - 1] + 
-        sobelY[1][1] * input[y * width + x] + sobelY[1][2] * input[y * width + x + 1] + sobelY[2][0] * input[(y + 1) * width + x - 1] + sobelY[2][1] * input[(y + 1) * width + x] + sobelY[2][2] * input[(y + 1) * width + x + 1];
-      // Compute the magnitude of the gradient at this pixel
-      output[y * width + x] = (unsigned char)sqrt(gx * gx + gy * gy);
-    }
-  }
 }
-
-/*std::mutex mtx;
 void rgb888_to_rgb565le_threaded(const unsigned char* src, uint16_t* dst, int width, int height, int start, int end) {
   const int num_pixels = end - start;
   src += start * 3;
@@ -931,98 +924,110 @@ void neon_overlay_rgba32_on_rgb24() {
     std::thread(std::move(task)).detach();
   }
   for (auto& f : futures) if (f.valid()) f.wait();
-}*/
-/*void experimental_conversion_rgb24() {
-#pragma omp parallel for simd num_threads(num_threads)
-  for (int y = 0; y < (int)vinfo.yres; y++) {
-    for (int x = 0; x < (int)vinfo.xres; x += 8) {
-      uint8x16x3_t rgb = vld3q_u8(&devInfoMain->outputFrame[y * vinfo.xres * 3 + x * 3]);
-      if (!IS_RGB_DEVICE) {
-        // Swap red and blue channels
-        uint8x16_t tmp = rgb.val[0];
-        rgb.val[0] = rgb.val[2];
-        rgb.val[2] = tmp;
-      }
-      uint8x8_t r_lo = vget_low_u8(rgb.val[0]);
-      uint8x8_t r_hi = vget_high_u8(rgb.val[0]);
-      uint8x8_t g_lo = vget_low_u8(rgb.val[1]);
-      uint8x8_t g_hi = vget_high_u8(rgb.val[1]);
-      uint8x8_t b_lo = vget_low_u8(rgb.val[2]);
-      uint8x8_t b_hi = vget_high_u8(rgb.val[2]);
-      uint16x8_t pixel_lo = vshlq_n_u16(vmovl_u8(r_lo), 11);
-      pixel_lo = vsliq_n_u16(pixel_lo, vmovl_u8(g_lo), 5);
-      pixel_lo = vorrq_u16(pixel_lo, vmovl_u8(b_lo));
-      uint16x8_t pixel_hi = vshlq_n_u16(vmovl_u8(r_hi), 11);
-      pixel_hi = vsliq_n_u16(pixel_hi, vmovl_u8(g_hi), 5);
-      pixel_hi = vorrq_u16(pixel_hi, vmovl_u8(b_hi));
-      uint16x8x2_t pixels = { { pixel_lo, pixel_hi } };
-      char* output_row = fbmem + y * vinfo.xres * 2 + x * 2;
-      uint8_t* output_row_aligned = reinterpret_cast<uint8_t*>(
-        output_row + ((uintptr_t)output_row & 15));
-      vst1q_u16_x2(reinterpret_cast<uint16_t*>(output_row_aligned), pixels);
+}
+#ifndef ALIGN_UP
+#define ALIGN_UP(x,y) ((x + (y)-1) & ~((y)-1))
+#endif
+typedef struct {
+  DISPMANX_DISPLAY_HANDLE_T display;
+  DISPMANX_MODEINFO_T info;
+  void* image;
+  DISPMANX_UPDATE_HANDLE_T update;
+  DISPMANX_RESOURCE_HANDLE_T resource;
+  DISPMANX_ELEMENT_HANDLE_T element;
+  uint32_t vc_image_ptr;
+
+} RECT_VARS_T;
+static RECT_VARS_T  gRectVars;
+static void FillRect(VC_IMAGE_TYPE_T type, void* image, int pitch, int aligned_height, int x, int y, int w, int h, int val) {
+  int row;
+  int col;
+  uint16_t* line = (uint16_t*)image + y * (pitch >> 1) + x;
+  for (row = 0; row < h; row++) {
+    for (col = 0; col < w; col++) {
+      line[col] = val;
     }
+    line += (pitch >> 1);
   }
-}*/
-/*void convertRGB24toRGBA32_NEON(unsigned char* input, unsigned char* output, int width, int height) {
-  const int vectorSize = 16;
-  std::vector<std::thread> threads(num_threads);
-#pragma omp parallel for simd num_threads(num_threads)
-  for (int i = 0; i < num_threads; i++) {
-    int start = i * height / num_threads;
-    int end = (i + 1) * height / num_threads;
-    threads[i] = std::thread([=]() {
-      for (int y = start; y < end; y++) {
-        uint8x16_t r, g, b, a;
-        for (int x = 0; x < width; x += vectorSize) {
-          uint8x16x3_t rgb = vld3q_u8(&input[(y * width + x) * 3]);
-          r = rgb.val[0];
-          g = rgb.val[1];
-          b = rgb.val[2];
-          a = vdupq_n_u8(0xff);
-          uint8x16x4_t rgba = { r, g, b, a };
-          vst4q_u8(&output[(y * width + x) * 4], rgba);
-        }
-      }
-    });
-  }
-  for (int i = 0; i < num_threads; i++) {
-    threads[i].join();
-  }
-}*/
+}
+int test_dispmanx(void) {
+  RECT_VARS_T* vars;
+  uint32_t screen = 0;
+  int ret;
+  VC_RECT_T src_rect;
+  VC_RECT_T dst_rect;
+  VC_IMAGE_TYPE_T type = VC_IMAGE_RGB565;
+  int pitch = ALIGN_UP(defaultWidth * 2, 32);
+  int aligned_height = ALIGN_UP(defaultHeight, 16);
+  //VC_DISPMANX_ALPHA_T alpha = { DISPMANX_FLAGS_ALPHA_FROM_SOURCE | DISPMANX_FLAGS_ALPHA_FIXED_ALL_PIXELS, 120, /*alpha 0->255*/ 0 };
+  VC_DISPMANX_ALPHA_T alpha = {
+    static_cast<DISPMANX_FLAGS_ALPHA_T>(DISPMANX_FLAGS_ALPHA_FROM_SOURCE | DISPMANX_FLAGS_ALPHA_FIXED_ALL_PIXELS),
+    120, /*alpha 0->255*/
+    0
+  };
+  vars = &gRectVars;
+  bcm_host_init();
+  printf("Open display[%i]...\n", screen);
+  vars->display = vc_dispmanx_display_open(screen);
+  ret = vc_dispmanx_display_get_info(vars->display, &vars->info);
+  assert(ret == 0);
+  printf("Display is %d x %d\n", vars->info.width, vars->info.height);
+  vars->image = calloc(1, pitch * defaultHeight);
+  assert(vars->image);
+  FillRect(type, vars->image, pitch, aligned_height, 0, 0, defaultWidth, defaultHeight, 0xFFFF);
+  FillRect(type, vars->image, pitch, aligned_height, 0, 0, defaultWidth, defaultHeight, 0xF800);
+  FillRect(type, vars->image, pitch, aligned_height, 20, 20, defaultWidth - 40, defaultHeight - 40, 0x07E0);
+  FillRect(type, vars->image, pitch, aligned_height, 40, 40, defaultWidth - 80, defaultHeight - 80, 0x001F);
+  vars->resource = vc_dispmanx_resource_create(type, defaultWidth, defaultHeight, &vars->vc_image_ptr);
+  assert(vars->resource);
+  vc_dispmanx_rect_set(&dst_rect, 0, 0, defaultWidth, defaultHeight);
+  ret = vc_dispmanx_resource_write_data(vars->resource, type, pitch, vars->image, &dst_rect);
+  assert(ret == 0);
+  vars->update = vc_dispmanx_update_start(10);
+  assert(vars->update);
+  vc_dispmanx_rect_set(&src_rect, 0, 0, defaultWidth << 16, defaultHeight << 16);
+  vc_dispmanx_rect_set(&dst_rect, (vars->info.width - defaultWidth) / 2, (vars->info.height - defaultHeight) / 2, defaultWidth, defaultHeight);
+  //vars->element = vc_dispmanx_element_add(vars->update, vars->display, 2000, /*layer*/ &dst_rect, vars->resource, &src_rect, DISPMANX_PROTECTION_NONE, &alpha, NULL, /*clamp*/ VC_IMAGE_ROT0);
+  vars->element = vc_dispmanx_element_add(vars->update, vars->display, 2000, /*layer*/ &dst_rect, vars->resource, &src_rect, DISPMANX_PROTECTION_NONE, &alpha, NULL, /*clamp*/ DISPMANX_NO_ROTATE);
+  ret = vc_dispmanx_update_submit_sync(vars->update);
+  assert(ret == 0);
+  printf("Sleeping for 10 seconds...\n");
+  sleep(10);
+  vars->update = vc_dispmanx_update_start(10);
+  assert(vars->update);
+  ret = vc_dispmanx_element_remove(vars->update, vars->element);
+  assert(ret == 0);
+  ret = vc_dispmanx_update_submit_sync(vars->update);
+  assert(ret == 0);
+  ret = vc_dispmanx_resource_delete(vars->resource);
+  assert(ret == 0);
+  ret = vc_dispmanx_display_close(vars->display);
+  assert(ret == 0);
+  return 0;
+}
 int main(const int argc, char** argv) {
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
   fprintf(stderr, "\n[main] Starting main loop now\n");
-  /*if (getenv("DISPLAY")) {
-    fprintf(stderr, "DISPLAY=%s\n", getenv("DISPLAY"));
-    std::thread bgThread(startImGuiThread);
-    bgThread.detach();
-  } else {
-    fprintf(stderr, "DISPLAY was not set.\n");
-    setenv("DISPLAY", "192.168.168.80:0", true);
-    fprintf(stderr, "DISPLAY=%s\n", getenv("DISPLAY"));
-    std::thread bgThread(startImGuiThread);
-    bgThread.detach();
-  }*/
-  //std::thread bgThread(startImGuiThread);
-  //bgThread.detach();
+  std::thread bgThread(startImGuiThread);
+  bgThread.detach();
   if (!isDualInput)
     num_threads = num_threads * (num_threads * 3);
   if (isDualInput) {
     while (shouldLoop) {
-      /*background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
+      background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
       background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt);
       neon_overlay_rgba32_on_rgb24();
       //draw_hollow_circle_neon(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
       //draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
       bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
-      memcpy(fbmem, rgb565le, screensize);*/
+      memcpy(fbmem, rgb565le, screensize);
     }
   } else {
     while (shouldLoop) {
-      /*background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
+      background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
       background_task_cap_main.wait();
       bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
-      memcpy(fbmem, rgb565le, screensize);*/
+      memcpy(fbmem, rgb565le, screensize);
     }
   }
   cleanup_vars();
