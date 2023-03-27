@@ -51,13 +51,6 @@
 #include <numeric>
 #include <arm_neon.h> // For SIMD instructions
 #include <stdio.h>
-#include "bcm_host.h"
-#include <xf86drm.h>
-#include <xf86drmMode.h>
-#include <gbm.h>
-extern "C" {
-#include "/opt/vc/src/hello_pi/libs/ilclient/ilclient.h"
-}
 
 #define V4L_ALLFORMATS  3
 #define V4L_RAWFORMATS  1
@@ -67,6 +60,7 @@ extern "C" {
 int fbfd = -1, ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1920, defaultHeight = 1080, alpha_channel_amount = 0, allDevicesTargetFramerate = 30, numPixels = defaultWidth * defaultHeight;
 const int def_circle_center_x = defaultWidth / 2, def_circle_center_y = defaultHeight / 2, def_circle_diameter = 5, def_circle_thickness = 1, def_circle_red = 0, def_circle_green = 0, def_circle_blue = 0;
 int circle_center_x = def_circle_center_x, circle_center_y = def_circle_center_y, circle_diameter = def_circle_diameter, circle_thickness = def_circle_thickness, circle_red = def_circle_red, circle_green = def_circle_green, circle_blue = def_circle_blue, configRefreshDelay = 33;
+uint16_t* rgb565le = new uint16_t[defaultWidth * defaultHeight * 2];
 unsigned char* outputWithAlpha = new unsigned char[defaultWidth * defaultHeight * 4];
 unsigned char* prevOutputFrame = new unsigned char[defaultWidth * defaultHeight * byteScaler];
 int num_threads = std::thread::hardware_concurrency() + 1;
@@ -111,7 +105,6 @@ char* fbmem;
 long int screensize;
 size_t stride;
 bool experimentalMode = false;
-uint16_t *rgb565le = new uint16_t[defaultWidth * defaultHeight * 2];
 std::mutex mtx;
 
 // Some functions to be used later which are maybe a bit more polished though not in use currently:
@@ -615,7 +608,6 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
   if (vinfo.bits_per_pixel != 24) {
     fprintf(stderr, "[%s]: Setting bit-depth to 24..\n", devNames[devNames.capacity() - 1].c_str());
     system("fbset -fb /dev/fb0 -depth 24");
-    munmap(fbmem, screensize);
     close(fbfd);
     fbfd = open(devNames.at(isDualInput ? 2 : 1).c_str(), O_RDWR);
     if (fbfd == -1) {
