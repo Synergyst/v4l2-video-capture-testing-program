@@ -180,7 +180,7 @@ uint16x8_t bgr888torgb565_8pixels_neon(const uint8x8x3_t& bgr888Pixels) {
   return rgb565;
 }
 // there's likely better ways to do this for the test_load_8pixels function; untested
-template <int I>
+/*template <int I>
 void print_rgb565_pixel(const uint16x8_t& rgb565Pixels) {
   uint16_t pixel = vgetq_lane_u16(rgb565Pixels, I);
   std::cout << "RGB565 pixel " << I + 1 << ": " << std::hex << pixel << std::endl;
@@ -203,8 +203,8 @@ int test_load_8pixels() {
   // Print the converted RGB565 pixel values
   print_rgb565_pixel<7>(rgb565Pixels);
   return 0;
-}
-// Should work better as an example function
+}*/
+// These should work better as an example function
 void convert_rgb888_to_rgb565_neon(const std::vector<uint8_t>& rgb888Data, std::vector<uint16_t>& rgb565Data) {
   size_t numPixels = rgb888Data.size() / 3;
   for (size_t i = 0; i < numPixels; i += 8) {
@@ -601,7 +601,7 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
     init_vars(deviAlt, bufAlt, 3, allDevicesTargetFramerate, true, true, args[2], 1);
   shouldLoop.store(true);
   numPixels = devInfoMain->startingWidth * devInfoMain->startingHeight;
-  sleep(1);
+  usleep(1000);
   fprintf(stderr, "\n");
   fbfd = open(devNames.at(isDualInput ? 2 : 1).c_str(), O_RDWR);
   if (fbfd == -1) {
@@ -609,17 +609,26 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
     exit(1);
   }
   ioctl(fbfd, FBIOGET_VSCREENINFO, &vinfo);
-  /*if (vinfo.bits_per_pixel != 16 || vinfo.xres != (unsigned int)devInfoMain->startingWidth || vinfo.yres != (unsigned int)devInfoMain->startingHeight) {
-    fprintf(stderr, "Error: framebuffer does not accept RGB24 frames with %dx%d resolution\n", devInfoMain->startingWidth, devInfoMain->startingHeight);
-    exit(1);
-  }
-  screensize = vinfo.xres * vinfo.yres * 2; // original size for RGB565LE
-  stride = vinfo.xres * 2; // stride for RGB565LE format*/
   screensize = vinfo.xres * vinfo.yres * (vinfo.bits_per_pixel / 8);
   stride = vinfo.xres * (vinfo.bits_per_pixel / 8);
   fprintf(stderr, "[%s]: Actual frame buffer configuration: BPP: %u, xres: %u, yres: %u, screensize: %ld, stride: %u\n", devNames[devNames.capacity() - 1].c_str(), vinfo.bits_per_pixel, vinfo.xres, vinfo.yres, screensize, stride);
-  if (vinfo.bits_per_pixel != 16)
-    fprintf(stderr, "[%s]: WARN: Latency will likely be increased as we are not running in a 16-BPP display mode!\nThis could be due to having the vc4-kms-v3d driver is commented out in your /boot/config.txt\n", devNames[devNames.capacity() - 1].c_str());
+  if (vinfo.bits_per_pixel != 24) {
+    fprintf(stderr, "[%s]: Setting bit-depth to 24..\n", devNames[devNames.capacity() - 1].c_str());
+    system("fbset -fb /dev/fb0 -depth 24");
+    munmap(fbmem, screensize);
+    close(fbfd);
+    fbfd = open(devNames.at(isDualInput ? 2 : 1).c_str(), O_RDWR);
+    if (fbfd == -1) {
+      fprintf(stderr, "[%s]: Error: cannot open framebuffer device", devNames[devNames.capacity() - 1].c_str());
+      exit(1);
+    }
+    ioctl(fbfd, FBIOGET_VSCREENINFO, &vinfo);
+    screensize = vinfo.xres * vinfo.yres * (vinfo.bits_per_pixel / 8);
+    stride = vinfo.xres * (vinfo.bits_per_pixel / 8);
+    fprintf(stderr, "[%s]: New actual frame buffer configuration: BPP: %u, xres: %u, yres: %u, screensize: %ld, stride: %u\n", devNames[devNames.capacity() - 1].c_str(), vinfo.bits_per_pixel, vinfo.xres, vinfo.yres, screensize, stride);
+  }
+  if (vinfo.bits_per_pixel != 24)
+    fprintf(stderr, "[%s]: WARN: Latency will likely be increased as we are not running in a 24-BPP display mode!\nSomething possibly went wrong when setting the frame buffer bit-depth.\n", devNames[devNames.capacity() - 1].c_str());
   if (ioctl(fbfd, FBIOGET_FSCREENINFO, &finfo) == -1) {
     fprintf(stderr, "[%s]: Error getting fixed frame buffer information\n", devNames[devNames.capacity() - 1].c_str());
     exit(EXIT_FAILURE);
@@ -776,7 +785,7 @@ void neon_overlay_rgba32_on_rgb24() {
 }
 int main(const int argc, char** argv) {
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
-  sleep(1);
+  usleep(1000);
   fprintf(stderr, "\n[main] Starting main loop now\n");
   if (!isDualInput)
     num_threads = num_threads * (num_threads * 3);
@@ -785,17 +794,33 @@ int main(const int argc, char** argv) {
       background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
       background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt);
       neon_overlay_rgba32_on_rgb24();
-      //draw_hollow_circle_neon(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
-      //draw_hollow_circle(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, circle_center_x, circle_center_y, circle_diameter, circle_thickness, circle_red, circle_green, circle_blue);
-      bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
-      memcpy(fbmem, rgb565le, screensize);
+      switch (vinfo.bits_per_pixel) {
+      case 16:
+        bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
+        memcpy(fbmem, rgb565le, screensize);
+        break;
+      case 24:
+        memcpy(fbmem, devInfoMain->outputFrame, screensize);
+        break;
+      default:
+        break;
+      }
     }
   } else {
     while (shouldLoop) {
       background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
       background_task_cap_main.wait();
-      bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
-      memcpy(fbmem, rgb565le, screensize);
+      switch (vinfo.bits_per_pixel) {
+      case 16:
+        bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
+        memcpy(fbmem, rgb565le, screensize);
+        break;
+      case 24:
+        memcpy(fbmem, devInfoMain->outputFrame, screensize);
+        break;
+      default:
+        break;
+      }
     }
   }
   cleanup_vars();
