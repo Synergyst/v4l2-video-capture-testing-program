@@ -1,0 +1,5 @@
+#!/bin/sh -e
+
+(sleep 5 ; rw ; /root/projects/v4l2-capture-test/hdmi-setup.sh ; /usr/local/bin/stop-logs.sh ; ntpdate time.windows.com ; sleep 5 ; ro ; printf "My IP address is %s\n" $(hostname -I)) &
+
+exit 0

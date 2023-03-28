@@ -79,7 +79,11 @@
     <None Include="build.sh" />
     <None Include="hdmi-setup.sh" />
     <None Include="Makefile" />
+    <None Include="rc.local" />
+    <None Include="ro" />
     <None Include="runner.sh" />
+    <None Include="rw" />
+    <None Include="stop-logs.sh" />
     <None Include="v4l2-capture-test.cpp">
       <CppLanguageStandard Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">gnu++20</CppLanguageStandard>
     </None>
@@ -98,15 +102,14 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
     <RemotePreBuildEvent>
-      <Command>
-      </Command>
+      <Command>/usr/local/bin/rw</Command>
     </RemotePreBuildEvent>
     <PreBuildEvent>
       <Command>
       </Command>
     </PreBuildEvent>
     <RemotePostBuildEvent>
-      <Command>mkdir -p ~/projects/v4l2-capture-test/bin/ARM/Debug/ ; touch ~/projects/v4l2-capture-test/v4l2-capture-test.cpp ~/projects/v4l2-capture-test/build.sh ; dos2unix ~/projects/v4l2-capture-test/* ; chmod +x ~/projects/v4l2-capture-test/*.sh ; ~/projects/v4l2-capture-test/build.sh</Command>
+      <Command>mkdir -p ~/projects/v4l2-capture-test/bin/ARM/Debug/ ; touch ~/projects/v4l2-capture-test/{rw,ro,rc.local,stop-logs.sh,v4l2-capture-test.cpp,build.sh} ; dos2unix ~/projects/v4l2-capture-test/* ; chmod +x ~/projects/v4l2-capture-test/{rw,ro,rc.local,stop-logs.sh,*.sh} ; ~/projects/v4l2-capture-test/build.sh</Command>
     </RemotePostBuildEvent>
     <Link>
       <AdditionalLibraryDirectories>C:\Users\colet\source\repos\v4l2-video-capture-testing-program\imgui.docking;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>

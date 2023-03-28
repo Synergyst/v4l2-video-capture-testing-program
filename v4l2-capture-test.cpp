@@ -72,7 +72,7 @@
 #define V4L_COMPFORMATS 2
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 #define IS_RGB_DEVICE false // change in case capture device is really RGB24 and not BGR24
-int fbfd = -1, ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1920, defaultHeight = 1080, alpha_channel_amount = 0, allDevicesTargetFramerate = 30, numPixels = defaultWidth * defaultHeight;
+int fbfd = -1, ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1920, defaultHeight = 1080, alpha_channel_amount = 127, allDevicesTargetFramerate = 30, numPixels = defaultWidth * defaultHeight;
 const int def_circle_center_x = defaultWidth / 2, def_circle_center_y = defaultHeight / 2, def_circle_diameter = 5, def_circle_thickness = 1, def_circle_red = 0, def_circle_green = 0, def_circle_blue = 0;
 int circle_center_x = def_circle_center_x, circle_center_y = def_circle_center_y, circle_diameter = def_circle_diameter, circle_thickness = def_circle_thickness, circle_red = def_circle_red, circle_green = def_circle_green, circle_blue = def_circle_blue, configRefreshDelay = 33;
 uint16_t* rgb565le = new uint16_t[defaultWidth * defaultHeight * 2];
@@ -924,33 +924,13 @@ int main(const int argc, char** argv) {
       background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
       background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt);
       neon_overlay_rgba32_on_rgb24();
-      switch (vinfo.bits_per_pixel) {
-      case 16:
-        bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
-        memcpy(fbmem, rgb565le, screensize);
-        break;
-      case 24:
-        memcpy(fbmem, devInfoMain->outputFrame, screensize);
-        break;
-      default:
-        break;
-      }
+      memcpy(fbmem, devInfoMain->outputFrame, screensize);
     }
   } else {
     while (shouldLoop) {
       background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
       background_task_cap_main.wait();
-      switch (vinfo.bits_per_pixel) {
-      case 16:
-        bgr888_to_rgb565le_multithreaded(devInfoMain->outputFrame, rgb565le, devInfoMain->startingWidth, devInfoMain->startingHeight);
-        memcpy(fbmem, rgb565le, screensize);
-        break;
-      case 24:
-        memcpy(fbmem, devInfoMain->outputFrame, screensize);
-        break;
-      default:
-        break;
-      }
+      memcpy(fbmem, devInfoMain->outputFrame, screensize);
     }
   }
   cleanup_vars();
