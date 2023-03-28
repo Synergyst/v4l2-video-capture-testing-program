@@ -72,7 +72,7 @@
 #define V4L_COMPFORMATS 2
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 #define IS_RGB_DEVICE false // change in case capture device is really RGB24 and not BGR24
-int fbfd = -1, ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1920, defaultHeight = 1080, alpha_channel_amount = 127, allDevicesTargetFramerate = 30, numPixels = defaultWidth * defaultHeight;
+int fbfd = -1, ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1280, defaultHeight = 720, alpha_channel_amount = 127, allDevicesTargetFramerate = 30, numPixels = defaultWidth * defaultHeight;
 const int def_circle_center_x = defaultWidth / 2, def_circle_center_y = defaultHeight / 2, def_circle_diameter = 5, def_circle_thickness = 1, def_circle_red = 0, def_circle_green = 0, def_circle_blue = 0;
 int circle_center_x = def_circle_center_x, circle_center_y = def_circle_center_y, circle_diameter = def_circle_diameter, circle_thickness = def_circle_thickness, circle_red = def_circle_red, circle_green = def_circle_green, circle_blue = def_circle_blue, configRefreshDelay = 33;
 uint16_t* rgb565le = new uint16_t[defaultWidth * defaultHeight * 2];
@@ -654,36 +654,37 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
   fprintf(stderr, "\n");
   fbfd = open(devNames.at(isDualInput ? 2 : 1).c_str(), O_RDWR);
   if (fbfd == -1) {
-    fprintf(stderr, "[%s]: Error: cannot open framebuffer device", devNames[devNames.capacity() - 1].c_str());
+    fprintf(stderr, "[%s]: Error: cannot open framebuffer device", devNames.back().c_str());
     exit(1);
   }
   ioctl(fbfd, FBIOGET_VSCREENINFO, &vinfo);
   screensize = vinfo.xres * vinfo.yres * (vinfo.bits_per_pixel / 8);
   stride = vinfo.xres * (vinfo.bits_per_pixel / 8);
-  fprintf(stderr, "[%s]: Actual frame buffer configuration: BPP: %u, xres: %u, yres: %u, screensize: %ld, stride: %lu\n", devNames[devNames.capacity() - 1].c_str(), vinfo.bits_per_pixel, vinfo.xres, vinfo.yres, screensize, stride);
+  fprintf(stderr, "[%s]: Actual frame buffer configuration: BPP: %u, xres: %u, yres: %u, screensize: %ld, stride: %lu\n", devNames.back().c_str(), vinfo.bits_per_pixel, vinfo.xres, vinfo.yres, screensize, stride);
   if (vinfo.bits_per_pixel != 24) {
-    fprintf(stderr, "[%s]: Setting bit-depth to 24..\n", devNames[devNames.capacity() - 1].c_str());
-    system("fbset -fb /dev/fb0 -depth 24");
+    fprintf(stderr, "[%s]: Setting bit-depth to 24..\n", devNames.back().c_str());
+    std::string fbsetCmd = "fbset -fb " + devNames.back() + " -depth 24";
+    system(fbsetCmd.c_str());
     close(fbfd);
     fbfd = open(devNames.at(isDualInput ? 2 : 1).c_str(), O_RDWR);
     if (fbfd == -1) {
-      fprintf(stderr, "[%s]: Error: cannot open framebuffer device", devNames[devNames.capacity() - 1].c_str());
+      fprintf(stderr, "[%s]: Error: cannot open framebuffer device", devNames.back().c_str());
       exit(1);
     }
     ioctl(fbfd, FBIOGET_VSCREENINFO, &vinfo);
     screensize = vinfo.xres * vinfo.yres * (vinfo.bits_per_pixel / 8);
     stride = vinfo.xres * (vinfo.bits_per_pixel / 8);
-    fprintf(stderr, "[%s]: New actual frame buffer configuration: BPP: %u, xres: %u, yres: %u, screensize: %ld, stride: %lu\n", devNames[devNames.capacity() - 1].c_str(), vinfo.bits_per_pixel, vinfo.xres, vinfo.yres, screensize, stride);
+    fprintf(stderr, "[%s]: New actual frame buffer configuration: BPP: %u, xres: %u, yres: %u, screensize: %ld, stride: %lu\n", devNames.back().c_str(), vinfo.bits_per_pixel, vinfo.xres, vinfo.yres, screensize, stride);
   }
   if (vinfo.bits_per_pixel != 24)
-    fprintf(stderr, "[%s]: WARN: Latency will likely be increased as we are not running in a 24-BPP display mode!\nSomething possibly went wrong when setting the frame buffer bit-depth.\n", devNames[devNames.capacity() - 1].c_str());
+    fprintf(stderr, "[%s]: WARN: Latency will likely be increased as we are not running in a 24-BPP display mode!\nSomething possibly went wrong when setting the frame buffer bit-depth.\n", devNames.back().c_str());
   if (ioctl(fbfd, FBIOGET_FSCREENINFO, &finfo) == -1) {
-    fprintf(stderr, "[%s]: Error getting fixed frame buffer information\n", devNames[devNames.capacity() - 1].c_str());
+    fprintf(stderr, "[%s]: Error getting fixed frame buffer information\n", devNames.back().c_str());
     exit(EXIT_FAILURE);
   }
   fbmem = (char*)mmap(0, screensize, PROT_READ | PROT_WRITE, MAP_SHARED, fbfd, 0);
   if (fbmem == MAP_FAILED) {
-    fprintf(stderr, "[%s]: Error: failed to mmap framebuffer device to memory", devNames[devNames.capacity() - 1].c_str());
+    fprintf(stderr, "[%s]: Error: failed to mmap framebuffer device to memory", devNames.back().c_str());
     exit(1);
   }
 }
@@ -860,8 +861,7 @@ int calibrateCameras() {
       imagePointsMain.emplace_back(cornersMain.back());
       imagePointsAlt.emplace_back(cornersAlt.back());
       calibrateCameraWithRGB24Images(devInfoMain->outputFrame, devInfoAlt->outputFrame, defaultWidth, defaultHeight, imagePointsMain, imagePointsAlt, boardSize);
-    }
-    else {
+    } else {
       if (!foundMain && !foundAlt) {
         std::cout << "[calib]: Failed to find chessboard corners in both images." << std::endl;
       }
