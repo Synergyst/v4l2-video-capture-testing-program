@@ -126,6 +126,7 @@ std::vector<std::vector<cv::Point2f>> cornersMain;
 std::vector<std::vector<cv::Point2f>> cornersAlt;
 std::vector<std::vector<cv::Point2f>> imagePointsMain;
 std::vector<std::vector<cv::Point2f>> imagePointsAlt;
+bool isCalibrationRun = false;
 
 void calibrateCameraWithRGB24Images(unsigned char* img1, unsigned char* img2, int width, int height, const std::vector<std::vector<cv::Point2f>>& imagePoints1, const std::vector<std::vector<cv::Point2f>>& imagePoints2, cv::Size boardSize) {
   cv::Mat cameraMatrix1 = cv::Mat::eye(3, 3, CV_64F);
@@ -612,12 +613,20 @@ void commandline_usage(const int argcnt, char** args) {
     devNames.push_back(args[1]);
     devNames.push_back(args[2]);
     isDualInput = false;
+    if (getenv("CALIB")) {
+      fprintf(stderr, "Entering single-camera calibration mode..\n");
+      isCalibrationRun = true;
+    }
     break;
   case 4:
     devNames.push_back(args[1]);
     devNames.push_back(args[2]);
     devNames.push_back(args[3]);
     isDualInput = true;
+    if (getenv("CALIB")) {
+      fprintf(stderr, "Entering dual-camera calibration mode..\n");
+      isCalibrationRun = true;
+    }
     break;
   default:
     fprintf(stderr, "[main] Usage:\n\t%s <V4L2 main device> <V4L2 alt device> </dev/fb out device>\n\t%s <V4L2 main device> </dev/fb out device>\nExample:\n\t%s /dev/video0 /dev/video1 /dev/fb0\n\t%s /dev/video0 /dev/fb0\n", args[0], args[0], args[0], args[0]);
@@ -633,48 +642,6 @@ void cleanup_vars() {
   close(fbfd);
 }
 void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct devInfo*& deviAlt, struct buffer*& bufAlt, int argCnt, char **args) {
-  std::string firstArg(args[1]);
-  if (argCnt == 2 && firstArg.find("--setup")) {
-    std::cout << "Camera calibration setup starting.." << std::endl;
-    exit(1);
-    // Find chessboard corners in both images
-    bool shouldCaptureCalibImgs = true;
-    while (shouldCaptureCalibImgs) {
-      std::vector<cv::Point2f> cornersTempMain;
-      std::vector<cv::Point2f> cornersTempAlt;
-      cv::Mat img_matMain(defaultHeight, defaultWidth, CV_8UC3, devInfoMain->outputFrame);
-      cv::Mat img_matAlt(defaultHeight, defaultWidth, CV_8UC3, devInfoAlt->outputFrame);
-      cv::Mat grayMain;
-      cv::Mat grayAlt;
-      cv::cvtColor(img_matMain, grayMain, cv::COLOR_RGB2GRAY);
-      cv::cvtColor(img_matAlt, grayAlt, cv::COLOR_RGB2GRAY);
-      bool foundMain = cv::findChessboardCorners(grayMain, boardSize, cornersTempMain, cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE | cv::CALIB_CB_FAST_CHECK);
-      bool foundAlt = cv::findChessboardCorners(grayAlt, boardSize, cornersTempAlt, cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE | cv::CALIB_CB_FAST_CHECK);
-      if (foundMain) {
-        cv::cornerSubPix(grayMain, cornersTempMain, cv::Size(11, 11), cv::Size(-1, -1), cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 30, 0.1));
-      }
-      if (foundAlt) {
-        cv::cornerSubPix(grayAlt, cornersTempAlt, cv::Size(11, 11), cv::Size(-1, -1), cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 30, 0.1));
-      }
-      cornersMain.emplace_back(cornersTempMain);
-      cornersAlt.emplace_back(cornersTempAlt);
-
-      if (foundMain && foundAlt) {
-        imagePointsMain.emplace_back(cornersMain.back());
-        imagePointsAlt.emplace_back(cornersAlt.back());
-        calibrateCameraWithRGB24Images(devInfoMain->outputFrame, devInfoAlt->outputFrame, defaultWidth, defaultHeight, imagePointsMain, imagePointsAlt, boardSize);
-      } else {
-        if (!foundMain && !foundAlt) {
-          std::cout << "[calib]: Failed to find chessboard corners in both images." << std::endl;
-        } else if (!foundMain) {
-          std::cout << "[calib]: Failed to find chessboard corners in main image." << std::endl;
-        } else if (!foundAlt) {
-          std::cout << "[calib]: Failed to find chessboard corners in alt image." << std::endl;
-        }
-      }
-    }
-    calibrateCameraWithRGB24Images(devInfoMain->outputFrame, devInfoAlt->outputFrame, defaultWidth, defaultHeight, imagePointsMain, imagePointsAlt, boardSize);
-  }
   commandline_usage(argCnt, args);
   fprintf(stderr, "[main] Initializing..\n");
   // allocate memory for structs
@@ -864,12 +831,92 @@ void neon_overlay_rgba32_on_rgb24() {
   }
   for (auto& f : futures) if (f.valid()) f.wait();
 }
+int calibrateCameras() {
+  std::cout << "Camera calibration setup starting.." << std::endl;
+  return 1;
+  // Find chessboard corners in both images
+  bool shouldCaptureCalibImgs = true;
+  while (shouldCaptureCalibImgs) {
+    std::vector<cv::Point2f> cornersTempMain;
+    std::vector<cv::Point2f> cornersTempAlt;
+    cv::Mat img_matMain(defaultHeight, defaultWidth, CV_8UC3, devInfoMain->outputFrame);
+    cv::Mat img_matAlt(defaultHeight, defaultWidth, CV_8UC3, devInfoAlt->outputFrame);
+    cv::Mat grayMain;
+    cv::Mat grayAlt;
+    cv::cvtColor(img_matMain, grayMain, cv::COLOR_RGB2GRAY);
+    cv::cvtColor(img_matAlt, grayAlt, cv::COLOR_RGB2GRAY);
+    bool foundMain = cv::findChessboardCorners(grayMain, boardSize, cornersTempMain, cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE | cv::CALIB_CB_FAST_CHECK);
+    bool foundAlt = cv::findChessboardCorners(grayAlt, boardSize, cornersTempAlt, cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE | cv::CALIB_CB_FAST_CHECK);
+    if (foundMain) {
+      cv::cornerSubPix(grayMain, cornersTempMain, cv::Size(11, 11), cv::Size(-1, -1), cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 30, 0.1));
+    }
+    if (foundAlt) {
+      cv::cornerSubPix(grayAlt, cornersTempAlt, cv::Size(11, 11), cv::Size(-1, -1), cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 30, 0.1));
+    }
+    cornersMain.emplace_back(cornersTempMain);
+    cornersAlt.emplace_back(cornersTempAlt);
+
+    if (foundMain && foundAlt) {
+      imagePointsMain.emplace_back(cornersMain.back());
+      imagePointsAlt.emplace_back(cornersAlt.back());
+      calibrateCameraWithRGB24Images(devInfoMain->outputFrame, devInfoAlt->outputFrame, defaultWidth, defaultHeight, imagePointsMain, imagePointsAlt, boardSize);
+    }
+    else {
+      if (!foundMain && !foundAlt) {
+        std::cout << "[calib]: Failed to find chessboard corners in both images." << std::endl;
+      }
+      else if (!foundMain) {
+        std::cout << "[calib]: Failed to find chessboard corners in main image." << std::endl;
+      }
+      else if (!foundAlt) {
+        std::cout << "[calib]: Failed to find chessboard corners in alt image." << std::endl;
+      }
+    }
+  }
+  calibrateCameraWithRGB24Images(devInfoMain->outputFrame, devInfoAlt->outputFrame, defaultWidth, defaultHeight, imagePointsMain, imagePointsAlt, boardSize);
+  return 0;
+}
+int calibrateSingleCamera() {
+  std::cout << "Camera calibration setup starting.." << std::endl;
+  return 1;
+  // Find chessboard corners in both images
+  bool shouldCaptureCalibImgs = true;
+  while (shouldCaptureCalibImgs) {
+    std::vector<cv::Point2f> cornersTempMain;
+    cv::Mat img_matMain(defaultHeight, defaultWidth, CV_8UC3, devInfoMain->outputFrame);
+    cv::Mat grayMain;
+    cv::cvtColor(img_matMain, grayMain, cv::COLOR_RGB2GRAY);
+    bool foundMain = cv::findChessboardCorners(grayMain, boardSize, cornersTempMain, cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE | cv::CALIB_CB_FAST_CHECK);
+    if (foundMain) {
+      cv::cornerSubPix(grayMain, cornersTempMain, cv::Size(11, 11), cv::Size(-1, -1), cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 30, 0.1));
+    }
+    cornersMain.emplace_back(cornersTempMain);
+
+    if (foundMain) {
+      imagePointsMain.emplace_back(cornersMain.back());
+      //calibrateCameraWithRGB24Images(devInfoMain->outputFrame, devInfoAlt->outputFrame, defaultWidth, defaultHeight, imagePointsMain, imagePointsAlt, boardSize);
+    } else {
+      if (!foundMain) {
+        std::cout << "[calib]: Failed to find chessboard corners in images." << std::endl;
+      }
+    }
+  }
+  //calibrateCameraWithRGB24Images(devInfoMain->outputFrame, devInfoAlt->outputFrame, defaultWidth, defaultHeight, imagePointsMain, imagePointsAlt, boardSize);
+  return 0;
+}
 int main(const int argc, char** argv) {
   // Create a window to display the results
   //namedWindow("Parallax Corrected", WINDOW_AUTOSIZE);
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
   usleep(1000);
   fprintf(stderr, "\n[main] Starting main loop now\n");
+  if (isCalibrationRun && isDualInput) {
+    calibrateCameras();
+    exit(1);
+  } else if (isCalibrationRun && !isDualInput) {
+    calibrateSingleCamera();
+    exit(1);
+  }
   if (!isDualInput)
     num_threads = num_threads * (num_threads * 3);
   if (isDualInput) {
