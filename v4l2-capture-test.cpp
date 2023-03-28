@@ -51,6 +51,21 @@
 #include <numeric>
 #include <arm_neon.h> // For SIMD instructions
 #include <stdio.h>
+#include <opencv2/core/core.hpp>
+#include <opencv2/calib3d/calib3d.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+#include <opencv2/highgui/highgui_c.h>
+#include <opencv2/core.hpp>
+#include <opencv2/core/utility.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/calib3d.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/videoio.hpp>
+#include <opencv2/highgui.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+#include <popt.h>
 
 #define V4L_ALLFORMATS  3
 #define V4L_RAWFORMATS  1
@@ -106,7 +121,39 @@ long int screensize;
 size_t stride;
 bool experimentalMode = false;
 std::mutex mtx;
+cv::Size boardSize(9, 6); // Example chessboard size
+std::vector<std::vector<cv::Point2f>> cornersMain;
+std::vector<std::vector<cv::Point2f>> cornersAlt;
+std::vector<std::vector<cv::Point2f>> imagePointsMain;
+std::vector<std::vector<cv::Point2f>> imagePointsAlt;
 
+void calibrateCameraWithRGB24Images(unsigned char* img1, unsigned char* img2, int width, int height, const std::vector<std::vector<cv::Point2f>>& imagePoints1, const std::vector<std::vector<cv::Point2f>>& imagePoints2, cv::Size boardSize) {
+  cv::Mat cameraMatrix1 = cv::Mat::eye(3, 3, CV_64F);
+  cv::Mat cameraMatrix2 = cv::Mat::eye(3, 3, CV_64F);
+  cv::Mat distCoeffs1, distCoeffs2;
+
+  std::vector<cv::Mat> rvecs1, rvecs2;
+  std::vector<cv::Mat> tvecs1, tvecs2;
+
+  cv::Mat img1_mat(height, width, CV_8UC3, img1);
+  cv::Mat img2_mat(height, width, CV_8UC3, img2);
+
+  // Prepare object points
+  std::vector<std::vector<cv::Point3f>> objectPoints(1);
+  for (int i = 0; i < boardSize.height; ++i) {
+    for (int j = 0; j < boardSize.width; ++j) {
+      objectPoints[0].emplace_back(j, i, 0);
+    }
+  }
+  objectPoints.resize(imagePoints1.size(), objectPoints[0]);
+
+  // Calibrate cameras
+  double error1 = cv::calibrateCamera(objectPoints, imagePoints1, img1_mat.size(), cameraMatrix1, distCoeffs1, rvecs1, tvecs1);
+  double error2 = cv::calibrateCamera(objectPoints, imagePoints2, img2_mat.size(), cameraMatrix2, distCoeffs2, rvecs2, tvecs2);
+
+  std::cout << "Camera 1 calibration error: " << error1 << std::endl;
+  std::cout << "Camera 2 calibration error: " << error2 << std::endl;
+}
 // Some functions to be used later which are maybe a bit more polished though not in use currently:
 uint16_t rgb888torgb565_pixel(const std::array<uint8_t, 3>& rgb888Pixel) {
   uint16_t r = ((rgb888Pixel[2] >> 3) & 0x1f);
@@ -586,6 +633,48 @@ void cleanup_vars() {
   close(fbfd);
 }
 void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct devInfo*& deviAlt, struct buffer*& bufAlt, int argCnt, char **args) {
+  std::string firstArg(args[1]);
+  if (argCnt == 2 && firstArg.find("--setup")) {
+    std::cout << "Camera calibration setup starting.." << std::endl;
+    exit(1);
+    // Find chessboard corners in both images
+    bool shouldCaptureCalibImgs = true;
+    while (shouldCaptureCalibImgs) {
+      std::vector<cv::Point2f> cornersTempMain;
+      std::vector<cv::Point2f> cornersTempAlt;
+      cv::Mat img_matMain(defaultHeight, defaultWidth, CV_8UC3, devInfoMain->outputFrame);
+      cv::Mat img_matAlt(defaultHeight, defaultWidth, CV_8UC3, devInfoAlt->outputFrame);
+      cv::Mat grayMain;
+      cv::Mat grayAlt;
+      cv::cvtColor(img_matMain, grayMain, cv::COLOR_RGB2GRAY);
+      cv::cvtColor(img_matAlt, grayAlt, cv::COLOR_RGB2GRAY);
+      bool foundMain = cv::findChessboardCorners(grayMain, boardSize, cornersTempMain, cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE | cv::CALIB_CB_FAST_CHECK);
+      bool foundAlt = cv::findChessboardCorners(grayAlt, boardSize, cornersTempAlt, cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE | cv::CALIB_CB_FAST_CHECK);
+      if (foundMain) {
+        cv::cornerSubPix(grayMain, cornersTempMain, cv::Size(11, 11), cv::Size(-1, -1), cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 30, 0.1));
+      }
+      if (foundAlt) {
+        cv::cornerSubPix(grayAlt, cornersTempAlt, cv::Size(11, 11), cv::Size(-1, -1), cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 30, 0.1));
+      }
+      cornersMain.emplace_back(cornersTempMain);
+      cornersAlt.emplace_back(cornersTempAlt);
+
+      if (foundMain && foundAlt) {
+        imagePointsMain.emplace_back(cornersMain.back());
+        imagePointsAlt.emplace_back(cornersAlt.back());
+        calibrateCameraWithRGB24Images(devInfoMain->outputFrame, devInfoAlt->outputFrame, defaultWidth, defaultHeight, imagePointsMain, imagePointsAlt, boardSize);
+      } else {
+        if (!foundMain && !foundAlt) {
+          std::cout << "[calib]: Failed to find chessboard corners in both images." << std::endl;
+        } else if (!foundMain) {
+          std::cout << "[calib]: Failed to find chessboard corners in main image." << std::endl;
+        } else if (!foundAlt) {
+          std::cout << "[calib]: Failed to find chessboard corners in alt image." << std::endl;
+        }
+      }
+    }
+    calibrateCameraWithRGB24Images(devInfoMain->outputFrame, devInfoAlt->outputFrame, defaultWidth, defaultHeight, imagePointsMain, imagePointsAlt, boardSize);
+  }
   commandline_usage(argCnt, args);
   fprintf(stderr, "[main] Initializing..\n");
   // allocate memory for structs
@@ -604,7 +693,7 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
   ioctl(fbfd, FBIOGET_VSCREENINFO, &vinfo);
   screensize = vinfo.xres * vinfo.yres * (vinfo.bits_per_pixel / 8);
   stride = vinfo.xres * (vinfo.bits_per_pixel / 8);
-  fprintf(stderr, "[%s]: Actual frame buffer configuration: BPP: %u, xres: %u, yres: %u, screensize: %ld, stride: %u\n", devNames[devNames.capacity() - 1].c_str(), vinfo.bits_per_pixel, vinfo.xres, vinfo.yres, screensize, stride);
+  fprintf(stderr, "[%s]: Actual frame buffer configuration: BPP: %u, xres: %u, yres: %u, screensize: %ld, stride: %lu\n", devNames[devNames.capacity() - 1].c_str(), vinfo.bits_per_pixel, vinfo.xres, vinfo.yres, screensize, stride);
   if (vinfo.bits_per_pixel != 24) {
     fprintf(stderr, "[%s]: Setting bit-depth to 24..\n", devNames[devNames.capacity() - 1].c_str());
     system("fbset -fb /dev/fb0 -depth 24");
@@ -617,7 +706,7 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
     ioctl(fbfd, FBIOGET_VSCREENINFO, &vinfo);
     screensize = vinfo.xres * vinfo.yres * (vinfo.bits_per_pixel / 8);
     stride = vinfo.xres * (vinfo.bits_per_pixel / 8);
-    fprintf(stderr, "[%s]: New actual frame buffer configuration: BPP: %u, xres: %u, yres: %u, screensize: %ld, stride: %u\n", devNames[devNames.capacity() - 1].c_str(), vinfo.bits_per_pixel, vinfo.xres, vinfo.yres, screensize, stride);
+    fprintf(stderr, "[%s]: New actual frame buffer configuration: BPP: %u, xres: %u, yres: %u, screensize: %ld, stride: %lu\n", devNames[devNames.capacity() - 1].c_str(), vinfo.bits_per_pixel, vinfo.xres, vinfo.yres, screensize, stride);
   }
   if (vinfo.bits_per_pixel != 24)
     fprintf(stderr, "[%s]: WARN: Latency will likely be increased as we are not running in a 24-BPP display mode!\nSomething possibly went wrong when setting the frame buffer bit-depth.\n", devNames[devNames.capacity() - 1].c_str());
@@ -776,6 +865,8 @@ void neon_overlay_rgba32_on_rgb24() {
   for (auto& f : futures) if (f.valid()) f.wait();
 }
 int main(const int argc, char** argv) {
+  // Create a window to display the results
+  //namedWindow("Parallax Corrected", WINDOW_AUTOSIZE);
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
   usleep(1000);
   fprintf(stderr, "\n[main] Starting main loop now\n");
