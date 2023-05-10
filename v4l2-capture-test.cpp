@@ -50,6 +50,12 @@
 #include <execution>
 #include <numeric>
 #include <arm_neon.h> // For SIMD instructions
+#include "imgui.docking/imgui.h"
+#include "imgui.docking/backends/imgui_impl_sdl2.h"
+#include "imgui.docking/backends/imgui_impl_opengl2.h"
+#include <stdio.h>
+#include <SDL.h>
+#include <SDL_opengl.h>
 #include <stdio.h>
 #include <opencv2/core/core.hpp>
 #include <opencv2/calib3d/calib3d.hpp>
@@ -66,18 +72,22 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <popt.h>
+#include <stdexcept>
 
+using namespace cv;
+using namespace std;
 #define V4L_ALLFORMATS  3
 #define V4L_RAWFORMATS  1
 #define V4L_COMPFORMATS 2
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 #define IS_RGB_DEVICE false // change in case capture device is really RGB24 and not BGR24
-int fbfd = -1, ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1280, defaultHeight = 720, alpha_channel_amount = 127, allDevicesTargetFramerate = 30, numPixels = defaultWidth * defaultHeight;
+int fbfd = -1, ret = 1, retSize = 1, frame_number = 0, byteScaler = 3, defaultWidth = 1920, defaultHeight = 1080, alpha_channel_amount = 127, allDevicesTargetFramerate = 30, numPixels = defaultWidth * defaultHeight;
 const int def_circle_center_x = defaultWidth / 2, def_circle_center_y = defaultHeight / 2, def_circle_diameter = 5, def_circle_thickness = 1, def_circle_red = 0, def_circle_green = 0, def_circle_blue = 0;
 int circle_center_x = def_circle_center_x, circle_center_y = def_circle_center_y, circle_diameter = def_circle_diameter, circle_thickness = def_circle_thickness, circle_red = def_circle_red, circle_green = def_circle_green, circle_blue = def_circle_blue, configRefreshDelay = 33;
-uint16_t* rgb565le = new uint16_t[defaultWidth * defaultHeight * 2];
+float zoom_factor_val_main = 1.0F, zoom_factor_val_alt = 1.0F;
 unsigned char* outputWithAlpha = new unsigned char[defaultWidth * defaultHeight * 4];
-unsigned char* prevOutputFrame = new unsigned char[defaultWidth * defaultHeight * byteScaler];
+unsigned char* prevOutputFrameMain = new unsigned char[defaultWidth * defaultHeight * byteScaler];
+unsigned char* prevOutputFrameAlt = new unsigned char[defaultWidth * defaultHeight * byteScaler];
 int num_threads = std::thread::hardware_concurrency() + 1;
 //const int num_threads = std::thread::hardware_concurrency() / 2;
 bool isDualInput = false, done = false;
@@ -121,154 +131,63 @@ long int screensize;
 size_t stride;
 bool experimentalMode = false;
 std::mutex mtx;
-cv::Size boardSize(9, 6); // Example chessboard size
-std::vector<std::vector<cv::Point2f>> cornersMain;
-std::vector<std::vector<cv::Point2f>> cornersAlt;
-std::vector<std::vector<cv::Point2f>> imagePointsMain;
-std::vector<std::vector<cv::Point2f>> imagePointsAlt;
-bool isCalibrationRun = false;
+int num_corners_x = 8;
+int num_corners_y = 6;
+float square_size = 0.0245; // size of the calibration pattern squares in meters
+Size board_size(num_corners_x, num_corners_y);
+std::vector<std::vector<Point3f>> object_points;
+std::vector<std::vector<Point2f>> image_points;
+std::vector<Point3f> pattern_points;
 
-void calibrateCameraWithRGB24Images(unsigned char* img1, unsigned char* img2, int width, int height, const std::vector<std::vector<cv::Point2f>>& imagePoints1, const std::vector<std::vector<cv::Point2f>>& imagePoints2, cv::Size boardSize) {
-  cv::Mat cameraMatrix1 = cv::Mat::eye(3, 3, CV_64F);
-  cv::Mat cameraMatrix2 = cv::Mat::eye(3, 3, CV_64F);
-  cv::Mat distCoeffs1, distCoeffs2;
-
-  std::vector<cv::Mat> rvecs1, rvecs2;
-  std::vector<cv::Mat> tvecs1, tvecs2;
-
-  cv::Mat img1_mat(height, width, CV_8UC3, img1);
-  cv::Mat img2_mat(height, width, CV_8UC3, img2);
-
-  // Prepare object points
-  std::vector<std::vector<cv::Point3f>> objectPoints(1);
-  for (int i = 0; i < boardSize.height; ++i) {
-    for (int j = 0; j < boardSize.width; ++j) {
-      objectPoints[0].emplace_back(j, i, 0);
+void zoom_image(const unsigned char* src, unsigned char* dest, int width, int height, float zoom_factor) {
+  if (zoom_factor <= 0) {
+    throw std::invalid_argument("Zoom factor must be greater than 0");
+  }
+  int new_width = static_cast<int>(width * zoom_factor);
+  int new_height = static_cast<int>(height * zoom_factor);
+  int offset_x = (new_width - width) / 2;
+  int offset_y = (new_height - height) / 2;
+#pragma omp parallel for
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      int src_x = std::clamp(static_cast<int>(x / zoom_factor) + offset_x, 0, width - 1);
+      int src_y = std::clamp(static_cast<int>(y / zoom_factor) + offset_y, 0, height - 1);
+      int dest_index = (y * width + x) * 3;
+      int src_index = (src_y * width + src_x) * 3;
+      dest[dest_index] = src[src_index];
+      dest[dest_index + 1] = src[src_index + 1];
+      dest[dest_index + 2] = src[src_index + 2];
     }
   }
-  objectPoints.resize(imagePoints1.size(), objectPoints[0]);
-
-  // Calibrate cameras
-  double error1 = cv::calibrateCamera(objectPoints, imagePoints1, img1_mat.size(), cameraMatrix1, distCoeffs1, rvecs1, tvecs1);
-  double error2 = cv::calibrateCamera(objectPoints, imagePoints2, img2_mat.size(), cameraMatrix2, distCoeffs2, rvecs2, tvecs2);
-
-  std::cout << "Camera 1 calibration error: " << error1 << std::endl;
-  std::cout << "Camera 2 calibration error: " << error2 << std::endl;
 }
-// Some functions to be used later which are maybe a bit more polished though not in use currently:
-uint16_t rgb888torgb565_pixel(const std::array<uint8_t, 3>& rgb888Pixel) {
-  uint16_t r = ((rgb888Pixel[2] >> 3) & 0x1f);
-  uint16_t g = (((rgb888Pixel[1] >> 2) & 0x3f) << 5);
-  uint16_t b = (((rgb888Pixel[0] >> 3) & 0x1f) << 11);
-  return r | g | b;
-}
-uint16_t bgr888torgb565_pixel(const std::array<uint8_t, 3>& bgr888Pixel) {
-  uint16_t b = ((bgr888Pixel[2] >> 3) & 0x1f);
-  uint16_t g = (((bgr888Pixel[1] >> 2) & 0x3f) << 5);
-  uint16_t r = (((bgr888Pixel[0] >> 3) & 0x1f) << 11);
-  return r | g | b;
-}
-uint16_t rgb888torgb565_pixel_neon(const uint8x8_t& rgb888Pixel) {
-  uint8_t r8 = vget_lane_u8(rgb888Pixel, 2);
-  uint8_t g8 = vget_lane_u8(rgb888Pixel, 1);
-  uint8_t b8 = vget_lane_u8(rgb888Pixel, 0);
-  uint16_t r = ((r8 >> 3) & 0x1f);
-  uint16_t g = (((g8 >> 2) & 0x3f) << 5);
-  uint16_t b = (((b8 >> 3) & 0x1f) << 11);
-  return r | g | b;
-}
-uint16_t bgr888torgb565_pixel_neon(const uint8x8_t& bgr888Pixel) {
-  uint8_t b8 = vget_lane_u8(bgr888Pixel, 2);
-  uint8_t g8 = vget_lane_u8(bgr888Pixel, 1);
-  uint8_t r8 = vget_lane_u8(bgr888Pixel, 0);
-  uint16_t r = ((r8 >> 3) & 0x1f);
-  uint16_t g = (((g8 >> 2) & 0x3f) << 5);
-  uint16_t b = (((b8 >> 3) & 0x1f) << 11);
-  return r | g | b;
-}
-uint16x8_t rgb888torgb565_8pixels_neon(const uint8x8x3_t& rgb888Pixels) {
-  // Load 8 R, G, and B values from the input structure
-  uint8x8_t r8 = rgb888Pixels.val[2];
-  uint8x8_t g8 = rgb888Pixels.val[1];
-  uint8x8_t b8 = rgb888Pixels.val[0];
-  // Convert RGB888 values to RGB565
-  uint16x8_t r = vshll_n_u8(r8, 8); // Shift left by 8 to prepare for merging with G and B
-  r = vshrq_n_u16(r, 11); // Shift right by 3 (masking with 0x1F) and then by 8 (to be in the final position)
-  uint16x8_t g = vshll_n_u8(g8, 8); // Shift left by 8 to prepare for merging with R and B
-  g = vshrq_n_u16(g, 10); // Shift right by 2 (masking with 0x3F) and then by 8 (to be in the final position)
-  uint16x8_t b = vshll_n_u8(b8, 8); // Shift left by 8 to prepare for merging with R and G
-  b = vshrq_n_u16(b, 13); // Shift right by 3 (masking with 0x1F)
-  // Combine R, G, and B channels
-  uint16x8_t rgb565 = vorrq_u16(r, g);
-  rgb565 = vorrq_u16(rgb565, b);
-  return rgb565;
-}
-uint16x8_t bgr888torgb565_8pixels_neon(const uint8x8x3_t& bgr888Pixels) {
-  // Load 8 B, G, and R values from the input structure
-  uint8x8_t b8 = bgr888Pixels.val[2];
-  uint8x8_t g8 = bgr888Pixels.val[1];
-  uint8x8_t r8 = bgr888Pixels.val[0];
-  // Convert BGR888 values to RGB565
-  uint16x8_t r = vshll_n_u8(r8, 8); // Shift left by 8 to prepare for merging with G and B
-  r = vshrq_n_u16(r, 11); // Shift right by 3 (masking with 0x1F) and then by 8 (to be in the final position)
-  uint16x8_t g = vshll_n_u8(g8, 8); // Shift left by 8 to prepare for merging with R and B
-  g = vshrq_n_u16(g, 10); // Shift right by 2 (masking with 0x3F) and then by 8 (to be in the final position)
-  uint16x8_t b = vshll_n_u8(b8, 8); // Shift left by 8 to prepare for merging with R and G
-  b = vshrq_n_u16(b, 13); // Shift right by 3 (masking with 0x1F)
-  // Combine B, G, and R channels
-  uint16x8_t rgb565 = vorrq_u16(r, g);
-  rgb565 = vorrq_u16(rgb565, b);
-  return rgb565;
-}
-// there's likely better ways to do this for the test_load_8pixels function; untested
-/*template <int I>
-void print_rgb565_pixel(const uint16x8_t& rgb565Pixels) {
-  uint16_t pixel = vgetq_lane_u16(rgb565Pixels, I);
-  std::cout << "RGB565 pixel " << I + 1 << ": " << std::hex << pixel << std::endl;
-  if constexpr (I > 0) {
-    print_rgb565_pixel<I - 1>(rgb565Pixels);
+void zoom_image_custom_aspect_ratio(const unsigned char* src, unsigned char* dest, int width, int height, float zoom_factor, float aspect_ratio_width, float aspect_ratio_height) {
+  if (zoom_factor <= 0) {
+    throw std::invalid_argument("Zoom factor must be greater than 0");
+  }
+  float src_aspect_ratio = static_cast<float>(width) / height;
+  int new_width = static_cast<int>(width * zoom_factor);
+  int new_height = static_cast<int>(height * zoom_factor);
+  int cropped_width = static_cast<int>(new_height * aspect_ratio_width / aspect_ratio_height);
+  int cropped_height = static_cast<int>(new_width * aspect_ratio_height / aspect_ratio_width);
+  if (src_aspect_ratio > aspect_ratio_width / aspect_ratio_height) {
+    new_width = cropped_width;
+  } else {
+    new_height = cropped_height;
+  }
+  int offset_x = (new_width - width) / 2;
+  int offset_y = (new_height - height) / 2;
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      int src_x = std::clamp(static_cast<int>(x / zoom_factor) + offset_x, 0, width - 1);
+      int src_y = std::clamp(static_cast<int>(y / zoom_factor) + offset_y, 0, height - 1);
+      int dest_index = (y * width + x) * 3;
+      int src_index = (src_y * width + src_x) * 3;
+      dest[dest_index] = src[src_index];
+      dest[dest_index + 1] = src[src_index + 1];
+      dest[dest_index + 2] = src[src_index + 2];
+    }
   }
 }
-int test_load_8pixels() {
-  // Create 8 RGB888 pixels as input
-  uint8_t r_values[8] = { 255, 0, 0, 255, 255, 127, 63, 31 };
-  uint8_t g_values[8] = { 0, 255, 0, 255, 127, 255, 127, 63 };
-  uint8_t b_values[8] = { 0, 0, 255, 255, 127, 63, 255, 255 };
-  // Load the RGB888 values into a uint8x8x3_t structure
-  uint8x8_t r8 = vld1_u8(r_values);
-  uint8x8_t g8 = vld1_u8(g_values);
-  uint8x8_t b8 = vld1_u8(b_values);
-  uint8x8x3_t rgb888Pixels = { r8, g8, b8 };
-  // Call the function to convert the RGB888 pixels to RGB565
-  uint16x8_t rgb565Pixels = rgb888torgb565_8pixels_neon(rgb888Pixels);
-  // Print the converted RGB565 pixel values
-  print_rgb565_pixel<7>(rgb565Pixels);
-  return 0;
-}*/
-// These should work better as an example function
-void convert_rgb888_to_rgb565_neon(const std::vector<uint8_t>& rgb888Data, std::vector<uint16_t>& rgb565Data) {
-  size_t numPixels = rgb888Data.size() / 3;
-  for (size_t i = 0; i < numPixels; i += 8) {
-    uint8x8_t r8 = vld1_u8(&rgb888Data[i * 3]);
-    uint8x8_t g8 = vld1_u8(&rgb888Data[i * 3 + 1]);
-    uint8x8_t b8 = vld1_u8(&rgb888Data[i * 3 + 2]);
-    uint8x8x3_t rgb888Pixels = { r8, g8, b8 };
-    uint16x8_t rgb565Pixels = rgb888torgb565_8pixels_neon(rgb888Pixels);
-    vst1q_u16(&rgb565Data[i], rgb565Pixels);
-  }
-}
-void convert_bgr888_to_bgr565_neon(const std::vector<uint8_t>& bgr888Data, std::vector<uint16_t>& bgr565Data) {
-  size_t numPixels = bgr888Data.size() / 3;
-  for (size_t i = 0; i < numPixels; i += 8) {
-    uint8x8_t b8 = vld1_u8(&bgr888Data[i * 3]);
-    uint8x8_t g8 = vld1_u8(&bgr888Data[i * 3 + 1]);
-    uint8x8_t r8 = vld1_u8(&bgr888Data[i * 3 + 2]);
-    uint8x8x3_t bgr888Pixels = { r8, g8, b8 };
-    uint16x8_t bgr565Pixels = bgr888torgb565_8pixels_neon(bgr888Pixels);
-    vst1q_u16(&bgr565Data[i], bgr565Pixels);
-  }
-}
-// End of new test functions
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
   exit(EXIT_FAILURE);
@@ -506,7 +425,9 @@ int get_frame(struct buffer* buffers, struct devInfo* devInfos) {
   }
   if (0 == r) {
     fprintf(stderr, "[cap%d] select timeout\n", devInfos->index);
-    exit(EXIT_FAILURE);
+    shouldLoop.store(false);
+    return 1;
+    //exit(EXIT_FAILURE);
   }
   struct v4l2_buffer buf;
   unsigned int i;
@@ -522,7 +443,10 @@ int get_frame(struct buffer* buffers, struct devInfo* devInfos) {
       // Could ignore EIO, see spec.
       // fall through
     default:
-      errno_exit("VIDIOC_DQBUF");
+      fprintf(stderr, "%s error %d, %s\n", "VIDIOC_DQBUF", errno, strerror(errno));
+      shouldLoop.store(false);
+      return 1;
+      //errno_exit("VIDIOC_DQBUF");
     }
   }
   assert(buf.index < devInfos->n_buffers);
@@ -613,20 +537,20 @@ void commandline_usage(const int argcnt, char** args) {
     devNames.push_back(args[1]);
     devNames.push_back(args[2]);
     isDualInput = false;
-    if (getenv("CALIB")) {
+    /*if (getenv("CALIB")) {
       fprintf(stderr, "Entering single-camera calibration mode..\n");
       isCalibrationRun = true;
-    }
+    }*/
     break;
   case 4:
     devNames.push_back(args[1]);
     devNames.push_back(args[2]);
     devNames.push_back(args[3]);
     isDualInput = true;
-    if (getenv("CALIB")) {
+    /*if (getenv("CALIB")) {
       fprintf(stderr, "Entering dual-camera calibration mode..\n");
       isCalibrationRun = true;
-    }
+    }*/
     break;
   default:
     fprintf(stderr, "[main] Usage:\n\t%s <V4L2 main device> <V4L2 alt device> </dev/fb out device>\n\t%s <V4L2 main device> </dev/fb out device>\nExample:\n\t%s /dev/video0 /dev/video1 /dev/fb0\n\t%s /dev/video0 /dev/fb0\n", args[0], args[0], args[0], args[0]);
@@ -640,6 +564,7 @@ void cleanup_vars() {
   delete[] outputWithAlpha;
   munmap(fbmem, screensize);
   close(fbfd);
+  system("/opt/TurboVNC/bin/vncserver -kill :1");
 }
 void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct devInfo*& deviAlt, struct buffer*& bufAlt, int argCnt, char **args) {
   commandline_usage(argCnt, args);
@@ -688,131 +613,25 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
     exit(1);
   }
 }
-void rgb888_to_rgb565le_threaded(const unsigned char* src, uint16_t* dst, int width, int height, int start, int end) {
-  const int num_pixels = end - start;
-  src += start * 3;
-  dst += start;
-  int i = 0;
-
-  // Process 8 pixels at a time using NEON intrinsics
-  for (; i <= num_pixels - 8; i += 8, src += 8 * 3, dst += 8) {
-    uint8x8x3_t rgb888 = vld3_u8(src);
-
-    uint16x8_t r = vshrq_n_u16(vmovl_u8(rgb888.val[0]), 3);
-    uint16x8_t g = vshrq_n_u16(vmovl_u8(rgb888.val[1]), 2);
-    uint16x8_t b = vshrq_n_u16(vmovl_u8(rgb888.val[2]), 3);
-
-    uint16x8_t rgb565 = vorrq_u16(vorrq_u16(vshlq_n_u16(r, 11), vshlq_n_u16(g, 5)), b);
-    vst1q_u16(dst, rgb565);
-  }
-
-  // Process remaining pixels
-  for (; i < num_pixels; ++i, src += 3, ++dst) {
-    uint16_t r = (src[0] >> 3) << 11;
-    uint16_t g = (src[1] >> 2) << 5;
-    uint16_t b = (src[2] >> 3);
-
-    dst[0] = r | g | b;
-  }
-}
-void rgb888_to_rgb565le_multithreaded(const unsigned char* src, uint16_t* dst, int width, int height) {
-  int num_pixels = width * height;
-  int pixels_per_thread = num_pixels / num_threads;
-  std::vector<std::thread> threads;
-
-  for (int i = 0; i < num_threads; ++i) {
-    int start = i * pixels_per_thread;
-    int end = (i == num_threads - 1) ? num_pixels : start + pixels_per_thread;
-
-    threads.emplace_back(std::thread(rgb888_to_rgb565le_threaded, src, dst, width, height, start, end));
-  }
-
-  // Wait for all threads to finish
-  for (auto& t : threads) {
-    t.join();
-  }
-}
-void bgr888_to_rgb565le_threaded(const unsigned char* src, uint16_t* dst, int width, int height, int start, int end) {
-  const int num_pixels = end - start;
-  src += start * 3;
-  dst += start;
-  int i = 0;
-
-  // Process 8 pixels at a time using NEON intrinsics
-  for (; i <= num_pixels - 8; i += 8, src += 8 * 3, dst += 8) {
-    uint8x8x3_t rgb888 = vld3_u8(src);
-    uint16x8_t b = vshrq_n_u16(vmovl_u8(rgb888.val[0]), 3);
-    uint16x8_t g = vshrq_n_u16(vmovl_u8(rgb888.val[1]), 2);
-    uint16x8_t r = vshrq_n_u16(vmovl_u8(rgb888.val[2]), 3);
-    uint16x8_t rgb565 = vorrq_u16(vorrq_u16(vshlq_n_u16(r, 11), vshlq_n_u16(g, 5)), b);
-    vst1q_u16(dst, rgb565);
-  }
-  // Process remaining pixels
-  for (; i < num_pixels; ++i, src += 3, ++dst) {
-    uint16_t b = (src[0] >> 3) << 11;
-    uint16_t g = (src[1] >> 2) << 5;
-    uint16_t r = (src[2] >> 3);
-    dst[0] = r | g | b;
-  }
-}
-void bgr888_to_rgb565le_multithreaded(const unsigned char* src, uint16_t* dst, int width, int height) {
-  int num_pixels = width * height;
-  int pixels_per_thread = num_pixels / num_threads;
-  std::vector<std::thread> threads;
-  for (int i = 0; i < num_threads; ++i) {
-    int start = i * pixels_per_thread;
-    int end = (i == num_threads - 1) ? num_pixels : start + pixels_per_thread;
-    threads.emplace_back(std::thread(bgr888_to_rgb565le_threaded, src, dst, width, height, start, end));
-  }
-  // Wait for all threads to finish
-  for (auto& t : threads) {
-    t.join();
-  }
-}
-void rgb888_to_rgb565le(const unsigned char* src, uint16_t* dst, int width, int height) {
-  const int num_pixels = width * height;
-  int i = 0;
-
-  // Process 8 pixels at a time using NEON intrinsics
-  for (; i <= num_pixels - 8; i += 8, src += 8 * 3, dst += 8) {
-    uint8x8x3_t rgb888 = vld3_u8(src);
-
-    uint16x8_t b = vshrq_n_u16(vmovl_u8(rgb888.val[0]), 3);
-    uint16x8_t g = vshrq_n_u16(vmovl_u8(rgb888.val[1]), 2);
-    uint16x8_t r = vshrq_n_u16(vmovl_u8(rgb888.val[2]), 3);
-
-    uint16x8_t rgb565 = vorrq_u16(vorrq_u16(vshlq_n_u16(r, 11), vshlq_n_u16(g, 5)), b);
-    vst1q_u16(dst, rgb565);
-  }
-
-  // Process remaining pixels
-  for (; i < num_pixels; ++i, src += 3, ++dst) {
-    uint16_t b = (src[0] >> 3) << 11;
-    uint16_t g = (src[1] >> 2) << 5;
-    uint16_t r = (src[2] >> 3);
-
-    dst[0] = r | g | b;
-  }
-}
 void neon_overlay_rgba32_on_rgb24() {
 #pragma omp parallel for simd num_threads(num_threads)
   for (int t = 0; t < num_threads; ++t) {
     const int start = ((t * numPixels) / num_threads), end = (((t + 1) * numPixels) / num_threads);
     auto task = std::packaged_task<void()>([=] {
       for (int i = start; i < end; i += 8) {
-        background_task_cap_main.wait();
-        uint8x8x3_t rgb = vld3_u8(&devInfoMain->outputFrame[i * 3]);
+        /*background_task_cap_main.wait();
+        uint8x8x3_t rgb = vld3_u8(&devInfoMain->outputFrame[i * 3]);*/
+        uint8x8x3_t rgb = vld3_u8(&prevOutputFrameMain[i * 3]);
         uint8x8_t r1 = rgb.val[0];
         uint8x8_t g1 = rgb.val[1];
         uint8x8_t b1 = rgb.val[2];
-        background_task_cap_alt.wait();
-        uint8x8x3_t rgb2 = vld3_u8(&devInfoAlt->outputFrame[i * 3]);
-        //uint8x8x4_t rgba2 = vld4_u8(&outputWithAlpha[i * 4]);
+        /*background_task_cap_alt.wait();
+        uint8x8x3_t rgb2 = vld3_u8(&devInfoAlt->outputFrame[i * 3]);*/
+        uint8x8x3_t rgb2 = vld3_u8(&prevOutputFrameAlt[i * 3]);
         uint8x8_t r2 = rgb2.val[0];
         uint8x8_t g2 = rgb2.val[1];
         uint8x8_t b2 = rgb2.val[2];
         uint8x8_t alpha = vdup_n_u8(alpha_channel_amount);
-        //uint8x8_t alpha = rgba2.val[3];
         uint16x8_t alpha_ratio = vmovl_u8(alpha);
         uint16x8_t inv_alpha_ratio = vsubq_u16(vdupq_n_u16(255), alpha_ratio);
         uint16x8_t r16 = vaddq_u16(vmull_u8(r1, vqmovn_u16(inv_alpha_ratio)), vmull_u8(r2, vqmovn_u16(alpha_ratio)));
@@ -832,107 +651,224 @@ void neon_overlay_rgba32_on_rgb24() {
   }
   for (auto& f : futures) if (f.valid()) f.wait();
 }
-int calibrateCameras() {
-  std::cout << "Camera calibration setup starting.." << std::endl;
-  return 1;
-  // Find chessboard corners in both images
-  bool shouldCaptureCalibImgs = true;
-  while (shouldCaptureCalibImgs) {
-    std::vector<cv::Point2f> cornersTempMain;
-    std::vector<cv::Point2f> cornersTempAlt;
-    cv::Mat img_matMain(defaultHeight, defaultWidth, CV_8UC3, devInfoMain->outputFrame);
-    cv::Mat img_matAlt(defaultHeight, defaultWidth, CV_8UC3, devInfoAlt->outputFrame);
-    cv::Mat grayMain;
-    cv::Mat grayAlt;
-    cv::cvtColor(img_matMain, grayMain, cv::COLOR_RGB2GRAY);
-    cv::cvtColor(img_matAlt, grayAlt, cv::COLOR_RGB2GRAY);
-    bool foundMain = cv::findChessboardCorners(grayMain, boardSize, cornersTempMain, cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE | cv::CALIB_CB_FAST_CHECK);
-    bool foundAlt = cv::findChessboardCorners(grayAlt, boardSize, cornersTempAlt, cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE | cv::CALIB_CB_FAST_CHECK);
-    if (foundMain) {
-      cv::cornerSubPix(grayMain, cornersTempMain, cv::Size(11, 11), cv::Size(-1, -1), cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 30, 0.1));
-    }
-    if (foundAlt) {
-      cv::cornerSubPix(grayAlt, cornersTempAlt, cv::Size(11, 11), cv::Size(-1, -1), cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 30, 0.1));
-    }
-    cornersMain.emplace_back(cornersTempMain);
-    cornersAlt.emplace_back(cornersTempAlt);
-
-    if (foundMain && foundAlt) {
-      imagePointsMain.emplace_back(cornersMain.back());
-      imagePointsAlt.emplace_back(cornersAlt.back());
-      calibrateCameraWithRGB24Images(devInfoMain->outputFrame, devInfoAlt->outputFrame, defaultWidth, defaultHeight, imagePointsMain, imagePointsAlt, boardSize);
-    } else {
-      if (!foundMain && !foundAlt) {
-        std::cout << "[calib]: Failed to find chessboard corners in both images." << std::endl;
-      }
-      else if (!foundMain) {
-        std::cout << "[calib]: Failed to find chessboard corners in main image." << std::endl;
-      }
-      else if (!foundAlt) {
-        std::cout << "[calib]: Failed to find chessboard corners in alt image." << std::endl;
-      }
-    }
+int startImGuiThread() {
+  // Setup SDL
+  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0) {
+    printf("Error: %s\n", SDL_GetError());
+    return -1;
   }
-  calibrateCameraWithRGB24Images(devInfoMain->outputFrame, devInfoAlt->outputFrame, defaultWidth, defaultHeight, imagePointsMain, imagePointsAlt, boardSize);
-  return 0;
-}
-int calibrateSingleCamera() {
-  std::cout << "Camera calibration setup starting.." << std::endl;
-  return 1;
-  // Find chessboard corners in both images
-  bool shouldCaptureCalibImgs = true;
-  while (shouldCaptureCalibImgs) {
-    std::vector<cv::Point2f> cornersTempMain;
-    cv::Mat img_matMain(defaultHeight, defaultWidth, CV_8UC3, devInfoMain->outputFrame);
-    cv::Mat grayMain;
-    cv::cvtColor(img_matMain, grayMain, cv::COLOR_RGB2GRAY);
-    bool foundMain = cv::findChessboardCorners(grayMain, boardSize, cornersTempMain, cv::CALIB_CB_ADAPTIVE_THRESH | cv::CALIB_CB_NORMALIZE_IMAGE | cv::CALIB_CB_FAST_CHECK);
-    if (foundMain) {
-      cv::cornerSubPix(grayMain, cornersTempMain, cv::Size(11, 11), cv::Size(-1, -1), cv::TermCriteria(cv::TermCriteria::EPS + cv::TermCriteria::COUNT, 30, 0.1));
-    }
-    cornersMain.emplace_back(cornersTempMain);
-
-    if (foundMain) {
-      imagePointsMain.emplace_back(cornersMain.back());
-      //calibrateCameraWithRGB24Images(devInfoMain->outputFrame, devInfoAlt->outputFrame, defaultWidth, defaultHeight, imagePointsMain, imagePointsAlt, boardSize);
-    } else {
-      if (!foundMain) {
-        std::cout << "[calib]: Failed to find chessboard corners in images." << std::endl;
-      }
-    }
+  // From 2.0.18: Enable native IME.
+#ifdef SDL_HINT_IME_SHOW_UI
+  SDL_SetHint(SDL_HINT_IME_SHOW_UI, "1");
+#endif
+  // Setup window
+  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, vinfo.bits_per_pixel);
+  SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+  SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+  SDL_Window* window = SDL_CreateWindow("Configuration", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 460, 460, window_flags);
+  SDL_GLContext gl_context = SDL_GL_CreateContext(window);
+  SDL_GL_MakeCurrent(window, gl_context);
+  SDL_GL_SetSwapInterval(1); // Enable vsync
+  // Setup Dear ImGui context
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO(); (void)io;
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
+  io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windows
+  //io.ConfigViewportsNoAutoMerge = true;
+  //io.ConfigViewportsNoTaskBarIcon = true;
+  // Setup Dear ImGui style
+  ImGui::StyleColorsDark();
+  //ImGui::StyleColorsLight();
+  // When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look identical to regular ones.
+  ImGuiStyle& style = ImGui::GetStyle();
+  if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+    style.WindowRounding = 5.0f;
+    style.Colors[ImGuiCol_WindowBg].w = 1.0f;
   }
-  //calibrateCameraWithRGB24Images(devInfoMain->outputFrame, devInfoAlt->outputFrame, defaultWidth, defaultHeight, imagePointsMain, imagePointsAlt, boardSize);
+  // Setup Platform/Renderer backends
+  ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
+  ImGui_ImplOpenGL2_Init();
+  // Load Fonts
+  // - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use ImGui::PushFont()/PopFont() to select them.
+  // - AddFontFromFileTTF() will return the ImFont* so you can store it if you need to select the font among multiple.
+  // - If the file cannot be loaded, the function will return NULL. Please handle those errors in your application (e.g. use an assertion, or display an error and quit).
+  // - The fonts will be rasterized at a given size (w/ oversampling) and stored into a texture when calling ImFontAtlas::Build()/GetTexDataAsXXXX(), which ImGui_ImplXXXX_NewFrame below will call.
+  // - Use '#define IMGUI_ENABLE_FREETYPE' in your imconfig file to use Freetype for higher quality font rendering.
+  // - Read 'docs/FONTS.md' for more instructions and details.
+  // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
+  //io.Fonts->AddFontDefault();
+  //io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\segoeui.ttf", 18.0f);
+  //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
+  //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Roboto-Medium.ttf", 16.0f);
+  //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
+  //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
+  //IM_ASSERT(font != NULL);
+  ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+  // Main loop
+  while (!done) {
+    // Poll and handle events (inputs, window resize, etc.)
+    // You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
+    // - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application, or clear/overwrite your copy of the mouse data.
+    // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application, or clear/overwrite your copy of the keyboard data.
+    // Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+      ImGui_ImplSDL2_ProcessEvent(&event);
+      if (event.type == SDL_QUIT)
+        done = true;
+      if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE && event.window.windowID == SDL_GetWindowID(window))
+        done = true;
+    }
+    // Start the Dear ImGui frame
+    ImGui_ImplOpenGL2_NewFrame();
+    ImGui_ImplSDL2_NewFrame();
+    ImGui::NewFrame();
+    //
+    ImGui::Begin("configuration / test object(s)");
+    ImGui::Checkbox("experimental mode", &experimentalMode);
+    if (devNames.size() > 2)
+      ImGui::Checkbox("dual-in", &isDualInput);
+    /*ImGui::SliderInt("alpha_channel_amount", &alpha_channel_amount, 0, 255);
+    ImGui::SliderInt("diameter", &circle_diameter, 1, defaultHeight);
+    ImGui::SliderInt("circle_thickness", &circle_thickness, 1, circle_diameter / 2);
+    ImGui::SliderInt("circle_red", &circle_red, 0, 255);
+    ImGui::SliderInt("circle_green", &circle_green, 0, 255);
+    ImGui::SliderInt("circle_blue", &circle_blue, 0, 255);
+    ImGui::SliderInt("circle_center_x", &circle_center_x, circle_diameter / 2, defaultWidth - (circle_diameter / 2));
+    ImGui::SliderInt("circle_center_y", &circle_center_y, circle_diameter / 2, defaultHeight - (circle_diameter / 2));*/
+    ImGui::SliderFloat("zoom_factor_val_main", &zoom_factor_val_main, 0.1F, 2.0F, "%.3f");
+    ImGui::SliderFloat("zoom_factor_val_alt", &zoom_factor_val_alt, 0.1F, 2.0F, "%.3f");
+    if (ImGui::Button("reset"))
+      zoom_factor_val_main = 1.0F, zoom_factor_val_alt = 1.0F;
+      //circle_center_x = def_circle_center_x, circle_center_y = def_circle_center_y, circle_diameter = def_circle_diameter, circle_thickness = def_circle_thickness, circle_red = def_circle_red, circle_green = def_circle_green, circle_blue = def_circle_blue;
+    ImGui::ColorEdit3("clear color", (float*)&clear_color);
+    ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
+    if (ImGui::Button("Quit")) {
+      shouldLoop = false;
+      done = true;
+    }
+    ImGui::End();
+    //
+    // Rendering
+    ImGui::Render();
+    glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
+    glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
+    glClear(GL_COLOR_BUFFER_BIT);
+    //glUseProgram(0); // You may want this if using this code in an OpenGL 3+ context where shaders may be bound
+    ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
+    // Update and Render additional Platform Windows
+    // (Platform functions may change the current OpenGL context, so we save/restore it to make it easier to paste this code elsewhere.
+    //  For this specific demo app we could also call SDL_GL_MakeCurrent(window, gl_context) directly)
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+      SDL_Window* backup_current_window = SDL_GL_GetCurrentWindow();
+      SDL_GLContext backup_current_context = SDL_GL_GetCurrentContext();
+      ImGui::UpdatePlatformWindows();
+      ImGui::RenderPlatformWindowsDefault();
+      SDL_GL_MakeCurrent(backup_current_window, backup_current_context);
+    }
+    SDL_GL_SwapWindow(window);
+    usleep(66000);
+  }
+  // Cleanup
+  ImGui_ImplOpenGL2_Shutdown();
+  ImGui_ImplSDL2_Shutdown();
+  ImGui::DestroyContext();
+  SDL_GL_DeleteContext(gl_context);
+  SDL_DestroyWindow(window);
+  SDL_Quit();
   return 0;
 }
 int main(const int argc, char** argv) {
+  system("rw && (v4l2-ctl -d /dev/video0 --set-edid=file=/root/1080P50EDID.txt --fix-edid-checksums && sleep 1 && v4l2-ctl -d /dev/video0 --query-dv-timings && sleep 1 && v4l2-ctl -d /dev/video0 --set-dv-bt-timings query && sleep 1 && v4l2-ctl -d /dev/video0 -V && sleep 1 && v4l2-ctl -d /dev/video0 -v pixelformat=RGB3 && echo -n '/dev/video0:' && v4l2-ctl -d /dev/video0 --log-status) & (v4l2-ctl -d /dev/video1 --set-edid=file=/root/1080P50EDID.txt --fix-edid-checksums && sleep 1 && v4l2-ctl -d /dev/video1 --query-dv-timings && sleep 1 && v4l2-ctl -d /dev/video1 --set-dv-bt-timings query && sleep 1 && v4l2-ctl -d /dev/video1 -V && sleep 1 && v4l2-ctl -d /dev/video1 -v pixelformat=RGB3 && echo -n '/dev/video1:' && v4l2-ctl -d /dev/video1 --log-status) & sleep 3 && wait");
+  system("export DISPLAY=:1 && export LIBGL_ALWAYS_INDIRECT=0 && /opt/TurboVNC/bin/vncserver -noautokill -depth 24 -geometry 466x466 +extension GLX :1");
   // Create a window to display the results
-  //namedWindow("Parallax Corrected", WINDOW_AUTOSIZE);
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
   usleep(1000);
-  fprintf(stderr, "\n[main] Starting main loop now\n");
-  if (isCalibrationRun && isDualInput) {
-    calibrateCameras();
-    exit(1);
-  } else if (isCalibrationRun && !isDualInput) {
-    calibrateSingleCamera();
-    exit(1);
+  if (isDualInput) {
+    std::thread bgThread(startImGuiThread);
+    bgThread.detach();
   }
+  // Load calibration images
+  /*vector<Mat> images;
+  for (int i = 1; i <= 10; i++) {
+    string filename = "calib" + to_string(i) + ".png";
+    Mat img = imread(filename, IMREAD_GRAYSCALE);
+    if (img.empty()) {
+      cerr << "Error: Could not read image " << filename << endl;
+      return -1;
+    }
+    images.push_back(img);
+  }
+  // Define object points
+  vector<vector<Point3f>> object_points;
+  vector<Point3f> corners;
+  for (int i = 0; i < 6; i++) {
+    for (int j = 0; j < 8; j++) {
+      corners.push_back(Point3f(i * 2.5f, j * 2.5f, 0.0f));
+    }
+  }
+  for (int i = 0; i < (int)images.size(); i++) {
+    object_points.push_back(corners);
+  }
+  // Find corners in images
+  vector<vector<Point2f>> image_points;
+  for (int i = 0; i < (int)images.size(); i++) {
+    vector<Point2f> corners;
+    bool found = findChessboardCorners(images[i], Size(6, 8), corners);
+    if (found) {
+      image_points.push_back(corners);
+      cornerSubPix(images[i], corners, Size(11, 11), Size(-1, -1), TermCriteria(TermCriteria::EPS + TermCriteria::MAX_ITER, 30, 0.1));
+      drawChessboardCorners(images[i], Size(6, 8), corners, found);
+    }
+  }
+  // Calibrate camera
+  Mat camera_matrix, distortion_coeffs;
+  vector<Mat> rvecs, tvecs;
+  calibrateCamera(object_points, image_points, images[0].size(), camera_matrix, distortion_coeffs, rvecs, tvecs);
+  // save camera parameters to file
+  FileStorage fs("camera_params.xml", FileStorage::WRITE);
+  fs << "camera_matrix" << camera_matrix;
+  fs << "distortion_coeffs" << distortion_coeffs;
+  fs.release();*/
   if (!isDualInput)
     num_threads = num_threads * (num_threads * 3);
-  if (isDualInput) {
-    while (shouldLoop) {
+  // Capture and ignore some frames for about 1/2 seconds due to strange issue with first frame(s)
+  for (int i = 0; i < 60; i++) {
+    if (isDualInput) {
       background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
       background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt);
+      background_task_cap_main.wait();
+      background_task_cap_alt.wait();
+    } else {
+      background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
+      background_task_cap_main.wait();
+    }
+  }
+  fprintf(stderr, "\n[main] Starting main loop now\n");
+  while (shouldLoop) {
+    if (isDualInput) {
+      background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
+      background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt);
+      background_task_cap_main.wait();
+      zoom_image(devInfoMain->outputFrame, prevOutputFrameMain, defaultWidth, defaultHeight, zoom_factor_val_main);
+      background_task_cap_alt.wait();
+      zoom_image(devInfoAlt->outputFrame, prevOutputFrameAlt, defaultWidth, defaultHeight, zoom_factor_val_alt);
       neon_overlay_rgba32_on_rgb24();
       memcpy(fbmem, devInfoMain->outputFrame, screensize);
-    }
-  } else {
-    while (shouldLoop) {
+    } else {
       background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
       background_task_cap_main.wait();
       memcpy(fbmem, devInfoMain->outputFrame, screensize);
     }
+    usleep(33000 * 0.5F);
   }
+  usleep(1000000);
   cleanup_vars();
   return 0;
 }
