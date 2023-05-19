@@ -138,7 +138,87 @@ Size board_size(num_corners_x, num_corners_y);
 std::vector<std::vector<Point3f>> object_points;
 std::vector<std::vector<Point2f>> image_points;
 std::vector<Point3f> pattern_points;
+struct Pixel {
+  uint8_t y;  // Brightness (luma) of the first pixel
+  uint8_t u;  // Chrominance (blue-difference) component
+  uint8_t y2; // Brightness (luma) of the second pixel
+  uint8_t v;  // Chrominance (red-difference) component
+};
 
+std::vector<Pixel> convertToYUYV(const std::vector<uint8_t>& grayscale, int width, int height) {
+  std::vector<Pixel> yuyvData;
+  yuyvData.reserve(width * height / 2);
+  const uint8_t neutralValue = 128;
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; x += 16) {
+      uint8x16_t y1 = vld1q_u8(&grayscale[y * width + x]);
+      uint8x16_t y2 = vld1q_u8(&grayscale[y * width + x + 8]);
+      uint8x16_t u = vdupq_n_u8(neutralValue);
+      uint8x16_t v = vdupq_n_u8(neutralValue);
+      Pixel pixel;
+      vst1q_u8(&pixel.y, y1);
+      vst1q_u8(&pixel.y2, y2);
+      vst1q_u8(&pixel.u, u);
+      vst1q_u8(&pixel.v, v);
+      yuyvData.push_back(pixel);
+    }
+  }
+  return yuyvData;
+}
+std::vector<unsigned char> convertRGB888toGrayscaleNEON(const unsigned char* rgb888, int width, int height) {
+  const int numPixels = width * height;
+  std::vector<uint8_t> grayscaleData(numPixels);
+
+  // Process 8 pixels (24 bytes) at a time
+  const int numIterations = numPixels / 8;
+  for (int i = 0; i < numIterations; ++i) {
+    const uint8x8x3_t rgb = vld3_u8(&rgb888[i * 24]);
+
+    const uint16x8_t weightedSumLow = vmull_u8(rgb.val[0], vdup_n_u8(77));
+    const uint16x8_t weightedSumMid = vmull_u8(rgb.val[1], vdup_n_u8(151));
+    const uint16x8_t weightedSumHigh = vmull_u8(rgb.val[2], vdup_n_u8(28));
+
+    const uint16x4_t weightedSumLo = vadd_u16(vget_low_u16(weightedSumLow), vget_low_u16(weightedSumMid));
+    const uint16x4_t weightedSumHi = vadd_u16(vget_high_u16(weightedSumLow), vget_high_u16(weightedSumMid));
+
+    const uint16x4_t weightedSum = vadd_u16(vadd_u16(weightedSumLo, weightedSumHi), vget_low_u16(weightedSumHigh));
+
+    const uint8x8_t grayscale = vshrn_n_u16(vcombine_u16(weightedSum, weightedSum), 8);
+
+    vst1_u8(&grayscaleData[i * 8], grayscale);
+  }
+
+  // Handle the remaining pixels
+  const int remainingPixels = numPixels % 8;
+  if (remainingPixels > 0) {
+    uint8_t remainingRgb[24] = { 0 };
+    for (int j = 0; j < remainingPixels; ++j) {
+      remainingRgb[j] = rgb888[numIterations * 24 + j];
+    }
+    const uint8x8x3_t rgb = vld3_u8(remainingRgb);
+
+    const uint16x8_t weightedSumLow = vmull_u8(rgb.val[0], vdup_n_u8(77));
+    const uint16x8_t weightedSumMid = vmull_u8(rgb.val[1], vdup_n_u8(151));
+    const uint16x8_t weightedSumHigh = vmull_u8(rgb.val[2], vdup_n_u8(28));
+
+    const uint16x4_t weightedSumLo = vadd_u16(vget_low_u16(weightedSumLow), vget_low_u16(weightedSumMid));
+    const uint16x4_t weightedSumHi = vadd_u16(vget_high_u16(weightedSumLow), vget_high_u16(weightedSumMid));
+
+    const uint16x4_t weightedSum = vadd_u16(vadd_u16(weightedSumLo, weightedSumHi), vget_low_u16(weightedSumHigh));
+
+    const uint8x8_t grayscale = vshrn_n_u16(vcombine_u16(weightedSum, weightedSum), 8);
+
+    uint8_t* grayscalePtr = &grayscaleData[numIterations * 8];
+    vst1_u8(grayscalePtr, grayscale);
+
+    // Fill the remaining pixels with zeros
+    for (int i = remainingPixels; i < 8; ++i) {
+      grayscalePtr[i] = 0;
+    }
+  }
+
+  return grayscaleData;
+}
 void zoom_image(const unsigned char* src, unsigned char* dest, int width, int height, float zoom_factor) {
   if (zoom_factor <= 0) {
     throw std::invalid_argument("Zoom factor must be greater than 0");
@@ -785,8 +865,8 @@ int startImGuiThread() {
   return 0;
 }
 int main(const int argc, char** argv) {
-  system("rw && (v4l2-ctl -d /dev/video0 --set-edid=file=/root/1080P50EDID.txt --fix-edid-checksums && sleep 1 && v4l2-ctl -d /dev/video0 --query-dv-timings && sleep 1 && v4l2-ctl -d /dev/video0 --set-dv-bt-timings query && sleep 1 && v4l2-ctl -d /dev/video0 -V && sleep 1 && v4l2-ctl -d /dev/video0 -v pixelformat=RGB3 && echo -n '/dev/video0:' && v4l2-ctl -d /dev/video0 --log-status) & (v4l2-ctl -d /dev/video1 --set-edid=file=/root/1080P50EDID.txt --fix-edid-checksums && sleep 1 && v4l2-ctl -d /dev/video1 --query-dv-timings && sleep 1 && v4l2-ctl -d /dev/video1 --set-dv-bt-timings query && sleep 1 && v4l2-ctl -d /dev/video1 -V && sleep 1 && v4l2-ctl -d /dev/video1 -v pixelformat=RGB3 && echo -n '/dev/video1:' && v4l2-ctl -d /dev/video1 --log-status) & sleep 3 && wait");
-  system("export DISPLAY=:1 && export LIBGL_ALWAYS_INDIRECT=0 && /opt/TurboVNC/bin/vncserver -noautokill -depth 24 -geometry 466x466 +extension GLX :1");
+  system("rw && (v4l2-ctl -d /dev/video0 --set-edid=file=/root/1080P50EDID.txt --fix-edid-checksums && sleep 1 && v4l2-ctl -d /dev/video0 --query-dv-timings && sleep 1 && v4l2-ctl -d /dev/video0 --set-dv-bt-timings query && sleep 1 && v4l2-ctl -d /dev/video0 -V && sleep 1 && v4l2-ctl -d /dev/video0 -v pixelformat=RGB3 && echo -n '/dev/video0:' && v4l2-ctl -d /dev/video0 --log-status) & (v4l2-ctl -d /dev/video1 --set-edid=file=/root/1080P50EDID.txt --fix-edid-checksums && sleep 1 && v4l2-ctl -d /dev/video1 --query-dv-timings && sleep 1 && v4l2-ctl -d /dev/video1 --set-dv-bt-timings query && sleep 1 && v4l2-ctl -d /dev/video1 -V && sleep 1 && v4l2-ctl -d /dev/video1 -v pixelformat=RGB3 && echo -n '/dev/video1:' && v4l2-ctl -d /dev/video1 --log-status) & sleep 3 && wait && fbset -fb /dev/fb0 -g 1920 1080 1920 1080 24");
+  system("export DISPLAY=:1 && export LIBGL_ALWAYS_INDIRECT=0 && xrefresh && /opt/TurboVNC/bin/vncserver -noautokill -depth 24 -geometry 466x466 +extension GLX :1");
   // Create a window to display the results
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt, argc, argv);
   usleep(1000);
@@ -851,15 +931,21 @@ int main(const int argc, char** argv) {
     }
   }
   fprintf(stderr, "\n[main] Starting main loop now\n");
+  std::vector<unsigned char> greyscaleData;
+  std::vector<Pixel> yuyvData;
   while (shouldLoop) {
     if (isDualInput) {
       background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
       background_task_cap_alt = std::async(std::launch::async, get_frame, buffersAlt, devInfoAlt);
       background_task_cap_main.wait();
       zoom_image(devInfoMain->outputFrame, prevOutputFrameMain, defaultWidth, defaultHeight, zoom_factor_val_main);
+      greyscaleData.clear();
+      yuyvData.clear();
       background_task_cap_alt.wait();
       zoom_image(devInfoAlt->outputFrame, prevOutputFrameAlt, defaultWidth, defaultHeight, zoom_factor_val_alt);
       neon_overlay_rgba32_on_rgb24();
+      greyscaleData = convertRGB888toGrayscaleNEON(devInfoMain->outputFrame, defaultWidth, defaultHeight);
+      yuyvData = convertToYUYV(greyscaleData, defaultWidth, defaultHeight);
       memcpy(fbmem, devInfoMain->outputFrame, screensize);
     } else {
       background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
