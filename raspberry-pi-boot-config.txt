@@ -91,8 +91,10 @@ otg_mode=1
 #otg_mode=0
 #dtoverlay=dwc2,dr_mode=peripheral
 #dtoverlay=dwc2
-dtoverlay=tc358743-cam0
-dtoverlay=tc358743,4lane=1
+dtoverlay=tc358743,4lane=1,cam0
+#dtoverlay=tc358743,4lane=0,cam1
+#dtoverlay=tc358743-cam0
+#dtoverlay=tc358743,4lane=1
 hdmi_cvt 1920 1080 30 3 0 0 0
 #hdmi_cvt 1280 720 60 3 0 0 0
 #hdmi_mode=87
