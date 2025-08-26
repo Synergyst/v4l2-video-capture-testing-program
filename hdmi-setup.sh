@@ -2,7 +2,8 @@
 
 ls /dev/video*
 v4l2-ctl --list-devices
-for m in {1,1} ; do
+#for m in {0,1} ; do
+for m in 1 ; do
   echo
   echo
   echo
@@ -22,7 +23,7 @@ for m in {1,1} ; do
   sleep 1
   v4l2-ctl -d /dev/video$m -v pixelformat=RGB3
   #v4l2-ctl -d /dev/video$m -v pixelformat=UYVY
-  sleep 2
+  sleep 1
   echo -n "/dev/video$m:"
   v4l2-ctl -d /dev/video$m --log-status
 done

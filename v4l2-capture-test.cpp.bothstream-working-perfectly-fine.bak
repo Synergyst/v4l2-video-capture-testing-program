@@ -997,8 +997,8 @@ int main(const int argc, char** argv) {
 
     const size_t frame_bytes = (size_t)devInfoMain->startingSize;
 
-    bool frame_changed = true;
     // Lazy-send: compare against previous captured frame (pre-conversion)
+    bool frame_changed = true;
     if (g_lazy_send && have_prev_frame && prev_raw_frame.size() == frame_bytes) {
       // Note: assumes device delivers full-size frames (RGB24). If bytesused were smaller, you'd compare only valid bytes.
       frame_changed = (std::memcmp(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes) != 0);
@@ -1015,7 +1015,6 @@ int main(const int argc, char** argv) {
       std::memcpy(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes);
     }
 
-    // Lazy-send: compare against previous captured frame (pre-conversion)
     // If not changed, skip both encoding and sending to save CPU/bandwidth
     if (g_lazy_send && !frame_changed) {
       if (!devInfoMain->realAndTargetRatesMatch) {
