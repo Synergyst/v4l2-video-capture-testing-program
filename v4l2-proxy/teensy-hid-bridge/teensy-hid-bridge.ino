@@ -535,6 +535,9 @@ void loop() {
       Keyboard.print(s.charAt(i));
       delay(2);
     }
+  } else if (cmd == "RELALLKEYS") {
+    Serial.println("Releasing all keys!");
+    Keyboard.releaseAll();
   } else if (cmd == "RAW" && n >= 2) {
     Serial.print("RAW: ");
     for (int i = 1; i < n; i++) {

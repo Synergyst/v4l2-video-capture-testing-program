@@ -181,6 +181,9 @@ const HTML_PAGE = `<!doctype html>
             }
             if (typeof msg.controlConnected === 'boolean') {
               ctlState.textContent = msg.controlConnected ? 'ready' : 'retrying...';
+              if (ctlState.textContent === 'ready') {
+                send({type:'relallkeys'});
+              }
             }
             if (msg.note) showToast(String(msg.note), true);
             if (msg.error) showToast('Error: ' + String(msg.error), false);

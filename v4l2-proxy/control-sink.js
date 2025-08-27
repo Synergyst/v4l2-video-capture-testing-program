@@ -1,4 +1,3 @@
-
 // control-sink.js
 // Usage:
 //   npm install serialport @serialport/parser-readline robotjs
@@ -211,6 +210,8 @@ const server = net.createServer((sock) => {
         }
       } else if (msg.type === 'text' && typeof msg.text === 'string') {
         sendToTeensy(`KTEXT ${escapeArg(msg.text)}\n`);
+      } else if (msg.type === 'relallkeys') {
+        sendToTeensy(`RELALLKEYS\n`);
       } else if (msg.type === 'shell' && typeof msg.cmd === 'string') {
         const id = msg.id || Date.now().toString(36);
         exec(msg.cmd, { timeout: 30000 }, (err, stdout, stderr) => {
