@@ -17,10 +17,10 @@ try {
 }
 
 // robotjs is used to convert normalized absolute mouse to relative deltas
-//const robot = require('robotjs');
+const robot = require('robotjs');
 
 const CONTROL_PORT = parseInt(process.env.CONTROL_TCP_PORT || '1444', 10);
-const SERIAL_PORT_PATH = process.env.SERIAL_PORT || (process.platform === 'win32' ? 'COM3' : '/dev/ttyACM0');
+const SERIAL_PORT_PATH = process.env.SERIAL_PORT || (process.platform === 'win32' ? 'COM8' : '/dev/ttyACM0');
 const SERIAL_BAUD = parseInt(process.env.SERIAL_BAUD || '115200', 10);
 
 // Build a version-agnostic "createPort" for serialport
@@ -108,7 +108,7 @@ function sendToTeensy(line) {
 }
 
 // Convert normalized absolute mouse move (0..1) to relative deltas using robotjs
-/*function handleAbsoluteMove(msg) {
+function handleAbsoluteMove(msg) {
   try {
     const screen = robot.getScreenSize();
     const targetX = Math.round(Math.max(0, Math.min(1, msg.x)) * (screen.width - 1));
@@ -117,11 +117,11 @@ function sendToTeensy(line) {
     const dx = targetX - cur.x;
     const dy = targetY - cur.y;
     if (dx === 0 && dy === 0) return;
-    sendToTeensy(`MREL ${dx} ${dy}`);
+    sendToTeensy(`MREL ${dx} ${dy}\n`);
   } catch (e) {
     console.error('Absolute move conversion failed:', e.message);
   }
-}*/
+}
 
 function quoteForTeensy(s) {
   // Wrap in quotes; replace " -> ' for simplicity
@@ -134,9 +134,9 @@ const server = net.createServer((sock) => {
 
   // Send info: local screen size
   try {
-    //const screen = robot.getScreenSize();
-    //sock.write(JSON.stringify({ type: 'info', remoteSize: { w: screen.width, h: screen.height } }) + '\n');
-    sock.write(JSON.stringify({ type: 'info', remoteSize: { w: 1920, h: 1080 } }) + '\n');
+    const screen = robot.getScreenSize();
+    sock.write(JSON.stringify({ type: 'info', remoteSize: { w: screen.width, h: screen.height } }) + '\n');
+    //sock.write(JSON.stringify({ type: 'info', remoteSize: { w: 1920, h: 1080 } }) + '\n');
   } catch (e) {
     console.warn('Could not get screen size:', e.message);
   }
@@ -156,21 +156,21 @@ const server = net.createServer((sock) => {
       if (msg.type === 'mouse') {
         const action = msg.action;
         if (action === 'move') {
-          //handleAbsoluteMove(msg);
+          handleAbsoluteMove(msg);
         } else if (action === 'moveRelative') {
           const dx = Math.trunc(Number.isFinite(msg.dx) ? msg.dx : (msg.x || 0));
           const dy = Math.trunc(Number.isFinite(msg.dy) ? msg.dy : (msg.y || 0));
-          sendToTeensy(`MREL ${dx} ${dy}`);
+          sendToTeensy(`MREL ${dx} ${dy}\n`);
         } else if (action === 'down') {
           const btn = (typeof msg.button === 'number') ? msg.button : 0;
-          sendToTeensy(`MDOWN ${btn}`);
+          sendToTeensy(`MDOWN ${btn}\n`);
         } else if (action === 'up') {
           const btn = (typeof msg.button === 'number') ? msg.button : 0;
-          sendToTeensy(`MUP ${btn}`);
+          sendToTeensy(`MUP ${btn}\n`);
         } else if (action === 'wheel') {
           const dx = Math.trunc(msg.deltaX || 0);
           const dy = Math.trunc(msg.deltaY || 0);
-          sendToTeensy(`MWHEEL ${dx} ${dy}`);
+          sendToTeensy(`MWHEEL ${dx} ${dy}\n`);
         }
       } else if (msg.type === 'keyboard') {
         const action = msg.action;
@@ -225,11 +225,11 @@ const server = net.createServer((sock) => {
         });
       } else if (msg.type === 'query' && msg.what === 'remoteSize') {
         process.stdout.write('Sent remoteSize\n');
-        //const screen = robot.getScreenSize();
-        //sock.write(JSON.stringify({ type: 'info', remoteSize: { w: screen.width, h: screen.height } }) + '\n');
-        sock.write(JSON.stringify({ type: 'info', remoteSize: { w: 1920, h: 1080 } }) + '\n');
+        const screen = robot.getScreenSize();
+        sock.write(JSON.stringify({ type: 'info', remoteSize: { w: screen.width, h: screen.height } }) + '\n');
+        //sock.write(JSON.stringify({ type: 'info', remoteSize: { w: 1920, h: 1080 } }) + '\n');
       } else {
-        sendToTeensy('RAW ' + escapeArg(JSON.stringify(msg)));
+        sendToTeensy('RAW ' + escapeArg(JSON.stringify(msg)) + '\n');
       }
     }
   });
