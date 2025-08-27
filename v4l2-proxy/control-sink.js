@@ -1,8 +1,11 @@
+
 // control-sink.js
 // Usage:
 //   npm install serialport @serialport/parser-readline robotjs
 //   CONTROL_TCP_PORT=1444 SERIAL_PORT=/dev/ttyACM0 node control-sink.js
 
+const { exec } = require('child_process');
+const ENABLE_SYSTEM_CMDS = process.env.ENABLE_SYSTEM_CMDS === '1'; // default off
 const net = require('net');
 const sp = require('serialport');
 let ReadlineParserCtor;
@@ -15,7 +18,7 @@ try {
 }
 
 // robotjs is used to convert normalized absolute mouse to relative deltas
-const robot = require('robotjs');
+//const robot = require('robotjs');
 
 const CONTROL_PORT = parseInt(process.env.CONTROL_TCP_PORT || '1444', 10);
 const SERIAL_PORT_PATH = process.env.SERIAL_PORT || (process.platform === 'win32' ? 'COM3' : '/dev/ttyACM0');
@@ -97,8 +100,8 @@ function sendToTeensy(line) {
     return;
   }
   try {
-    process.stdout.write(line + '\n');
-    serial.write(line + '\n');
+    process.stdout.write(line);
+    serial.write(line);
   } catch (e) {
     console.error('Serial write failed, queuing:', e.message);
     pendingLines.push(line);
@@ -106,7 +109,7 @@ function sendToTeensy(line) {
 }
 
 // Convert normalized absolute mouse move (0..1) to relative deltas using robotjs
-function handleAbsoluteMove(msg) {
+/*function handleAbsoluteMove(msg) {
   try {
     const screen = robot.getScreenSize();
     const targetX = Math.round(Math.max(0, Math.min(1, msg.x)) * (screen.width - 1));
@@ -119,6 +122,11 @@ function handleAbsoluteMove(msg) {
   } catch (e) {
     console.error('Absolute move conversion failed:', e.message);
   }
+}*/
+
+function quoteForTeensy(s) {
+  // Wrap in quotes; replace " -> ' for simplicity
+  return `"${String(s).replace(/"/g, "'")}"`;
 }
 
 // TCP server: accept controller connections (the proxy)
@@ -127,11 +135,13 @@ const server = net.createServer((sock) => {
 
   // Send info: local screen size
   try {
-    const screen = robot.getScreenSize();
-    sock.write(JSON.stringify({ type: 'info', remoteSize: { w: screen.width, h: screen.height } }) + '\n');
+    //const screen = robot.getScreenSize();
+    //sock.write(JSON.stringify({ type: 'info', remoteSize: { w: screen.width, h: screen.height } }) + '\n');
+    sock.write(JSON.stringify({ type: 'info', remoteSize: { w: 1920, h: 1080 } }) + '\n');
   } catch (e) {
     console.warn('Could not get screen size:', e.message);
   }
+
 
   let buf = '';
   sock.on('data', (chunk) => {
@@ -147,7 +157,7 @@ const server = net.createServer((sock) => {
       if (msg.type === 'mouse') {
         const action = msg.action;
         if (action === 'move') {
-          handleAbsoluteMove(msg);
+          //handleAbsoluteMove(msg);
         } else if (action === 'moveRelative') {
           const dx = Math.trunc(Number.isFinite(msg.dx) ? msg.dx : (msg.x || 0));
           const dy = Math.trunc(Number.isFinite(msg.dy) ? msg.dy : (msg.y || 0));
@@ -172,10 +182,51 @@ const server = net.createServer((sock) => {
         const alt = msg.alt ? 1 : 0;
         const meta = msg.meta ? 1 : 0;
         if (action === 'down') {
-          sendToTeensy(`KDOWN ${escapeArg(code)} ${escapeArg(key)} ${ctrl} ${shift} ${alt} ${meta}`);
+          sendToTeensy(`KDOWN ${escapeArg(code)} ${escapeArg(key)} ${ctrl} ${shift} ${alt} ${meta}\n`);
         } else if (action === 'up') {
-          sendToTeensy(`KUP ${escapeArg(code)} ${escapeArg(key)} ${ctrl} ${shift} ${alt} ${meta}`);
+          sendToTeensy(`KUP ${escapeArg(code)} ${escapeArg(key)} ${ctrl} ${shift} ${alt} ${meta}\n`);
         }
+      }  else if (msg.type === 'system' && (msg.action === 'reboot' || msg.action === 'poweroff')) {
+        if (!ENABLE_SYSTEM_CMDS) {
+          sock.write(JSON.stringify({type:'info', error:'system commands disabled'}) + '\n');
+        } else {
+          const act = msg.action;
+          let cmd;
+          if (process.platform === 'win32') {
+            cmd = act === 'reboot' ? 'shutdown /r /t 0' : 'shutdown /s /t 0';
+          } else if (process.platform === 'darwin') {
+            cmd = act === 'reboot' ? 'sudo shutdown -r now' : 'sudo shutdown -h now';
+          } else {
+            cmd = act === 'reboot' ? 'reboot || sudo reboot' : 'systemctl reboot || sudo systemctl reboot';
+          }
+          exec(cmd, (err, stdout, stderr) => {
+            sock.write(JSON.stringify({
+              type:'shellResult',
+              id: act,
+              code: err ? (err.code ?? 1) : 0,
+              stdout: stdout?.toString() || '',
+              stderr: stderr?.toString() || (err?.message || '')
+            }) + '\n');
+          });
+        }
+      } else if (msg.type === 'text' && typeof msg.text === 'string') {
+        sendToTeensy(`KTEXT ${escapeArg(msg.text)}\n`);
+      } else if (msg.type === 'shell' && typeof msg.cmd === 'string') {
+        const id = msg.id || Date.now().toString(36);
+        exec(msg.cmd, { timeout: 30000 }, (err, stdout, stderr) => {
+          sock.write(JSON.stringify({
+            type:'shellResult',
+            id,
+            code: err ? (err.code ?? 1) : 0,
+            stdout: stdout?.toString() || '',
+            stderr: stderr?.toString() || (err?.message || '')
+          }) + '\n');
+        });
+      } else if (msg.type === 'query' && msg.what === 'remoteSize') {
+        process.stdout.write('Sent remoteSize\n');
+        //const screen = robot.getScreenSize();
+        //sock.write(JSON.stringify({ type: 'info', remoteSize: { w: screen.width, h: screen.height } }) + '\n');
+        sock.write(JSON.stringify({ type: 'info', remoteSize: { w: 1920, h: 1080 } }) + '\n');
       } else {
         sendToTeensy('RAW ' + escapeArg(JSON.stringify(msg)));
       }

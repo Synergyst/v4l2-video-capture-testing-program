@@ -687,12 +687,16 @@ int init_dev_stage2(struct buffer*& buffers, struct devInfo*& devInfos) {
     buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     buf.memory = V4L2_MEMORY_MMAP;
     buf.index = i;
-    if (-1 == xioctl(devInfos->fd, VIDIOC_QBUF, &buf))
-      errno_exit("VIDIOC_QBUF");
+    if (-1 == xioctl(devInfos->fd, VIDIOC_QBUF, &buf)) {
+      //fprintf(stderr, "[cap%d] Fatal: V4L2 device (%s) -1 == xioctl(devInfos->fd, VIDIOC_QBUF, &buf) in: init_dev_stage2()\n", devInfos->index, devInfos->device);
+      //errno_exit("VIDIOC_QBUF");
+    }
   }
   devInfos->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  if (-1 == xioctl(devInfos->fd, VIDIOC_STREAMON, &devInfos->type))
-    errno_exit("VIDIOC_STREAMON");
+  if (-1 == xioctl(devInfos->fd, VIDIOC_STREAMON, &devInfos->type)) {
+    //fprintf(stderr, "[cap%d] Fatal: V4L2 device (%s) -1 == xioctl(devInfos->fd, VIDIOC_STREAMON, &devInfos->type) in: init_dev_stage2()\n", devInfos->index, devInfos->device);
+    //errno_exit("VIDIOC_STREAMON");
+  }
   fprintf(stderr, "[cap%d] Initialized V4L2 device: %s\n", devInfos->index, devInfos->device);
   return 0;
 }
@@ -988,6 +992,7 @@ int main(const int argc, char** argv) {
   std::vector<unsigned char> prev_raw_frame;
   bool have_prev_frame = false;
 
+  while (true) {
   while (shouldLoop) {
     accept_new_clients(); // non-blocking accept of new clients
 
@@ -1052,6 +1057,15 @@ int main(const int argc, char** argv) {
       double us = devInfoMain->targetFrameDelayMicros - sw.elapsedMicros();
       if (us > 0) usleep((useconds_t)us);
     }
+  }
+  usleep(2500000);
+  shouldLoop.store(true);
+  deinit_bufs(buffersMain, devInfoMain);
+  if (isDualInput) deinit_bufs(buffersAlt, devInfoAlt);
+  usleep(2500000);
+  /*init_dev_stage1(buffersMain, devInfoMain);
+  init_dev_stage2(buffersMain, devInfoMain);*/
+  init_vars(devInfoMain, buffersMain, 3, allDevicesTargetFramerate, true, true, devNames[0].c_str(), 0);
   }
 
   // allow clients to drain
