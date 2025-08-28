@@ -15,6 +15,9 @@
 //   CONTROL_TCP_HOST, CONTROL_TCP_PORT (destination PC control agent)
 //   HTTP_PORT (default 8080)
 //   AUTH_TOKEN (optional)
+//   ALLOWED_CONTROL_SUBNETS (optional)
+//   TRUSTED_PROXIES (optional)
+//   FALLBACK_IMAGE_URL / FALLBACK_MJPEG_URL (optional defaults)
 
 const http = require('http');
 const net = require('net');
@@ -25,12 +28,16 @@ const TCP_PORT = parseInt(process.env.TCP_PORT || '1337', 10);
 const CONTROL_TCP_HOST = process.env.CONTROL_TCP_HOST || '192.168.168.46';
 const CONTROL_TCP_PORT = parseInt(process.env.CONTROL_TCP_PORT || '1444', 10);
 const HTTP_PORT = parseInt(process.env.HTTP_PORT || '8080', 10);
+
+// Comma-delimited whitelist (CIDR or single IP or exact IPv6). Defaults include your LAN + localhost.
+const ALLOWED_CONTROL_SUBNETS = (process.env.ALLOWED_CONTROL_SUBNETS || '192.168.168.0/24,127.0.0.1').trim();
+
 const WSS_PATH = '/ws';
 const AUTH_TOKEN = process.env.AUTH_TOKEN || null;
 
 // --- Exponential backoff configuration for reconnections ---
 const VIDEO_RETRY_BASE = 1000;  // 1 second
-const VIDEO_RETRY_MAX  = 3000;  // 3 seconds (you set this small; adjust if desired)
+const VIDEO_RETRY_MAX  = 3000; // 3 seconds
 const CONTROL_RETRY_BASE = 1000; // 1 second
 const CONTROL_RETRY_MAX  = 3000; // 3 seconds
 
@@ -40,6 +47,13 @@ let controlRetry = { attempts: 0, timer: null };
 
 // last known remote size (for the HUD)
 let lastRemoteSize = null;
+
+// Video connection state (broadcast to clients)
+let videoConnected = false;
+
+// Optional fallback defaults (can be overridden by client UI)
+const DEFAULT_FALLBACK_IMAGE = process.env.FALLBACK_IMAGE_URL || 'https://totallynotbombcodes.synergyst.club/nosignal.png';
+const DEFAULT_FALLBACK_MJPEG = process.env.FALLBACK_MJPEG_URL || '';
 
 // --- Embedded HTML client ---
 const HTML_PAGE = `<!doctype html>
@@ -66,6 +80,9 @@ const HTML_PAGE = `<!doctype html>
   .toast{background:#111;border:1px solid #333;color:#eee;padding:.5rem .7rem;border-radius:6px;max-width:60ch;white-space:pre-wrap;word-break:break-word}
   .toast.ok{border-color:#2b5}
   .toast.err{border-color:#d55}
+  .small{font-size:12px;padding:.2rem .4rem}
+  input[type="text"]{background:#111;border:1px solid #333;color:#eee;padding:.2rem .4rem;border-radius:4px}
+  select{background:#111;border:1px solid #333;color:#eee;padding:.2rem .4rem;border-radius:4px}
 </style>
 </head>
 <body>
@@ -74,11 +91,24 @@ const HTML_PAGE = `<!doctype html>
   </div>
   <div id="hud">
     <span class="pill">WS: <span id="wsState" class="status">connecting...</span></span>
+    <span class="pill">Video: <span id="vidState" class="status">unknown</span></span>
     <span class="pill">Control: <span id="ctlState" class="status">n/a</span></span>
     <button id="btnCapture">Start Capture</button>
     <button id="btnFull">Fullscreen</button>
     <input id="chkLock" type="checkbox" style="display:none">
     <label for="chkLock" title="Pointer Lock">Lock Cursor</label>
+    <!-- Video fallback controls -->
+    <label class="small" style="margin-left:6px;color:#ddd">No signal:</label>
+    <select id="vfMode" class="small" title="Video fallback mode">
+      <option value="keep">Last frame</option>
+      <option value="image">Image URL</option>
+      <option value="mjpeg">Alt stream</option>
+    </select>
+    <input id="vfURL" type="text" placeholder="Fallback URL (image or MJPEG)" class="small" size="2" style="min-width:24px">
+    <button id="vfApply" class="small">Apply</button>
+    <!-- Remember preferences -->
+    <label style="color:#ddd" class="small"><input id="chkAutoCapture" type="checkbox"> Auto Capture</label>
+    <label style="color:#ddd" class="small"><input id="chkRememberLock" type="checkbox"> Remember Lock</label>
     <span class="pill dim" id="resInfo"></span>
     <!-- New controls -->
     <button id="btnReboot" title="Reboot remote machine">Reboot</button>
@@ -101,17 +131,24 @@ const HTML_PAGE = `<!doctype html>
 (function(){
   const img = document.getElementById('player');
   const wsState = document.getElementById('wsState');
+  const vidState = document.getElementById('vidState');
   const ctlState = document.getElementById('ctlState');
   const resInfo = document.getElementById('resInfo');
   const btnCapture = document.getElementById('btnCapture');
   const chkLock = document.getElementById('chkLock');
+  const chkAutoCapture = document.getElementById('chkAutoCapture');
+  const chkRememberLock = document.getElementById('chkRememberLock');
   const btnFull = document.getElementById('btnFull');
   const btnReboot = document.getElementById('btnReboot');
   const btnPoweroff = document.getElementById('btnPoweroff');
   const btnSendText = document.getElementById('btnSendText');
   const btnShell = document.getElementById('btnShell');
   const btnRelAllKeys = document.getElementById('btnRelAllKeys');
+  const vfModeSel = document.getElementById('vfMode');
+  const vfURLInput = document.getElementById('vfURL');
+  const vfApply = document.getElementById('vfApply');
   const toasts = document.getElementById('toasts');
+
   function showToast(msg, ok=true) {
     const div = document.createElement('div');
     div.className = 'toast ' + (ok ? 'ok' : 'err');
@@ -119,20 +156,55 @@ const HTML_PAGE = `<!doctype html>
     toasts.appendChild(div);
     setTimeout(() => { div.remove(); }, 6000);
   }
+
+  // Default placeholder SVG as a data: URL (no nested backticks)
+  const DEFAULT_PLACEHOLDER_DATAURL = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">' +
+      '<rect width="100%" height="100%" fill="#000"/>' +
+      '<text x="50%" y="50%" fill="#ddd" font-family="system-ui,Arial" font-size="20" text-anchor="middle" dominant-baseline="middle">No video signal</text>' +
+    '</svg>'
+  );
+
   const loc = window.location;
   const wsProto = (loc.protocol === 'https:') ? 'wss:' : 'ws:';
   const wsUrl = wsProto + '//' + loc.host + '${WSS_PATH}';
   const authToken = new URLSearchParams(location.search).get('token') || null;
+
   let ws;
-  let prevUrl = null;
+  let prevUrl = null;        // last object URL for revocation
+  let lastFrameUrl = null;   // last frame object URL or null
   let capturing = false;
   let pointerLocked = false;
   let remoteSize = null; // optional info from server/agent
+  let captureWantedOnFocus = false;    // whether we had capture when we lost focus
+  let pendingWantedCapture = false;    // request to start capture once WS opens
+
+  // preference keys
+  const PREF_VF_MODE = 'vf.mode';
+  const PREF_VF_URL = 'vf.url';
+  const PREF_AUTO_CAPTURE = 'vf.autoCapture';
+  const PREF_REMEMBER_LOCK = 'vf.rememberLock';
+
+  // fallback state (persisted)
+  let fallbackMode = localStorage.getItem(PREF_VF_MODE) || ( '${DEFAULT_FALLBACK_MJPEG ? 'mjpeg' : (DEFAULT_FALLBACK_IMAGE ? 'image' : 'keep')}' );
+  let fallbackURL = localStorage.getItem(PREF_VF_URL) || '${DEFAULT_FALLBACK_MJPEG || DEFAULT_FALLBACK_IMAGE || ''}';
+  let autoCapturePref = localStorage.getItem(PREF_AUTO_CAPTURE) === '1';
+  let rememberLockPref = localStorage.getItem(PREF_REMEMBER_LOCK) === '1';
+
+  // set UI from prefs
+  vfModeSel.value = fallbackMode;
+  vfURLInput.value = fallbackURL;
+  chkAutoCapture.checked = autoCapturePref;
+  chkRememberLock.checked = rememberLockPref;
+
   function setCaptureState(on) {
     capturing = !!on;
     btnCapture.textContent = capturing ? 'Stop Capture' : 'Start Capture';
     if (!capturing && document.pointerLockElement) document.exitPointerLock();
+    // Persist the actual state if user toggles via UI AND user has Auto Capture preference checked
+    // (we don't auto-save capture state unless preference is set)
   }
+
   function setPointerLock(on) {
     if (on && !document.pointerLockElement) {
       img.requestPointerLock?.();
@@ -140,32 +212,96 @@ const HTML_PAGE = `<!doctype html>
       document.exitPointerLock?.();
     }
   }
-  // Map client coords to normalized 0..1 based on displayed image rect
+
   function getNormFromEvent(ev) {
     const rect = img.getBoundingClientRect();
     const x = (ev.clientX - rect.left) / rect.width;
     const y = (ev.clientY - rect.top) / rect.height;
     return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
   }
+
   function send(msg) {
     if (!ws || ws.readyState !== 1) return;
     try { ws.send(JSON.stringify(msg)); } catch(e){}
   }
+
+  function sendRelAllKeys() {
+    send({type:'relallkeys'});
+    send({type:'keyboard', action: 'up', code: 'AltLeft', key: 'Alt', ctrl: false, shift: false, alt: false, meta: false});
+    send({type:'keyboard', action: 'up', code: 'AltRight', key: 'Alt', ctrl: false, shift: false, alt: false, meta: false});
+    setCaptureState(false);
+    showToast('Released all keys and stopped capture', true);
+  }
+
+  // Apply fallback mode: 'keep' (do nothing), 'image' (set placeholder), 'mjpeg' (set img.src to URL)
+  function applyFallback() {
+    if (videoConnected) return; // don't apply fallback when live
+    if (fallbackMode === 'keep') {
+      if (lastFrameUrl) img.src = lastFrameUrl;
+      return;
+    }
+    const url = (fallbackURL && fallbackURL.trim()) ? fallbackURL.trim() : DEFAULT_PLACEHOLDER_DATAURL;
+    if (prevUrl && prevUrl.startsWith('blob:')) {
+      try { URL.revokeObjectURL(prevUrl); } catch(_) {}
+      prevUrl = null;
+    }
+    img.src = url;
+    prevUrl = url;
+  }
+
+  function setFallback(mode, url) {
+    fallbackMode = mode;
+    fallbackURL = url || '';
+    localStorage.setItem(PREF_VF_MODE, fallbackMode);
+    localStorage.setItem(PREF_VF_URL, fallbackURL);
+    applyFallback();
+    showToast('Fallback set: ' + fallbackMode + (fallbackURL ? ' -> ' + fallbackURL : ''), true);
+  }
+
+  function saveAutoCapturePref(v) {
+    autoCapturePref = !!v;
+    localStorage.setItem(PREF_AUTO_CAPTURE, autoCapturePref ? '1' : '0');
+  }
+  function saveRememberLockPref(v) {
+    rememberLockPref = !!v;
+    localStorage.setItem(PREF_REMEMBER_LOCK, rememberLockPref ? '1' : '0');
+  }
+
   function connectWs() {
     ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
+
     ws.onopen = () => {
       wsState.textContent = 'open';
       if (authToken) send({type:'hello', token: authToken});
+
+      // If we previously wanted capture restored, do it now (after WS open)
+      if (pendingWantedCapture) {
+        pendingWantedCapture = false;
+        // Only start capture if user preference or prior-capture requested it.
+        // We assume captureWantedOnFocus was set earlier when blur occurred.
+        if (autoCapturePref || captureWantedOnFocus) {
+          try {
+            setCaptureState(true);
+            if (rememberLockPref) setPointerLock(true);
+            showToast('Auto-restored capture after focus', true);
+          } catch (e) {
+            console.warn('Failed to auto-restore capture:', e && e.message);
+          }
+        }
+      }
     };
     ws.onclose = () => {
       wsState.textContent = 'closed';
       ctlState.textContent = 'n/a';
+      videoConnected = false;
+      vidState.textContent = 'down';
+      applyFallback();
       setTimeout(connectWs, 1000);
     };
     ws.onerror = (e) => {
       wsState.textContent = 'error';
-      ws.close();
+      try { ws.close(); } catch(_) {}
     };
     ws.onmessage = (ev) => {
       if (typeof ev.data === 'string') {
@@ -178,18 +314,22 @@ const HTML_PAGE = `<!doctype html>
             }
             if (typeof msg.controlConnected === 'boolean') {
               ctlState.textContent = msg.controlConnected ? 'ready' : 'retrying...';
-              if (ctlState.textContent === 'ready') {
-                send({type:'relallkeys'});
-              }
+            }
+            if (typeof msg.videoConnected === 'boolean') {
+              videoConnected = !!msg.videoConnected;
+              vidState.textContent = videoConnected ? 'ready' : 'retrying...';
+              if (!videoConnected) applyFallback();
             }
             if (typeof msg.allowedControl === 'boolean') {
-              // show somewhere; simple example:
-              const ctlBadge = document.getElementById('ctlState');
-              if (ctlBadge) ctlBadge.title = msg.allowedControl ? 'Control is enabled' : 'Control is disabled';
+              if (!msg.controlConnected) ctlState.textContent = msg.allowedControl ? 'ready' : 'ready/banned';
             }
-            // Start capture automatically if server requested it
-            if (msg.startCapture) {
-              try { setCaptureState(true); } catch (e) { /* ignore */ }
+            // If server asked to start capture and user preference allows it, start capture
+            if (msg.startCapture && (autoCapturePref || !AUTH_TOKEN)) {
+              try {
+                setCaptureState(true);
+                // attempt pointer lock if remembered
+                if (rememberLockPref) setPointerLock(true);
+              } catch (e) {}
             }
             if (msg.note) showToast(String(msg.note), true);
             if (msg.error) showToast('Error: ' + String(msg.error), false);
@@ -199,20 +339,28 @@ const HTML_PAGE = `<!doctype html>
                          (msg.stderr ? ('\\nSTDERR:\\n' + msg.stderr) : '');
             showToast(text, (msg.code || 0) === 0);
           }
-        } catch {}
+        } catch (e) {}
         return;
       }
-      // binary JPEG
-      const blob = new Blob([ev.data], {type:'image/jpeg'});
-      const url = URL.createObjectURL(blob);
-      img.src = url;
-      if (prevUrl) URL.revokeObjectURL(prevUrl);
-      prevUrl = url;
-      if (img.naturalWidth && img.naturalHeight) {
-        resInfo.textContent = 'Remote: ' + img.naturalWidth + '×' + img.naturalHeight + (remoteSize ? ' • Agent: ' + remoteSize.w + '×' + remoteSize.h : '');
+
+      // Binary JPEG frame arrived -> treat as live video
+      try {
+        const blob = new Blob([ev.data], {type:'image/jpeg'});
+        const url = URL.createObjectURL(blob);
+        img.src = url;
+        if (prevUrl && prevUrl !== url) {
+          try { URL.revokeObjectURL(prevUrl); } catch(_) {}
+        }
+        prevUrl = url;
+        lastFrameUrl = url;
+        videoConnected = true;
+        vidState.textContent = 'ready';
+      } catch (e) {
+        console.error('Failed to handle frame', e);
       }
     };
   }
+
   // Input handlers
   function onMouseMove(ev) {
     if (!capturing) return;
@@ -226,7 +374,7 @@ const HTML_PAGE = `<!doctype html>
   }
   function onMouseDown(ev) {
     if (!capturing) return;
-    const btn = ev.button; // 0 left, 1 middle, 2 right
+    const btn = ev.button;
     send({type:'mouse', action:'down', button: btn});
     ev.preventDefault();
   }
@@ -252,33 +400,41 @@ const HTML_PAGE = `<!doctype html>
     send({type:'keyboard', action, code: ev.code, key: ev.key, ctrl: ev.ctrlKey, shift: ev.shiftKey, alt: ev.altKey, meta: ev.metaKey});
     ev.preventDefault();
   }
+
   // UI bindings
-  btnCapture.addEventListener('click', () => setCaptureState(!capturing));
+  btnCapture.addEventListener('click', () => {
+    const newState = !capturing;
+    setCaptureState(newState);
+  });
+
   btnFull.addEventListener('click', () => {
     if (!document.fullscreenElement) document.documentElement.requestFullscreen?.();
     else document.exitFullscreen?.();
   });
-  chkLock.addEventListener('change', () => setPointerLock(chkLock.checked));
+
+  chkLock.addEventListener('change', () => {
+    setPointerLock(chkLock.checked);
+    // Save preference if requested
+    if (rememberLockPref) {
+      saveRememberLockPref(true);
+    }
+  });
+
+  // Save preference toggles
+  chkAutoCapture.addEventListener('change', () => saveAutoCapturePref(chkAutoCapture.checked));
+  chkRememberLock.addEventListener('change', () => saveRememberLockPref(chkRememberLock.checked));
+
   document.addEventListener('pointerlockchange', () => {
     pointerLocked = document.pointerLockElement === img;
     chkLock.checked = pointerLocked;
   });
+
   // New buttons for system control and text/shell
-  btnReboot.addEventListener('click', () => {
-    if (confirm('Send reboot to control agent?')) {
-      send({type:'system', action:'reboot'});
-    }
-  });
-  btnPoweroff.addEventListener('click', () => {
-    if (confirm('Send poweroff to control agent?')) {
-      send({type:'system', action:'poweroff'});
-    }
-  });
+  btnReboot.addEventListener('click', () => { if (confirm('Send reboot to control agent?')) send({type:'system', action:'reboot'}); });
+  btnPoweroff.addEventListener('click', () => { if (confirm('Send poweroff to control agent?')) send({type:'system', action:'poweroff'}); });
   btnSendText.addEventListener('click', () => {
     const text = prompt('Enter text to send as keystrokes:', '');
-    if (text != null && text !== '') {
-      send({type:'text', text});
-    }
+    if (text != null && text !== '') send({type:'text', text});
   });
   btnShell.addEventListener('click', () => {
     const cmd = prompt('Shell command to execute on the control agent:', '');
@@ -287,24 +443,93 @@ const HTML_PAGE = `<!doctype html>
       send({type:'shell', cmd, id});
     }
   });
-  btnRelAllKeys.addEventListener('click', () => {
-    if (confirm('Release all potentially held down keys?')) {
-      send({type:'relallkeys'});
+  btnRelAllKeys.addEventListener('click', () => { if (confirm('Release all potentially held down keys?')) sendRelAllKeys(); });
+
+  // fallback apply UI
+  vfApply.addEventListener('click', () => {
+    const mode = vfModeSel.value;
+    const url = vfURLInput.value.trim();
+    setFallback(mode, url);
+  });
+
+  // keyboard/focus safety
+  window.addEventListener('blur', () => {
+    if (capturing) {
+      captureWantedOnFocus = true;
+      sendRelAllKeys();
+    } else {
+      captureWantedOnFocus = false;
     }
   });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      // page hidden: behave like blur
+      if (capturing) {
+        captureWantedOnFocus = true;
+        sendRelAllKeys();
+      } else {
+        captureWantedOnFocus = false;
+      }
+    } else {
+      // page visible again: attempt restore if desired
+      // if we want to restore (autoCapturePref or previously capturing), ensure WS and request capture
+      if (autoCapturePref || captureWantedOnFocus) {
+        // if WS is already open, restore immediately
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          setCaptureState(true);
+          if (rememberLockPref) setPointerLock(true);
+          showToast('Capture restored on visibility', true);
+          captureWantedOnFocus = false;
+        } else {
+          // otherwise request that connectWs restores capture once open
+          pendingWantedCapture = true;
+          // if ws not created or closed, start connect
+          if (!ws || ws.readyState === WebSocket.CLOSED) connectWs();
+        }
+      }
+    }
+  });
+  // Also listen for explicit focus (some browsers fire focus instead of visibilitychange)
+  window.addEventListener('focus', () => {
+    if (autoCapturePref || captureWantedOnFocus) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        setCaptureState(true);
+        if (rememberLockPref) setPointerLock(true);
+        showToast('Capture restored on focus', true);
+        captureWantedOnFocus = false;
+      } else {
+        pendingWantedCapture = true;
+        if (!ws || ws.readyState === WebSocket.CLOSED) connectWs();
+      }
+    }
+  });
+  window.addEventListener('pagehide', () => { if (capturing) sendRelAllKeys(); });
+  window.addEventListener('beforeunload', () => {
+    if (capturing) {
+      try { send({ type: 'relallkeys' }); } catch (e) {}
+      setCaptureState(false);
+    }
+  });
+  document.addEventListener('pointerlockchange', () => { if (!document.pointerLockElement && capturing) sendRelAllKeys(); });
+
   // Global shortcuts
-  window.addEventListener('keydown', (ev) => {
-    if (capturing) onKey(ev, 'down');
-  }, {capture:true});
+  window.addEventListener('keydown', (ev) => { if (capturing) onKey(ev, 'down'); }, {capture:true});
   window.addEventListener('keyup', (ev) => { if (capturing) onKey(ev, 'up'); }, {capture:true});
+
   // Mouse on image
   img.addEventListener('mousemove', onMouseMove, {passive:false});
   img.addEventListener('mousedown', onMouseDown, {passive:false});
   img.addEventListener('mouseup', onMouseUp, {passive:false});
   img.addEventListener('wheel', onWheel, {passive:false});
   img.addEventListener('contextmenu', (e) => { if (capturing) e.preventDefault(); });
-  // Start
+
+  // Start WS
   connectWs();
+
+  // set initial fallback into UI (do not override live frames)
+  vfModeSel.value = fallbackMode;
+  vfURLInput.value = fallbackURL;
+  if (!videoConnected) applyFallback();
 })();
 </script>
 </body>
@@ -343,66 +568,126 @@ function broadcastInfo(obj) {
   }
 }
 
-/**
- * Normalize: strip IPv6 prefix ::ffff: if present.
- * Returns IPv4 or IPv6 string.
- */
+// --- Client IP / allowed control helpers ---
+
+const TRUSTED_PROXIES = (process.env.TRUSTED_PROXIES || '127.0.0.1,::1').split(',').map(s => s.trim()).filter(Boolean);
+
 function normalizeRemoteIp(ip) {
   if (!ip) return '';
-  // If behind a proxy, ip may be a comma-separated list; keep first
   if (ip.includes(',')) ip = ip.split(',')[0].trim();
-  // strip IPv6-mapped IPv4
   if (ip.startsWith('::ffff:')) return ip.substring(7);
-  // strip zone id on IPv6 (e.g. fe80::1%eth0)
   const pct = ip.indexOf('%');
   if (pct !== -1) ip = ip.substring(0, pct);
   return ip;
 }
+function parseXFF(xffHeader) {
+  if (!xffHeader) return '';
+  const parts = String(xffHeader).split(',').map(p => p.trim()).filter(Boolean);
+  return parts.length ? parts[0] : '';
+}
+function getClientIp(req) {
+  let peer = req.socket && req.socket.remoteAddress ? String(req.socket.remoteAddress) : '';
+  peer = normalizeRemoteIp(peer);
+  if (peer && TRUSTED_PROXIES.includes(peer)) {
+    const xff = req.headers['x-forwarded-for'] || req.headers['x-real-ip'];
+    const client = normalizeRemoteIp(parseXFF(xff));
+    if (client) return client;
+    return peer;
+  }
+  return peer;
+}
 
-/**
- * Return true if ip is in 192.168.168.0/24 (or localhost).
- * Only basic IPv4 check here (fast and fine for your LAN).
- */
-function isLocalLan_192_168_168_0_24(ip) {
+// IPv4 helpers for CIDR matching
+function ipv4ToInt(ip) {
+  const m = ip.split('.');
+  if (m.length !== 4) return null;
+  const a = Number(m[0]), b = Number(m[1]), c = Number(m[2]), d = Number(m[3]);
+  if ([a,b,c,d].some(x => Number.isNaN(x) || x < 0 || x > 255)) return null;
+  return ((a << 24) >>> 0) | ((b << 16) >>> 0) | ((c << 8) >>> 0) | (d >>> 0);
+}
+function makeMask(prefix) {
+  if (prefix <= 0) return 0 >>> 0;
+  if (prefix >= 32) return 0xffffffff >>> 0;
+  return ((0xffffffff << (32 - prefix)) >>> 0);
+}
+function parseAllowedControlSubnets(str) {
+  const out = [];
+  if (!str) return out;
+  for (const raw of str.split(',')) {
+    const token = raw.trim();
+    if (!token) continue;
+    if (token.includes('/')) {
+      const parts = token.split('/');
+      if (parts.length !== 2) { console.warn('Invalid allowed token (bad CIDR):', token); continue; }
+      const base = parts[0].trim();
+      const prefix = Number(parts[1].trim());
+      const baseInt = ipv4ToInt(base);
+      if (baseInt === null || Number.isNaN(prefix) || prefix < 0 || prefix > 32) {
+        console.warn('Invalid allowed CIDR token:', token);
+        continue;
+      }
+      const mask = makeMask(prefix);
+      const netBase = (baseInt & mask) >>> 0;
+      out.push({ type: 'cidr', base: netBase >>> 0, mask: mask >>> 0, raw: token });
+      continue;
+    }
+    const ipInt = ipv4ToInt(token);
+    if (ipInt !== null) {
+      out.push({ type: 'cidr', base: ipInt >>> 0, mask: 0xffffffff >>> 0, raw: token });
+      continue;
+    }
+    out.push({ type: 'exact', ip: token, raw: token });
+  }
+  return out;
+}
+
+const ALLOWED_CONTROL_RULES = parseAllowedControlSubnets(ALLOWED_CONTROL_SUBNETS);
+console.log('Allowed control subnets:', ALLOWED_CONTROL_RULES.map(r => r.raw).join(', '));
+
+function isControlIpAllowed(rawIp) {
+  const ip = normalizeRemoteIp(String(rawIp || ''));
   if (!ip) return false;
-  ip = normalizeRemoteIp(ip);
-  if (ip === '127.0.0.1' || ip === '::1') return true;
-  // Only accept IPv4 here
-  const m = ip.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-  if (!m) return false;
-  const a = Number(m[1]), b = Number(m[2]), c = Number(m[3]);
-  // 192.168.168.0/24:
-  return a === 192 && b === 168 && c === 168;
+  if (ip === '127.0.0.1' || ip === '::1') return ALLOWED_CONTROL_RULES.length === 0 ? true :
+    ALLOWED_CONTROL_RULES.some(r => (r.type === 'exact' && (r.ip === '127.0.0.1' || r.ip === '::1')) || (r.type === 'cidr' && r.base === 0xffffffff && r.mask === 0xffffffff));
+  const ipv4 = ipv4ToInt(ip);
+  if (ipv4 !== null) {
+    const ipInt = ipv4 >>> 0;
+    for (const r of ALLOWED_CONTROL_RULES) {
+      if (r.type === 'cidr') {
+        if (((ipInt & r.mask) >>> 0) === (r.base >>> 0)) return true;
+      } else if (r.type === 'exact') {
+        if (r.ip === ip) return true;
+      }
+    }
+    return false;
+  }
+  for (const r of ALLOWED_CONTROL_RULES) {
+    if (r.type === 'exact' && r.ip === ip) return true;
+  }
+  return false;
 }
 
 // On new browser/websocket connection
 wss.on('connection', (ws, req) => {
-  // determine client IP. Prefer X-Forwarded-For if present (useful behind proxies).
-  // WARNING: only trust X-Forwarded-For if you control the reverse proxy.
-  let rawIp = (req.headers && req.headers['x-forwarded-for']) || req.socket.remoteAddress;
-  rawIp = normalizeRemoteIp(String(rawIp || ''));
-  const allowed = isLocalLan_192_168_168_0_24(rawIp);
-
-  // attach for later checks
+  const rawIp = normalizeRemoteIp(getClientIp(req));
+  const allowed = isControlIpAllowed(rawIp);
   ws._clientIP = rawIp;
   ws._allowedControl = allowed;
-
   console.log('Browser connected. Clients:', wss.clients.size, 'IP:', rawIp, 'controlAllowed:', allowed);
-  //console.log('Browser connected. Clients:', wss.clients.size);
 
   // send initial info so UI shows status immediately
   try {
     ws.send(JSON.stringify({
       type: 'info',
       controlConnected,
+      videoConnected,
       allowedControl: allowed,
       ...(lastRemoteSize ? { remoteSize: lastRemoteSize } : {}),
-      // if no auth token is required, ask the client to start capture automatically
       ...(AUTH_TOKEN ? {} : { startCapture: true })
     }));
   } catch (e) {}
 
-  // If auth is NOT required, make this first connection the controller right away
+  // If auth is NOT required, make this first connection the controller (only if allowed)
   if (!AUTH_TOKEN && !controller && allowed) {
     controller = ws;
   }
@@ -413,15 +698,12 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('message', (data, isBinary) => {
-    if (isBinary) return; // we don't expect binary from client
+    if (isBinary) return;
     let msg;
     try { msg = JSON.parse(data.toString('utf8')); } catch { return; }
 
     // If this client is not allowedControl, ignore control-related messages.
     if (!ws._allowedControl) {
-      // we still allow read-only viewing; but refuse control attempts
-      // Optionally notify the client
-      try { ws.send(JSON.stringify({ type: 'info', error: 'control_not_allowed_from_your_ip' })); } catch {}
       return;
     }
 
@@ -436,7 +718,7 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
-    // Only accept input from controller (or first sender)
+    // Only accept input from controller
     if (!controller) controller = ws;
     if (ws !== controller) return;
 
@@ -476,6 +758,45 @@ function connectVideo() {
     console.log('Connected to MJPEG source.');
     acc = Buffer.alloc(0);
     resetVideoRetry();
+    // Mark video as connected and notify clients
+    videoConnected = true;
+    broadcastInfo({ videoConnected: true });
+
+    // OPTIONAL: Ask allowed clients to stop capture (and release keys)
+    for (const client of wss.clients) {
+      if (client && client.readyState === WebSocket.OPEN && client._allowedControl) {
+        try {
+          client.send(JSON.stringify({ type: 'info', startCapture: false }));
+          client.send(JSON.stringify({ type: 'relallkeys' }));
+        } catch (e) {}
+      }
+    }
+
+    // --- NEW: Try to bring control connection up immediately when video returns ---
+    // If control isn't connected, reset control retry and attempt immediate connect.
+    if (!controlConnected) {
+      console.log('Video restored: attempting immediate control connect...');
+      resetControlRetry(); // clear any backoff so connectControl() runs now
+      // Attempt immediate control connect. connectControl() uses net.connect and its own handlers.
+      try {
+        connectControl();
+      } catch (e) {
+        console.warn('Immediate control connect failed:', e && e.message);
+      }
+    }
+
+    // --- NEW: Ask allowed clients to start capture (so they resume sending input) ---
+    // Only send to open WebSocket clients that were marked as allowed for control.
+    for (const client of wss.clients) {
+      if (client && client.readyState === WebSocket.OPEN) {
+        // some clients may have _allowedControl set (we mark this on connection)
+        if (client._allowedControl) {
+          try {
+            client.send(JSON.stringify({ type: 'info', startCapture: true }));
+          } catch (e) { /* ignore send errors per-client */ }
+        }
+      }
+    }
   });
 
   videoSock.on('data', (chunk) => {
@@ -490,10 +811,9 @@ function connectVideo() {
       start = acc.indexOf(Buffer.from([0xff, 0xd8]));
       end = start >= 0 ? acc.indexOf(Buffer.from([0xff, 0xd9]), start + 2) : -1;
     }
-    // keep acc as any trailing partial data
     const MAX_ACC = 1024 * 1024;
     if (acc.length > MAX_ACC) {
-      acc = acc.slice(-65536); // keep last 64KB as a fallback
+      acc = acc.slice(-65536);
     }
   });
 
@@ -501,6 +821,9 @@ function connectVideo() {
     console.log('Video TCP closed, retrying with backoff...');
     try { videoSock.destroy(); } catch (_) {}
     videoSock = null;
+    // mark video disconnectedand notify clients
+    videoConnected = false;
+    broadcastInfo({ videoConnected: false });
     scheduleVideoRetry();
   });
 
@@ -508,11 +831,13 @@ function connectVideo() {
     console.error('Video TCP error:', err.message);
     try { videoSock.destroy(); } catch (_) {}
     videoSock = null;
+    // mark video disconnected and notify clients
+    videoConnected = false;
+    broadcastInfo({ videoConnected: false });
     scheduleVideoRetry();
   });
 
-  // Optional: keep-alive
-  try { videoSock.setKeepAlive(true, 30000); } catch (_) {}
+  try { videoSock.setKeepAlive(true, 3000); } catch (_) {}
 }
 
 // --- TCP: Control connection to destination PC ---
@@ -521,10 +846,7 @@ let controlQueue = [];
 let controlConnected = false;
 
 function scheduleControlRetry() {
-  if (controlRetry.timer) {
-    // already scheduled
-    return;
-  }
+  if (controlRetry.timer) return;
   broadcastInfo({ controlConnected: false });
   const base = CONTROL_RETRY_BASE;
   const max = CONTROL_RETRY_MAX;
@@ -553,12 +875,10 @@ function connectControl() {
     broadcastInfo({ controlConnected: true, ...(lastRemoteSize ? { remoteSize: lastRemoteSize } : {}) });
     flushControlQueue();
     resetControlRetry();
-    // Optionally ask for remoteSize
     try { controlSock.write(JSON.stringify({type:'query', what:'remoteSize'}) + '\n'); } catch (e) {}
   });
 
   controlSock.on('data', (chunk) => {
-    // Expect JSON lines from agent
     const lines = chunk.toString('utf8').split(/\r?\n/).filter(Boolean);
     for (const line of lines) {
       try {
@@ -570,9 +890,7 @@ function connectControl() {
           if (obj.remoteSize) lastRemoteSize = obj.remoteSize;
           broadcastInfo(obj);
         }
-      } catch (e) {
-        // ignore non-json or partial data
-      }
+      } catch (e) {}
     }
   });
 
@@ -592,8 +910,7 @@ function connectControl() {
     scheduleControlRetry();
   });
 
-  // Optional: keep-alive
-  try { controlSock.setKeepAlive(true, 30000); } catch (_) {}
+  try { controlSock.setKeepAlive(true, 3000); } catch (_) {}
 }
 
 // --- Helpers to send to control TCP ---

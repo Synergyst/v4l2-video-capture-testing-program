@@ -17,7 +17,7 @@ try {
 }
 
 // robotjs is used to convert normalized absolute mouse to relative deltas
-const robot = require('robotjs');
+//const robot = require('robotjs');
 
 const CONTROL_PORT = parseInt(process.env.CONTROL_TCP_PORT || '1444', 10);
 const SERIAL_PORT_PATH = process.env.SERIAL_PORT || (process.platform === 'win32' ? 'COM8' : '/dev/ttyACM0');
@@ -108,7 +108,7 @@ function sendToTeensy(line) {
 }
 
 // Convert normalized absolute mouse move (0..1) to relative deltas using robotjs
-function handleAbsoluteMove(msg) {
+/*function handleAbsoluteMove(msg) {
   try {
     const screen = robot.getScreenSize();
     const targetX = Math.round(Math.max(0, Math.min(1, msg.x)) * (screen.width - 1));
@@ -121,7 +121,7 @@ function handleAbsoluteMove(msg) {
   } catch (e) {
     console.error('Absolute move conversion failed:', e.message);
   }
-}
+}*/
 
 function quoteForTeensy(s) {
   // Wrap in quotes; replace " -> ' for simplicity
@@ -134,9 +134,9 @@ const server = net.createServer((sock) => {
 
   // Send info: local screen size
   try {
-    const screen = robot.getScreenSize();
-    sock.write(JSON.stringify({ type: 'info', remoteSize: { w: screen.width, h: screen.height } }) + '\n');
-    //sock.write(JSON.stringify({ type: 'info', remoteSize: { w: 1920, h: 1080 } }) + '\n');
+    //const screen = robot.getScreenSize();
+    //sock.write(JSON.stringify({ type: 'info', remoteSize: { w: screen.width, h: screen.height } }) + '\n');
+    sock.write(JSON.stringify({ type: 'info', remoteSize: { w: 1920, h: 1080 } }) + '\n');
   } catch (e) {
     console.warn('Could not get screen size:', e.message);
   }
@@ -156,7 +156,7 @@ const server = net.createServer((sock) => {
       if (msg.type === 'mouse') {
         const action = msg.action;
         if (action === 'move') {
-          handleAbsoluteMove(msg);
+          //handleAbsoluteMove(msg);
         } else if (action === 'moveRelative') {
           const dx = Math.trunc(Number.isFinite(msg.dx) ? msg.dx : (msg.x || 0));
           const dy = Math.trunc(Number.isFinite(msg.dy) ? msg.dy : (msg.y || 0));
@@ -225,9 +225,9 @@ const server = net.createServer((sock) => {
         });
       } else if (msg.type === 'query' && msg.what === 'remoteSize') {
         process.stdout.write('Sent remoteSize\n');
-        const screen = robot.getScreenSize();
-        sock.write(JSON.stringify({ type: 'info', remoteSize: { w: screen.width, h: screen.height } }) + '\n');
-        //sock.write(JSON.stringify({ type: 'info', remoteSize: { w: 1920, h: 1080 } }) + '\n');
+        //const screen = robot.getScreenSize();
+        //sock.write(JSON.stringify({ type: 'info', remoteSize: { w: screen.width, h: screen.height } }) + '\n');
+        sock.write(JSON.stringify({ type: 'info', remoteSize: { w: 1920, h: 1080 } }) + '\n');
       } else {
         sendToTeensy('RAW ' + escapeArg(JSON.stringify(msg)) + '\n');
       }
