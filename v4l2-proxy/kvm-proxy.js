@@ -63,10 +63,10 @@ const HTML_PAGE = `<!doctype html>
   #hud .pill{padding:.35rem .6rem;border-radius:999px;border:1px solid #333;background:#111}
   #hud .status{font-weight:600}
   #hud .dim{opacity:.7}
-  #help{position:fixed;right:8px;top:8px;max-width:44ch;background:#111;border:1px solid #333;border-radius:8px;padding:.6rem .8rem;color:#ddd;font:13px system-ui;z-index:19}
-  #help h3{margin:.2rem 0 .4rem 0;font-size:14px}
-  #help ul{margin:.2rem 0;padding-left:1.1rem}
-  #help li{margin:.2rem 0}
+  #help{position:fixed;right:8px;top:8px;max-width:44ch;background:#111;opacity:.68;border:1px solid #333;border-radius:8px;padding:.6rem .8rem;color:#ddd;font:13px system-ui;z-index:19}
+  #help h3{margin:.2rem 0 .4rem 0;font-size:14px;opacity:1.0}
+  #help ul{margin:.2rem 0;padding-left:1.1rem;opacity:1.0}
+  #help li{margin:.2rem 0;opacity:1.0}
   #toasts{position:fixed;left:8px;bottom:8px;display:flex;flex-direction:column;gap:6px;z-index:30}
   .toast{background:#111;border:1px solid #333;color:#eee;padding:.5rem .7rem;border-radius:6px;max-width:60ch;white-space:pre-wrap;word-break:break-word;opacity:1;transition:opacity 0.6s ease-out}
   .toast.ok{border-color:#2b5}
