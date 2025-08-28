@@ -85,15 +85,15 @@ const HTML_PAGE = `<!doctype html>
 
   <div id="hud">
     <span class="pill">WS: <span id="wsState" class="status">connecting...</span></span>
-    <span class="pill">Video: <span id="vidState" class="status">unknown</span></span>
-    <span class="pill">Control: <span id="ctlState" class="status">n/a</span></span>
+    <span class="pill">Video: <span id="vidState" class="status">stream lost</span></span>
+    <span class="pill">Control: <span id="ctlState" class="status">agent lost</span></span>
     <button id="btnCapture">Start Capture</button>
     <button id="btnFull">Fullscreen</button>
     <input id="chkLock" type="checkbox" style="display:none">
     <label for="chkLock" title="Pointer Lock">Lock Cursor</label>
 
     <!-- Video fallback controls -->
-    <label class="small" style="margin-left:6px;color:#ddd">No signal:</label>
+    <!--<label class="small" style="margin-left:6px;color:#ddd">No signal:</label>-->
     <select id="vfMode" class="small" title="Video fallback mode">
       <option value="keep">Last frame</option>
       <option value="image">Image URL</option>
@@ -207,6 +207,13 @@ const HTML_PAGE = `<!doctype html>
   const PREF_VF_URL = 'vf.url';
   const PREF_AUTO_CAPTURE = 'vf.autoCapture';
   const PREF_REMEMBER_LOCK = 'vf.rememberLock';
+  // remember Help panel visibility
+  const PREF_HELP_OPEN = 'ui.helpOpen';
+  const savedHelpOpen = localStorage.getItem(PREF_HELP_OPEN);
+  if (savedHelpOpen === '0') {
+    helpPane.style.display = 'none';
+    btnHelp.style.display = 'inline-block';
+  }
   let fallbackMode = localStorage.getItem(PREF_VF_MODE) || ( '${DEFAULT_FALLBACK_MJPEG ? 'mjpeg' : (DEFAULT_FALLBACK_IMAGE ? 'image' : 'keep')}' );
   let fallbackURL = localStorage.getItem(PREF_VF_URL) || '${DEFAULT_FALLBACK_MJPEG || DEFAULT_FALLBACK_IMAGE || ''}';
   let autoCapturePref = localStorage.getItem(PREF_AUTO_CAPTURE) === '1';
@@ -307,7 +314,7 @@ const HTML_PAGE = `<!doctype html>
     ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
-      wsState.textContent = 'open';
+      wsState.textContent = 'online';
       if (authToken) send({type:'hello', token: authToken});
       if (pendingWantedCapture) {
         pendingWantedCapture = false;
@@ -321,10 +328,10 @@ const HTML_PAGE = `<!doctype html>
       }
     };
     ws.onclose = () => {
-      wsState.textContent = 'closed';
-      ctlState.textContent = 'n/a';
+      wsState.textContent = 'offline';
+      ctlState.textContent = 'agent lost';
       videoConnected = false;
-      vidState.textContent = 'down';
+      vidState.textContent = 'stream lost';
       applyFallback();
       // reconnect WS
       setTimeout(connectWs, 1000);
@@ -342,16 +349,19 @@ const HTML_PAGE = `<!doctype html>
             remoteSize = msg.remoteSize;
             resInfo.textContent = 'Remote: ' + remoteSize.w + '×' + remoteSize.h;
           }
-          if (typeof msg.controlConnected === 'boolean') {
-            ctlState.textContent = msg.controlConnected ? 'ready' : 'retrying...';
-          }
           if (typeof msg.videoConnected === 'boolean') {
             videoConnected = !!msg.videoConnected;
-            vidState.textContent = videoConnected ? 'ready' : 'retrying...';
+            vidState.textContent = videoConnected ? 'online' : 'retrying...';
             if (!videoConnected) applyFallback();
           }
           if (typeof msg.allowedControl === 'boolean') {
-            if (!msg.controlConnected) ctlState.textContent = msg.allowedControl ? 'ready' : 'ready/banned';
+            allowedControl = !!msg.allowedControl;
+          }
+          if (typeof msg.controlConnected === 'boolean') {
+            controlIsConnected = !!msg.controlConnected;
+          }
+          if (controlIsConnected !== null) {
+            ctlState.textContent = controlIsConnected ? (allowedControl === false ? 'online+banned' : 'online') : 'retrying...';
           }
           if (msg.startCapture && (autoCapturePref || !AUTH_TOKEN)) {
             try {
@@ -380,7 +390,7 @@ const HTML_PAGE = `<!doctype html>
         prevUrl = url;
         lastFrameUrl = url;
         videoConnected = true;
-        vidState.textContent = 'ready';
+        vidState.textContent = 'online';
       } catch (e) {
         console.error('Failed to handle frame', e);
       }
@@ -389,6 +399,18 @@ const HTML_PAGE = `<!doctype html>
 
   // Event handlers & UI wiring
   btnCapture.addEventListener('click', () => { setCaptureState(!capturing); });
+
+  helpClose.addEventListener('click', () => {
+    helpPane.style.display = 'none';
+    btnHelp.style.display = 'inline-block';
+    localStorage.setItem(PREF_HELP_OPEN, '0');
+  });
+
+  btnHelp.addEventListener('click', () => {
+    helpPane.style.display = 'block';
+    btnHelp.style.display = 'none';
+    localStorage.setItem(PREF_HELP_OPEN, '1');
+  });
 
   // Show fallback whenever the image errors (e.g., before first frame or broken src)
   img.addEventListener('error', () => {
@@ -598,7 +620,7 @@ function broadcastInfo(obj) {
 }
 
 // ----- IP helpers (trusted proxies, CIDR whitelist) -----
-const TRUSTED_PROXIES = (process.env.TRUSTED_PROXIES || '127.0.0.1,::1').split(',').map(s => s.trim()).filter(Boolean);
+const TRUSTED_PROXIES = (process.env.TRUSTED_PROXIES || '127.0.0.1,::1,192.168.168.170').split(',').map(s => s.trim()).filter(Boolean);
 
 function normalizeRemoteIp(ip) {
   if (!ip) return '';
