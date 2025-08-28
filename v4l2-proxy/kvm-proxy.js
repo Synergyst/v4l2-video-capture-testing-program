@@ -33,10 +33,10 @@ const WSS_PATH = '/ws';
 const AUTH_TOKEN = process.env.AUTH_TOKEN || null;
 
 // --- Exponential backoff configuration for reconnections ---
-const VIDEO_RETRY_BASE = 1000;  // 1s
-const VIDEO_RETRY_MAX = 30000;  // 30s
-const CONTROL_RETRY_BASE = 1000;
-const CONTROL_RETRY_MAX = 30000;
+const VIDEO_RETRY_BASE = 1000;   // 1s
+const VIDEO_RETRY_MAX = 3000;    // 3s
+const CONTROL_RETRY_BASE = 1000; // 1s
+const CONTROL_RETRY_MAX = 3000;  // 3s
 
 let videoRetry = { attempts: 0, timer: null };
 let controlRetry = { attempts: 0, timer: null };
@@ -80,7 +80,7 @@ const HTML_PAGE = `<!doctype html>
 </head>
 <body>
   <div id="wrap">
-    <img id="player" alt="MJPEG stream">
+    <img id="player" alt="MJPEG stream" src="${DEFAULT_FALLBACK_MJPEG || DEFAULT_FALLBACK_IMAGE || ''}">
   </div>
 
   <div id="hud">
@@ -390,6 +390,11 @@ const HTML_PAGE = `<!doctype html>
   // Event handlers & UI wiring
   btnCapture.addEventListener('click', () => { setCaptureState(!capturing); });
 
+  // Show fallback whenever the image errors (e.g., before first frame or broken src)
+  img.addEventListener('error', () => {
+    if (!videoConnected) applyFallback();
+  });
+
   btnFull.addEventListener('click', () => {
     if (!document.fullscreenElement) document.documentElement.requestFullscreen?.();
     else document.exitFullscreen?.();
@@ -575,7 +580,6 @@ const httpServer = http.createServer((req, res) => {
   res.writeHead(404);
   res.end('Not found');
 });
-
 const wss = new WebSocket.Server({ server: httpServer, path: WSS_PATH });
 
 // controller, broadcast helpers
@@ -793,7 +797,7 @@ function connectVideo() {
       broadcastJPEG(jpeg);
       acc = acc.slice(end + 2);
       start = acc.indexOf(Buffer.from([0xff, 0xd8]));
-      end = start >= 0 ? acc.indexOf(Buffer.from([0xff, 0xd9]), start + 2) : -1;
+      end = start >= 0 ? acc.indexOf(Buffer.from([0xff, 0xd9]), sart + 2) : -1;
     }
     const MAX_ACC = 1024 * 1024;
     if (acc.length > MAX_ACC) acc = acc.slice(-65536);
@@ -817,7 +821,7 @@ function connectVideo() {
     scheduleVideoRetry();
   });
 
-  try { videoSock.setKeepAlive(true, 30000); } catch (_) {}
+  try { videoSock.setKeepAlive(true, VIDEO_RETRY_MAX); } catch (_) {}
 }
 
 // --- TCP: Control connection to destination PC ---
@@ -881,7 +885,7 @@ function connectControl() {
     scheduleControlRetry();
   });
 
-  try { controlSock.setKeepAlive(true, 30000); } catch (_) {}
+  try { controlSock.setKeepAlive(true, CONTROL_RETRY_MAX); } catch (_) {}
 }
 
 // queue helpers
