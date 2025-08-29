@@ -140,6 +140,16 @@ struct buffer* buffersAlt;
 struct devInfo* devInfoMain;
 struct devInfo* devInfoAlt;
 
+static std::thread s_restart_thread;
+static std::mutex s_restart_mtx;
+static std::condition_variable s_restart_cv;
+static std::atomic<bool> s_restart_requested{false};
+static std::atomic<bool> s_restarting{false};
+static std::atomic<bool> done_flag{false}; // use instead of 'done' if you like
+// Track current streaming resolution even when devices are torn down
+static std::atomic<int> g_cur_width{defaultWidth};
+static std::atomic<int> g_cur_height{defaultHeight};
+
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
   exit(EXIT_FAILURE);
@@ -810,6 +820,11 @@ int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_f
   init_dev_stage2(bufs, devInfos);
   devInfos->outputFrame = (unsigned char*)calloc((devInfos->startingWidth * devInfos->startingHeight * byteScaler), sizeof(unsigned char)); // allocate memory for frame buffer
   did_memory_allocate_correctly(devInfos);
+
+  g_cur_width.store(devInfos->startingWidth);
+  g_cur_height.store(devInfos->startingHeight);
+  // If you want to rely on init_vars to flip capture back on:
+  shouldLoop.store(true);
   return 0;
 }
 
@@ -832,10 +847,39 @@ void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct d
   // allocate memory for structs
   init_vars(deviMain, bufMain, 3, allDevicesTargetFramerate, true, true, devNames[0].c_str(), 0);
   if (isDualInput) init_vars(deviAlt, bufAlt, 3, allDevicesTargetFramerate, true, true, devNames[1].c_str(), 1);
-  shouldLoop.store(true);
+  //shouldLoop.store(true);
   numPixels = devInfoMain->startingWidth * devInfoMain->startingHeight;
   usleep(1000);
   fprintf(stderr, "\n");
+}
+
+static void restart_worker() {
+  while (!done_flag.load()) {
+    std::unique_lock<std::mutex> lk(s_restart_mtx);
+    s_restart_cv.wait(lk, []{ return s_restart_requested.load() || done_flag.load(); });
+    if (done_flag.load()) break;
+    s_restart_requested.store(false);
+    s_restarting.store(true);
+    lk.unlock();
+
+    // Tear down devices (do NOT touch sockets)
+    deinit_bufs(buffersMain, devInfoMain);
+    if (isDualInput) deinit_bufs(buffersAlt, devInfoAlt);
+    free_devinfo(devInfoMain);
+    if (isDualInput) free_devinfo(devInfoAlt);
+
+    // Optional backoff similar to your existing sleeps
+    usleep(2500000);
+
+    // Re-init devices
+    init_vars(devInfoMain, buffersMain, 3, allDevicesTargetFramerate, true, true, devNames[0].c_str(), 0);
+    if (isDualInput) {
+      init_vars(devInfoAlt, buffersAlt, 3, allDevicesTargetFramerate, true, true, devNames[1].c_str(), 1);
+    }
+
+    // Note: init_vars sets shouldLoop=true (per step 3)
+    s_restarting.store(false);
+  }
 }
 
 // ----------------- MJPEG Encoder Thread Pool -----------------
@@ -959,6 +1003,34 @@ static void enqueue_encode_job(const unsigned char* frameData, size_t bytes, int
   s_enc_cv.notify_one();
 }
 
+static void no_signal_loop_blocking() {
+  // Snapshot current dimensions (may use last-known)
+  const int w = g_cur_width.load();
+  const int h = g_cur_height.load();
+
+  // Build a single placeholder image once
+  std::vector<unsigned char> raw((size_t)w * (size_t)h * (size_t)byteScaler, 127); // solid black RGB24
+  std::vector<unsigned char> jpeg;
+  if (g_streamCodec == CODEC_MJPEG) {
+    encode_rgb24_to_jpeg_mem(raw.data(), w, h, g_jpeg_quality, jpeg);
+  }
+
+  const double target_fps = std::max(1.0, allDevicesTargetFramerate);
+  const double frame_us = 1000000.0 / target_fps;
+
+  while (!shouldLoop.load()) {
+    accept_new_clients(); // allow connections during downtime
+
+    if (g_streamCodec == CODEC_MJPEG) {
+      if (!jpeg.empty()) broadcast_frame(jpeg.data(), jpeg.size());
+    } else {
+      broadcast_frame(raw.data(), raw.size());
+    }
+
+    usleep((useconds_t)frame_us);
+  }
+}
+
 // ----------------- main -----------------
 
 int main(const int argc, char** argv) {
@@ -967,6 +1039,8 @@ int main(const int argc, char** argv) {
 
   // Create a window to display the results
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt);
+
+  s_restart_thread = std::thread(restart_worker);
 
   // Setup TCP server
   listen_fd = setup_server_socket(listenPort);
@@ -1201,7 +1275,7 @@ int main(const int argc, char** argv) {
         if (us > 0) usleep((useconds_t)us);
       }
     }
-    usleep(250000);
+    /*usleep(250000);
     shouldLoop.store(true);
     deinit_bufs(buffersMain, devInfoMain);
     if (isDualInput) deinit_bufs(buffersAlt, devInfoAlt);
@@ -1209,11 +1283,32 @@ int main(const int argc, char** argv) {
     if (isDualInput) free_devinfo(devInfoAlt);
     usleep(250000);
     init_vars(devInfoMain, buffersMain, 3, allDevicesTargetFramerate, true, true, devNames[0].c_str(), 0);
-    if (isDualInput) init_vars(devInfoAlt, buffersAlt, 3, allDevicesTargetFramerate, true, true, devNames[1].c_str(), 1);
+    if (isDualInput) init_vars(devInfoAlt, buffersAlt, 3, allDevicesTargetFramerate, true, true, devNames[1].c_str(), 1);*/
+    {
+      // Request async restart
+      std::lock_guard<std::mutex> lk(s_restart_mtx);
+      s_restart_requested.store(true);
+    }
+    s_restart_cv.notify_one();
+
+    // Stream "no signal" frames until the restart completes and capture resumes.
+    // shouldLoop will get set to true inside init_vars (step 3).
+    no_signal_loop_blocking();
+
+    // Reset lazy-send state in case dimensions or content changed
+    have_prev_frame = false;
+    consecutive_same_count = 0;
   }
   // allow clients to drain
   usleep(1000000);
   stop_encoder_pool();
   cleanup_vars();
+  done_flag.store(true);
+  {
+    std::lock_guard<std::mutex> lk(s_restart_mtx);
+    s_restart_requested.store(true);
+  }
+  s_restart_cv.notify_all();
+  if (s_restart_thread.joinable()) s_restart_thread.join();
   return 0;
 }
