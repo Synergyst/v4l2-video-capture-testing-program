@@ -56,7 +56,7 @@ const HTML_PAGE = `<!doctype html>
   :root{color-scheme:dark}
   html,body{height:100%;margin:0;background:#000;overflow:hidden}
   #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#000}
-  #player{max-width:100%;max-height:100%;display:block;user-select:none;cursor:crosshair}
+  #player{max-width:100%;max-height:100%;display:block;user-select:none;}
   #hud{position:fixed;left:8px;top:8px;right:auto;display:flex;gap:.5rem;align-items:center;font:14px system-ui;color:#fff;opacity:.95;flex-wrap:wrap;z-index:20}
   #hud button,#hud input[type=checkbox]+label{background:#111;border:1px solid #333;color:#eee;padding:.35rem .6rem;border-radius:6px;cursor:pointer}
   #hud .pill{padding:.35rem .6rem;border-radius:999px;border:1px solid #333;background:#111}
@@ -79,7 +79,7 @@ const HTML_PAGE = `<!doctype html>
 </head>
 <body>
   <div id="wrap">
-    <img id="player" alt="MJPEG stream" src="${DEFAULT_FALLBACK_MJPEG || DEFAULT_FALLBACK_IMAGE || ''}">
+    <img id="player" draggable="false" alt="MJPEG stream" src="${DEFAULT_FALLBACK_MJPEG || DEFAULT_FALLBACK_IMAGE || ''}">
   </div>
 
   <div id="hud">

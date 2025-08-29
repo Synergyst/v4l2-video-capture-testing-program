@@ -65,6 +65,7 @@
 #include <deque>
 #include <memory>
 
+// CRT filter
 #include "crt_filter.h"
 
 using namespace std;
@@ -90,7 +91,7 @@ std::vector<int> client_fds;
 // Stream encoding globals
 enum StreamCodec { CODEC_RAW = 0, CODEC_MJPEG = 1 };
 StreamCodec g_streamCodec = CODEC_RAW;
-int g_jpeg_quality = 80; // 1-100
+int g_jpeg_quality = 80;   // 1-100
 bool g_inputIsBGR = false; // set by --bgr: capture produces BGR byte order; server will convert to RGB before sending
 
 // Lazy-send toggle (default enabled)
@@ -202,12 +203,7 @@ static int setup_server_socket(int port) {
 
 // Simple RGB24->JPEG encoder using libjpeg, output to memory.
 // This keeps it straightforward for streaming concatenated JPEGs over TCP.
-static bool encode_rgb24_to_jpeg_mem(const unsigned char* rgb,
-                                     int width,
-                                     int height,
-                                     int quality,
-                                     std::vector<unsigned char>& out)
-{
+static bool encode_rgb24_to_jpeg_mem(const unsigned char* rgb, int width, int height, int quality, std::vector<unsigned char>& out) {
   jpeg_compress_struct cinfo;
   jpeg_error_mgr jerr;
   cinfo.err = jpeg_std_error(&jerr);
@@ -763,14 +759,22 @@ int get_frame(struct buffer* buffers, struct devInfo* devInfos) {
   return 0;
 }
 
+static void free_devinfo(struct devInfo*& d) {
+  if (!d) return;
+  if (d->outputFrame) { free(d->outputFrame); d->outputFrame = nullptr; }
+  if (d->device)      { free(d->device);      d->device = nullptr; }
+  free(d);
+  d = nullptr;
+}
+
 int deinit_bufs(struct buffer*& buffers, struct devInfo*& devInfos) {
   for (unsigned int i = 0; i < devInfos->n_buffers; ++i)
     if (-1 == munmap(buffers[i].start, buffers[i].length))
       errno_exit("munmap");
   free(buffers);
+  buffers = nullptr;
   fprintf(stderr, "[cap%d] Uninitialized V4L2 device: %s\n", devInfos->index, devInfos->device);
-  if (-1 == close(devInfos->fd))
-    errno_exit("close");
+  if (-1 == close(devInfos->fd)) errno_exit("close");
   devInfos->fd = -1;
   fprintf(stderr, "[cap%d] Closed V4L2 device: %s\n", devInfos->index, devInfos->device);
   fprintf(stderr, "\n");
@@ -813,15 +817,14 @@ void cleanup_vars() {
   deinit_bufs(buffersMain, devInfoMain);
   if (isDualInput) deinit_bufs(buffersAlt, devInfoAlt);
 
+  free_devinfo(devInfoMain);
+  if (isDualInput) free_devinfo(devInfoAlt);
+
   // Close network sockets
-  for (int fd : client_fds) {
-    close(fd);
-  }
+  for (int fd : client_fds) close(fd);
   client_fds.clear();
-  if (listen_fd >= 0) {
-    close(listen_fd);
-    listen_fd = -1;
-  }
+
+  if (listen_fd >= 0) { close(listen_fd); listen_fd = -1; }
 }
 
 void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct devInfo*& deviAlt, struct buffer*& bufAlt) {
@@ -1198,12 +1201,15 @@ int main(const int argc, char** argv) {
         if (us > 0) usleep((useconds_t)us);
       }
     }
-    usleep(2500000);
+    usleep(250000);
     shouldLoop.store(true);
     deinit_bufs(buffersMain, devInfoMain);
     if (isDualInput) deinit_bufs(buffersAlt, devInfoAlt);
-    usleep(2500000);
+    free_devinfo(devInfoMain);
+    if (isDualInput) free_devinfo(devInfoAlt);
+    usleep(250000);
     init_vars(devInfoMain, buffersMain, 3, allDevicesTargetFramerate, true, true, devNames[0].c_str(), 0);
+    if (isDualInput) init_vars(devInfoAlt, buffersAlt, 3, allDevicesTargetFramerate, true, true, devNames[1].c_str(), 1);
   }
   // allow clients to drain
   usleep(1000000);
