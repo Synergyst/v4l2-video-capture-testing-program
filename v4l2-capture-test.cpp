@@ -65,6 +65,8 @@
 #include <deque>
 #include <memory>
 
+#include "crt_filter.h"
+
 using namespace std;
 
 #define V4L_ALLFORMATS  3
@@ -294,7 +296,7 @@ static void accept_new_clients() {
     // Seed this new client with an initial frame at the actual resolution
     int w = (devInfoMain ? devInfoMain->startingWidth : defaultWidth);
     int h = (devInfoMain ? devInfoMain->startingHeight : defaultHeight);
-    for (int i = 0; i < 120; i++) seed_initial_frame_for_fd(cfd, w, h);
+    for (int i = 0; i < 60; i++) seed_initial_frame_for_fd(cfd, w, h);
 
     char ip[64]; inet_ntop(AF_INET, &cliaddr.sin_addr, ip, sizeof(ip));
     fprintf(stderr, "[net] Client connected: %s:%d (fd=%d). Total clients: %zu\n",
@@ -992,88 +994,150 @@ int main(const int argc, char** argv) {
   std::vector<unsigned char> prev_raw_frame;
   bool have_prev_frame = false;
 
+  CRTParams params;
+  // Optional tuning:
+  params.block_rows = 64;
+  params.scanline_strength = 0.025f;
+  params.mask_strength = 0.015f; // etc.
+  size_t threads = std::thread::hardware_concurrency();
+  if (threads == 0) threads = 4;
+  // FPS drives flicker/jitter timing; change later via set_fps()
+  int fps = 10;
+  CRTFilter filter(devInfoMain->startingWidth, devInfoMain->startingHeight, params, threads, fps);
+
+  // TODO for below: Use filter.apply(); when lazy frame mode is enabled and we are trying to generate lazy frames. This is going to be a way for the user to know we are using a stale frame.
+  //void apply(const uint8_t* src_rgb24, std::vector<uint8_t>& dst);
+
   while (true) {
-  while (shouldLoop) {
-    accept_new_clients(); // non-blocking accept of new clients
+    while (shouldLoop) {
+      accept_new_clients(); // non-blocking accept of new clients
 
-    if (!devInfoMain->realAndTargetRatesMatch) sw.start();
-    background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
-    background_task_cap_main.wait();
+      if (!devInfoMain->realAndTargetRatesMatch) sw.start();
+      background_task_cap_main = std::async(std::launch::async, get_frame, buffersMain, devInfoMain);
+      background_task_cap_main.wait();
 
-    const size_t frame_bytes = (size_t)devInfoMain->startingSize;
+      const size_t frame_bytes = (size_t)devInfoMain->startingSize;
 
-    bool frame_changed = true;
-    // Lazy-send: compare against previous captured frame (pre-conversion)
-    if (g_lazy_send && have_prev_frame && prev_raw_frame.size() == frame_bytes) {
-      // Note: assumes device delivers full-size frames (RGB24). If bytesused were smaller, you'd compare only valid bytes.
-      frame_changed = (std::memcmp(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes) != 0);
-    }
+      bool frame_changed = true;
+      // Lazy-send: compare against previous captured frame (pre-conversion)
+      if (g_lazy_send && have_prev_frame && prev_raw_frame.size() == frame_bytes) {
+        // Note: assumes device delivers full-size frames (RGB24). If bytesused were smaller, you'd compare only valid bytes.
+        frame_changed = (std::memcmp(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes) != 0);
+      }
 
-    if (!have_prev_frame) {
-      // init prev buffer on first loop
-      prev_raw_frame.resize(frame_bytes);
-      std::memcpy(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes);
-      have_prev_frame = true;
-      frame_changed = true; // first frame should be considered "changed"
-    } else if (frame_changed) {
-      // refresh previous frame snapshot so next compare is accurate
-      std::memcpy(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes);
-    }
+      if (!have_prev_frame) {
+        // init prev buffer on first loop
+        prev_raw_frame.resize(frame_bytes);
+        std::memcpy(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes);
+        have_prev_frame = true;
+        frame_changed = true; // first frame should be considered "changed"
+      } else if (frame_changed) {
+        // refresh previous frame snapshot so next compare is accurate
+        std::memcpy(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes);
+      }
 
-    // Lazy-send: compare against previous captured frame (pre-conversion)
-    // If not changed, skip both encoding and sending to save CPU/bandwidth
-    if (g_lazy_send && !frame_changed) {
+      // Lazy-send: compare against previous captured frame (pre-conversion)
+      // If not changed, skip both encoding and sending to save CPU/bandwidth
+      /*if (g_lazy_send && !frame_changed) {
+        if (!devInfoMain->realAndTargetRatesMatch) {
+          double us = devInfoMain->targetFrameDelayMicros - sw.elapsedMicros();
+          if (us > 0) usleep((useconds_t)us);
+        }
+        continue;
+      }
+
+      // Decide what to do based on stream mode
+      if (g_streamCodec == CODEC_MJPEG) {
+        // Enqueue current frame for background encoding (we already verified it's changed)
+        enqueue_encode_job(devInfoMain->outputFrame, frame_bytes, devInfoMain->startingWidth, devInfoMain->startingHeight);
+        // Try to broadcast the freshest encoded JPEG (non-blocking). It's okay if encoder hasn't caught up yet.
+        auto sp = std::atomic_load_explicit(&g_latest_jpeg, std::memory_order_acquire);
+        if (sp && !sp->empty()) {
+          broadcast_frame(sp->data(), sp->size());
+        }
+      } else {
+        // RAW RGB24 stream: if capture is BGR and user requested server convert (--bgr),
+        // do fast in-place swap (multi-threaded on large frames). Only do it when we're sending.
+        if (g_inputIsBGR) {
+          size_t pixels = (size_t)devInfoMain->startingWidth * (size_t)devInfoMain->startingHeight;
+          swap_rb_inplace_mt(devInfoMain->outputFrame, pixels, std::max(1, g_encode_threads)); // reuse enc thread count as hint
+        }
+        broadcast_frame(devInfoMain->outputFrame, frame_bytes);
+      }
+
       if (!devInfoMain->realAndTargetRatesMatch) {
         double us = devInfoMain->targetFrameDelayMicros - sw.elapsedMicros();
         if (us > 0) usleep((useconds_t)us);
-      }
-      continue;
-    }
+      }*/
 
-    // Decide what to do based on stream mode
-    if (g_streamCodec == CODEC_MJPEG) {
-      // Enqueue current frame for background encoding (we already verified it's changed)
-      enqueue_encode_job(devInfoMain->outputFrame,
-                         frame_bytes,
-                         devInfoMain->startingWidth,
-                         devInfoMain->startingHeight);
+      // Lazy-send: compare against previous captured frame (pre-conversion)
+      // If not changed, skip both encoding and sending to save CPU/bandwidth
+      if (g_lazy_send && !frame_changed) {
+        // Instead of completely skipping, generate a "stale" visual frame using CRTFilter
+        // so clients get a visual indication that frame is stale.
+        const int width = devInfoMain->startingWidth;
+        const int height = devInfoMain->startingHeight;
+        const size_t frame_len = (size_t)width * (size_t)height * (size_t)byteScaler;
 
-      // Try to broadcast the freshest encoded JPEG (non-blocking). It's okay if encoder hasn't caught up yet.
-      auto sp = std::atomic_load_explicit(&g_latest_jpeg, std::memory_order_acquire);
-      if (sp && !sp->empty()) {
-        broadcast_frame(sp->data(), sp->size());
-      }
-    } else {
-      // RAW RGB24 stream: if capture is BGR and user requested server convert (--bgr),
-      // do fast in-place swap (multi-threaded on large frames). Only do it when we're sending.
-      if (g_inputIsBGR) {
-        size_t pixels = (size_t)devInfoMain->startingWidth * (size_t)devInfoMain->startingHeight;
-        swap_rb_inplace_mt(devInfoMain->outputFrame, pixels, std::max(1, g_encode_threads)); // reuse enc thread count as hint
-      }
-      broadcast_frame(devInfoMain->outputFrame, frame_bytes);
-    }
+        // Prepare an RGB24 source for the filter. prev_raw_frame holds the captured bytes (pre-conversion).
+        std::vector<unsigned char> src_rgb;
+        if (g_inputIsBGR) {
+          // Convert BGR -> RGB into src_rgb
+          src_rgb.resize(frame_len);
+          const unsigned char* src = prev_raw_frame.data();
+          unsigned char* dst = src_rgb.data();
+          const size_t pixels = (size_t)width * (size_t)height;
+          for (size_t p = 0; p < pixels; ++p) {
+            // src is B,G,R ; dst must be R,G,B
+            dst[0] = src[2];
+            dst[1] = src[1];
+            dst[2] = src[0];
+            src += 3; dst += 3;
+          }
+        } else {
+          // Already RGB; make a copy (filter.apply may modify output)
+          src_rgb = prev_raw_frame;
+        }
 
-    if (!devInfoMain->realAndTargetRatesMatch) {
-      double us = devInfoMain->targetFrameDelayMicros - sw.elapsedMicros();
-      if (us > 0) usleep((useconds_t)us);
+        // Apply CRT visualizer/filter to produce a visible "stale" frame
+        std::vector<unsigned char> filtered;
+        // filter.apply expects src RGB24 and fills 'filtered' with RGB24 same size
+        filter.apply(src_rgb.data(), filtered);
+
+        // Sanity: ensure filtered size matches expected RAW frame length; otherwise skip sending
+        if (filtered.size() == frame_len) {
+          if (g_streamCodec == CODEC_MJPEG) {
+            // Encode filtered RGB to JPEG synchronously and broadcast
+            std::vector<unsigned char> jpeg;
+            if (encode_rgb24_to_jpeg_mem(filtered.data(), width, height, g_jpeg_quality, jpeg) && !jpeg.empty()) {
+              broadcast_frame(jpeg.data(), jpeg.size());
+            }
+          } else {
+            // RAW path: clients expect RGB24; broadcast filtered RGB directly
+            broadcast_frame(filtered.data(), filtered.size());
+          }
+        } else {
+          // If filter produced unexpected size, skip sending (safe fallback)
+        }
+
+        // Maintain original timing behavior if realAndTargetRatesMatch is false
+        if (!devInfoMain->realAndTargetRatesMatch) {
+          double us = devInfoMain->targetFrameDelayMicros - sw.elapsedMicros();
+          if (us > 0) usleep((useconds_t)us);
+        }
+        continue;
+      }
     }
+    usleep(2500000);
+    shouldLoop.store(true);
+    deinit_bufs(buffersMain, devInfoMain);
+    if (isDualInput) deinit_bufs(buffersAlt, devInfoAlt);
+    usleep(2500000);
+    init_vars(devInfoMain, buffersMain, 3, allDevicesTargetFramerate, true, true, devNames[0].c_str(), 0);
   }
-  usleep(2500000);
-  shouldLoop.store(true);
-  deinit_bufs(buffersMain, devInfoMain);
-  if (isDualInput) deinit_bufs(buffersAlt, devInfoAlt);
-  usleep(2500000);
-  /*init_dev_stage1(buffersMain, devInfoMain);
-  init_dev_stage2(buffersMain, devInfoMain);*/
-  init_vars(devInfoMain, buffersMain, 3, allDevicesTargetFramerate, true, true, devNames[0].c_str(), 0);
-  }
-
   // allow clients to drain
   usleep(1000000);
   stop_encoder_pool();
   cleanup_vars();
   return 0;
 }
-
-// Build (example):
-// g++ -O3 -std=gnu++17 v4l2_streamer.cpp -o v4l2_streamer -lv4l2 -lpopt -ljpeg -lpthread

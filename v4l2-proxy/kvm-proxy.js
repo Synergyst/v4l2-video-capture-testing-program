@@ -27,7 +27,7 @@ const CONTROL_TCP_PORT = parseInt(process.env.CONTROL_TCP_PORT || '1444', 10);
 const HTTP_PORT = parseInt(process.env.HTTP_PORT || '8080', 10);
 
 // Comma-delimited whitelist (CIDR or single IP or exact IPv6).
-const ALLOWED_CONTROL_SUBNETS = (process.env.ALLOWED_CONTROL_SUBNETS || '192.168.168.0/24,127.0.0.1').trim();
+const ALLOWED_CONTROL_SUBNETS = (process.env.ALLOWED_CONTROL_SUBNETS || '192.168.168.0/24,127.0.0.1,75.132.12.230,68.70.17.159').trim();
 
 const WSS_PATH = '/ws';
 const AUTH_TOKEN = process.env.AUTH_TOKEN || null;
@@ -199,6 +199,7 @@ const HTML_PAGE = `<!doctype html>
   let capturing = false;
   let pointerLocked = false;
   let remoteSize = null;
+  let lastClientPos = null; // {x: px, y: px} within img element when unlocked
   let captureWantedOnFocus = false;
   let pendingWantedCapture = false;
 
@@ -254,11 +255,25 @@ const HTML_PAGE = `<!doctype html>
     else if (!on && document.pointerLockElement) document.exitPointerLock?.();
   }
 
-  function getNormFromEvent(ev) {
+  /*function getNormFromEvent(ev) {
     const rect = img.getBoundingClientRect();
     const x = (ev.clientX - rect.left) / rect.width;
     const y = (ev.clientY - rect.top) / rect.height;
     return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
+  }*/
+  function getNormFromEvent(ev) {
+    const rect = img.getBoundingClientRect();
+    // If the event target is the img, offsetX/offsetY are already relative to the image.
+    if (ev.target === img && typeof ev.offsetX === 'number' && typeof ev.offsetY === 'number') {
+      const nx = ev.offsetX / (img.clientWidth || rect.width || 1);
+      const ny = ev.offsetY / (img.clientHeight || rect.height || 1);
+      return { x: Math.min(1, Math.max(0, nx)), y: Math.min(1, Math.max(0, ny)) };
+    }
+    // Fallback to clientX/clientY relative to image bounding rect
+    const cx = ev.clientX, cy = ev.clientY;
+    const nx = (cx - rect.left) / (rect.width || 1);
+    const ny = (cy - rect.top) / (rect.height || 1);
+    return { x: Math.min(1, Math.max(0, nx)), y: Math.min(1, Math.max(0, ny)) };
   }
 
   function send(msg) {
@@ -400,6 +415,8 @@ const HTML_PAGE = `<!doctype html>
   // Event handlers & UI wiring
   btnCapture.addEventListener('click', () => { setCaptureState(!capturing); });
 
+  img.addEventListener('mouseleave', () => { lastClientPos = null; });
+
   helpClose.addEventListener('click', () => {
     helpPane.style.display = 'none';
     btnHelp.style.display = 'inline-block';
@@ -433,6 +450,8 @@ const HTML_PAGE = `<!doctype html>
   document.addEventListener('pointerlockchange', () => {
     pointerLocked = document.pointerLockElement === img;
     chkLock.checked = pointerLocked;
+    // Reset the unlocked tracking baseline when lock state changes
+    lastClientPos = null;
   });
 
   btnReboot.addEventListener('click', () => { if (confirm('Send reboot to control agent?')) send({type:'system', action:'reboot'}); });
@@ -550,16 +569,148 @@ const HTML_PAGE = `<!doctype html>
   }
 
   // forwarding functions for input handlers defined earlier in this file (they reference send)
-  function onMouseMove(ev) {
+  /*function onMouseMove(ev) {
     if (!capturing) return;
     if (document.pointerLockElement === img) {
-      send({type:'mouse', action:'moveRelative', dx: ev.movementX, dy: ev.movementY});
+      // movementX/Y are in CSS pixels of the displayed image area.
+      // Scale them to remote framebuffer pixels using the last-known remoteSize and the displayed image rect.
+      let dx = ev.movementX || 0;
+      let dy = ev.movementY || 0;
+      if (remoteSize && remoteSize.w && remoteSize.h) {
+        const rect = img.getBoundingClientRect();
+        // Avoid division by zero; fall back to 1:1 if rect width/height are 0
+        const scaleX = rect.width > 0 ? (remoteSize.w / rect.width) : 1;
+        const scaleY = rect.height > 0 ? (remoteSize.h / rect.height) : 1;
+        dx = Math.trunc(dx * scaleX);
+        dy = Math.trunc(dy * scaleY);
+      }
+      send({type:'mouse', action:'moveRelative', dx: dx, dy: dy});
     } else {
       const {x,y} = getNormFromEvent(ev);
       send({type:'mouse', action:'move', x, y});
     }
     ev.preventDefault();
+  }*/
+  /*function onMouseMove(ev) {
+    if (!capturing) return;
+
+    if (document.pointerLockElement === img) {
+      // movementX/Y are in CSS pixels; scale them to remote framebuffer pixels
+      let dx = ev.movementX || 0;
+      let dy = ev.movementY || 0;
+      const rect = img.getBoundingClientRect();
+
+      // Prefer authoritative remoteSize if available; otherwise fall back to image natural size
+      let scaleX = 1, scaleY = 1;
+      if (remoteSize && remoteSize.w && remoteSize.h) {
+        if (rect.width > 0) scaleX = remoteSize.w / rect.width;
+        if (rect.height > 0) scaleY = remoteSize.h / rect.height;
+      } else if (img.naturalWidth && img.naturalHeight && rect.width && rect.height) {
+        scaleX = img.naturalWidth / rect.width;
+        scaleY = img.naturalHeight / rect.height;
+      }
+
+      dx = Math.trunc(dx * scaleX);
+      dy = Math.trunc(dy * scaleY);
+
+      send({type:'mouse', action:'moveRelative', dx: dx, dy: dy});
+    } else {
+      // Unlocked mode: send absolute normalized coords relative to the displayed image
+      const {x, y} = getNormFromEvent(ev);
+      send({type:'mouse', action:'move', x, y});
+    }
+    ev.preventDefault();
+  }*/
+  /*function onMouseMove(ev) {
+  if (!capturing) return;
+
+  const rect = img.getBoundingClientRect();
+
+  if (document.pointerLockElement === img) {
+    // pointer lock: use movementX/Y scaled from displayed image -> remote pixels
+    let dx = ev.movementX || 0;
+    let dy = ev.movementY || 0;
+    if (remoteSize && remoteSize.w && remoteSize.h && rect.width > 0 && rect.height > 0) {
+      const scaleX = remoteSize.w / rect.width;
+      const scaleY = remoteSize.h / rect.height;
+      dx = Math.trunc(dx * scaleX);
+      dy = Math.trunc(dy * scaleY);
+    }
+    if (dx !== 0 || dy !== 0) send({ type:'mouse', action:'moveRelative', dx, dy });
+  } else {
+    // unlocked: compute client pixel position inside the image and send deltas (relative)
+    const clientX = ev.clientX - rect.left;
+    const clientY = ev.clientY - rect.top;
+    // clamp to image rect
+    const cx = Math.max(0, Math.min(rect.width, clientX));
+    const cy = Math.max(0, Math.min(rect.height, clientY));
+
+    if (!lastClientPos) {
+      // First sample after entering / baseline: store and don't send a spurious large delta
+      lastClientPos = { x: cx, y: cy };
+      return;
+    }
+
+    const dxPix = cx - lastClientPos.x;
+    const dyPix = cy - lastClientPos.y;
+    lastClientPos.x = cx;
+    lastClientPos.y = cy;
+
+    if (dxPix === 0 && dyPix === 0) {
+      ev.preventDefault();
+      return;
+    }
+
+    let dx = Math.trunc(dxPix);
+    let dy = Math.trunc(dyPix);
+    if (remoteSize && remoteSize.w && remoteSize.h && rect.width > 0 && rect.height > 0) {
+      const scaleX = remoteSize.w / rect.width;
+      const scaleY = remoteSize.h / rect.height;
+      dx = Math.trunc(dxPix * scaleX);
+      dy = Math.trunc(dyPix * scaleY);
+    }
+
+    if (dx !== 0 || dy !== 0) send({ type:'mouse', action:'moveRelative', dx, dy });
   }
+  ev.preventDefault();
+}*/
+function onMouseMove(ev) {
+  if (!capturing) return;
+  const rect = img.getBoundingClientRect();
+
+  if (document.pointerLockElement === img) {
+    // pointer-locked: send relative deltas scaled to remote framebuffer pixels
+    let dx = ev.movementX || 0;
+    let dy = ev.movementY || 0;
+    if (remoteSize && remoteSize.w && remoteSize.h && rect.width > 0 && rect.height > 0) {
+      const scaleX = remoteSize.w / rect.width;
+      const scaleY = remoteSize.h / rect.height;
+      dx = Math.trunc(dx * scaleX);
+      dy = Math.trunc(dy * scaleY);
+    }
+    if (dx !== 0 || dy !== 0) send({ type: 'mouse', action: 'moveRelative', dx, dy });
+  } else {
+    // unlocked: compute normalized coordinates inside the MJPEG image element and send absolute move
+    const clientX = ev.clientX - rect.left;
+    const clientY = ev.clientY - rect.top;
+    const cx = rect.width > 0 ? Math.max(0, Math.min(rect.width, clientX)) : 0;
+    const cy = rect.height > 0 ? Math.max(0, Math.min(rect.height, clientY)) : 0;
+    const nx = rect.width > 0 ? (cx / rect.width) : 0;
+    const ny = rect.height > 0 ? (cy / rect.height) : 0;
+    send({ type: 'mouse', action: 'move', x: nx, y: ny });
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify({
+          type: 'clientLog',
+          mousePage: { x: ev.clientX, y: ev.clientY },
+          mouseImg:  { x: Math.round(cx), y: Math.round(cy) }
+        }));
+      } catch (e) { /* ignore logging failures */ }
+    }
+  }
+  ev.preventDefault();
+}
   function onMouseDown(ev) {
     if (!capturing) return;
     send({type:'mouse', action:'down', button: ev.button});
@@ -620,7 +771,7 @@ function broadcastInfo(obj) {
 }
 
 // ----- IP helpers (trusted proxies, CIDR whitelist) -----
-const TRUSTED_PROXIES = (process.env.TRUSTED_PROXIES || '127.0.0.1,::1,192.168.168.170').split(',').map(s => s.trim()).filter(Boolean);
+const TRUSTED_PROXIES = (process.env.TRUSTED_PROXIES || '127.0.0.1,::1,192.168.168.170,192.168.168.178').split(',').map(s => s.trim()).filter(Boolean);
 
 function normalizeRemoteIp(ip) {
   if (!ip) return '';
@@ -748,6 +899,14 @@ wss.on('connection', (ws, req) => {
     if (isBinary) return;
     let msg;
     try { msg = JSON.parse(data.toString('utf8')); } catch { return; }
+
+    if (msg.type === 'clientLog') {
+      const ip = ws._clientIP || '';
+      const p = msg.mousePage || {};
+      const im = msg.mouseImg || {};
+      console.log(`[ClientLog ${ip}] page=${p.x ?? 0},${p.y ?? 0} img=${im.x ?? 0},${im.y ?? 0}`);
+      return;
+    }
 
     if (!ws._allowedControl) return;
 
