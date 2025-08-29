@@ -95,6 +95,9 @@ bool g_inputIsBGR = false; // set by --bgr: capture produces BGR byte order; ser
 
 // Lazy-send toggle (default enabled)
 bool g_lazy_send = true;
+// How many identical frames must be seen before we consider the frame "stale" and render the CRT filter.
+// Default 1 preserves current behaviour (immediate stale rendering when an identical frame is observed).
+int g_lazy_threshold = 1;
 
 // New: encoder threading controls
 int g_encode_threads = 0;            // 0 => auto
@@ -330,6 +333,7 @@ void parse_cli_or_die(int argc, const char** argv) {
   int opt_enc_threads = 0; // new
   int opt_lazy = 0;
   int opt_no_lazy = 0;
+  int opt_lazy_thresh = 1; // new: number of identical frames to consider stale
 
   struct poptOption optionsTable[] = {
     { "fps",     'f',    POPT_ARG_DOUBLE,   &opt_fps,      0,    "Target framerate for all devices",                        "FPS" },
@@ -342,6 +346,7 @@ void parse_cli_or_die(int argc, const char** argv) {
     { "encode-threads",  0, POPT_ARG_INT,   &opt_enc_threads, 0, "MJPEG encoder threads (0=auto)",                          "N" },
     { "lazy",    0,      POPT_ARG_NONE,     &opt_lazy,     0,    "Enable lazy-send (skip identical frames)",                nullptr },
     { "no-lazy", 0,      POPT_ARG_NONE,     &opt_no_lazy,  0,    "Disable lazy-send",                                       nullptr },
+    { "lazy-threshold", 0, POPT_ARG_INT,    &opt_lazy_thresh, 0, "Number of consecutive identical frames required to mark stale (default 1)", "N" },
     { "help",    'h',    POPT_ARG_NONE,     nullptr,       'h',  "Show help and exit",                                      nullptr },
     { nullptr,   0,      0,                 nullptr,       0,    nullptr,                                                   nullptr }
   };
@@ -401,6 +406,7 @@ void parse_cli_or_die(int argc, const char** argv) {
     fprintf(stderr, "      --encode-threads=<N>   MJPEG encoder threads (0=auto, default auto)\n");
     fprintf(stderr, "      --lazy                 Enable lazy-send (skip identical frames, default ON)\n");
     fprintf(stderr, "      --no-lazy              Disable lazy-send\n");
+    fprintf(stderr, "      --lazy-threshold       Number of consecutive identical frames required to mark stale (default 1)\n");
     exit(1);
   }
   if (opt_port <= 0 || opt_port > 65535) {
@@ -428,7 +434,11 @@ void parse_cli_or_die(int argc, const char** argv) {
   if (opt_no_lazy) g_lazy_send = false;
   else if (opt_lazy) g_lazy_send = true;
 
-  fprintf(stderr, "[main] Parsed options: --fps=%.3f, --devices=%s%s%s, --port=%d, --stream=%s%s, --bgr=%d, --encode-threads=%d, --lazy=%d\n",
+  // apply lazy threshold
+  if (opt_lazy_thresh < 1) opt_lazy_thresh = 1;
+  g_lazy_threshold = opt_lazy_thresh;
+
+  fprintf(stderr, "[main] Parsed options: --fps=%.3f, --devices=%s%s%s, --port=%d, --stream=%s%s, --bgr=%d, --encode-threads=%d, --lazy=%d, --lazy-threshold=%d\n",
           allDevicesTargetFramerate,
           devNames[0].c_str(),
           isDualInput ? "," : "",
@@ -438,7 +448,8 @@ void parse_cli_or_die(int argc, const char** argv) {
           (g_streamCodec == CODEC_MJPEG ? (std::string(" (q=") + std::to_string(g_jpeg_quality) + ")").c_str() : ""),
           g_inputIsBGR ? 1 : 0,
           g_encode_threads,
-          g_lazy_send ? 1 : 0);
+          g_lazy_send ? 1 : 0,
+          g_lazy_threshold);
 }
 
 bool doubles_equal(double a, double b, double epsilon = 0.001) { return std::fabs(a - b) < epsilon; }
@@ -993,6 +1004,7 @@ int main(const int argc, char** argv) {
   // Buffer to hold last raw frame for lazy send comparison (we compare pre-conversion bytes)
   std::vector<unsigned char> prev_raw_frame;
   bool have_prev_frame = false;
+  int consecutive_same_count = 0; // counts how many consecutive identical frames we've observed
 
   CRTParams params;
   // Optional tuning:
@@ -1028,10 +1040,12 @@ int main(const int argc, char** argv) {
       const size_t frame_bytes = (size_t)devInfoMain->startingSize;
 
       bool frame_changed = true;
+      bool is_same = false;
+
       // Lazy-send: compare against previous captured frame (pre-conversion)
       if (g_lazy_send && have_prev_frame && prev_raw_frame.size() == frame_bytes) {
         // Note: assumes device delivers full-size frames (RGB24). If bytesused were smaller, you'd compare only valid bytes.
-        frame_changed = (std::memcmp(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes) != 0);
+        is_same = (std::memcmp(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes) == 0);
       }
 
       if (!have_prev_frame) {
@@ -1040,49 +1054,28 @@ int main(const int argc, char** argv) {
         std::memcpy(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes);
         have_prev_frame = true;
         frame_changed = true; // first frame should be considered "changed"
-      } else if (frame_changed) {
-        // refresh previous frame snapshot so next compare is accurate
-        std::memcpy(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes);
-      }
-
-      // Lazy-send: compare against previous captured frame (pre-conversion)
-      // If not changed, skip both encoding and sending to save CPU/bandwidth
-      /*if (g_lazy_send && !frame_changed) {
-        if (!devInfoMain->realAndTargetRatesMatch) {
-          double us = devInfoMain->targetFrameDelayMicros - sw.elapsedMicros();
-          if (us > 0) usleep((useconds_t)us);
-        }
-        continue;
-      }
-
-      // Decide what to do based on stream mode
-      if (g_streamCodec == CODEC_MJPEG) {
-        // Enqueue current frame for background encoding (we already verified it's changed)
-        enqueue_encode_job(devInfoMain->outputFrame, frame_bytes, devInfoMain->startingWidth, devInfoMain->startingHeight);
-        // Try to broadcast the freshest encoded JPEG (non-blocking). It's okay if encoder hasn't caught up yet.
-        auto sp = std::atomic_load_explicit(&g_latest_jpeg, std::memory_order_acquire);
-        if (sp && !sp->empty()) {
-          broadcast_frame(sp->data(), sp->size());
-        }
+        consecutive_same_count = 0;
       } else {
-        // RAW RGB24 stream: if capture is BGR and user requested server convert (--bgr),
-        // do fast in-place swap (multi-threaded on large frames). Only do it when we're sending.
-        if (g_inputIsBGR) {
-          size_t pixels = (size_t)devInfoMain->startingWidth * (size_t)devInfoMain->startingHeight;
-          swap_rb_inplace_mt(devInfoMain->outputFrame, pixels, std::max(1, g_encode_threads)); // reuse enc thread count as hint
+        if (is_same) {
+          frame_changed = false;
+          consecutive_same_count++;
+        } else {
+          frame_changed = true;
+          consecutive_same_count = 0;
+          // refresh previous frame snapshot so next compare is accurate
+          if (prev_raw_frame.size() == frame_bytes) {
+            std::memcpy(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes);
+          } else {
+            prev_raw_frame.resize(frame_bytes);
+            std::memcpy(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes);
+          }
         }
-        broadcast_frame(devInfoMain->outputFrame, frame_bytes);
       }
-
-      if (!devInfoMain->realAndTargetRatesMatch) {
-        double us = devInfoMain->targetFrameDelayMicros - sw.elapsedMicros();
-        if (us > 0) usleep((useconds_t)us);
-      }*/
 
       // If the frame has not changed and lazy mode is enabled, render and send a filtered "stale" frame.
       // IMPORTANT: filtering happens after detection and uses a copy (never mutates devInfoMain->outputFrame),
       // so the filter's randomness won't break stale-frame detection in future iterations.
-      if (g_lazy_send && !frame_changed) {
+      /*if (g_lazy_send && !frame_changed) {
         const int w = devInfoMain->startingWidth;
         const int h = devInfoMain->startingHeight;
 
@@ -1111,6 +1104,61 @@ int main(const int argc, char** argv) {
         if (g_streamCodec == CODEC_MJPEG) {
           // Encode filtered RGB to JPEG synchronously and broadcast (do not involve the encoder pool,
           // since the pool assumes unfiltered raw input and may swap channels).
+          std::vector<unsigned char> jpeg;
+          if (encode_rgb24_to_jpeg_mem(filtered_rgb.data(), w, h, g_jpeg_quality, jpeg) && !jpeg.empty()) {
+            broadcast_frame(jpeg.data(), jpeg.size());
+          }
+        } else {
+          // RAW path: filtered output is RGB24 already; just send as-is.
+          broadcast_frame(filtered_rgb.data(), filtered_rgb.size());
+        }
+
+        if (!devInfoMain->realAndTargetRatesMatch) {
+          double us = devInfoMain->targetFrameDelayMicros - sw.elapsedMicros();
+          if (us > 0) usleep((useconds_t)us);
+        }
+        continue;
+      }*/
+      // If frame is unchanged, we normally skip encoding/sending. Only when we've seen
+      // enough consecutive identical frames (>= g_lazy_threshold) do we render & send the "stale" filtered frame.
+      if (g_lazy_send && !frame_changed) {
+        if (consecutive_same_count < g_lazy_threshold) {
+          // Not yet reached threshold: skip encoding/sending as before
+          if (!devInfoMain->realAndTargetRatesMatch) {
+            double us = devInfoMain->targetFrameDelayMicros - sw.elapsedMicros();
+            if (us > 0) usleep((useconds_t)us);
+          }
+          continue;
+        }
+
+        // We have reached the threshold: render and send a filtered "stale" frame.
+        const int w = devInfoMain->startingWidth;
+        const int h = devInfoMain->startingHeight;
+
+        // Prepare an RGB24 source for the filter without touching the captured buffer used for comparisons.
+        const uint8_t* src_rgb = reinterpret_cast<const uint8_t*>(devInfoMain->outputFrame);
+        std::vector<uint8_t> tmp_rgb; // only used if input is BGR
+        if (g_inputIsBGR) {
+          tmp_rgb.resize(frame_bytes);
+          const unsigned char* s = devInfoMain->outputFrame;
+          unsigned char* d = tmp_rgb.data();
+          const size_t pixels = (size_t)w * (size_t)h;
+          for (size_t i = 0; i < pixels; ++i) {
+            d[0] = s[2];
+            d[1] = s[1];
+            d[2] = s[0];
+            s += 3; d += 3;
+          }
+          src_rgb = tmp_rgb.data();
+        }
+
+        // Apply CRT filter to visually indicate stale frames
+        std::vector<uint8_t> filtered_rgb;
+        filtered_rgb.reserve(frame_bytes);
+        filter.apply(src_rgb, filtered_rgb); // outputs RGB24
+
+        if (g_streamCodec == CODEC_MJPEG) {
+          // Encode filtered RGB to JPEG synchronously and broadcast
           std::vector<unsigned char> jpeg;
           if (encode_rgb24_to_jpeg_mem(filtered_rgb.data(), w, h, g_jpeg_quality, jpeg) && !jpeg.empty()) {
             broadcast_frame(jpeg.data(), jpeg.size());

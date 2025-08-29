@@ -7,6 +7,27 @@ const { exec } = require('child_process');
 const ENABLE_SYSTEM_CMDS = process.env.ENABLE_SYSTEM_CMDS === '1'; // default off
 const net = require('net');
 const sp = require('serialport');
+const fs = require('fs');
+
+let fbInfo = { w: 1920, h: 1080, bpp: 32 };
+let lastMousePos = { x: Math.floor(fbInfo.w / 2), y: Math.floor(fbInfo.h / 2) };
+
+function readFbInfo() {
+  try {
+    const vs = fs.readFileSync('/sys/class/graphics/fb0/virtual_size', 'utf8').trim();
+    const bppStr = fs.readFileSync('/sys/class/graphics/fb0/bits_per_pixel', 'utf8').trim();
+    const parts = vs.split(',').map(s => s.trim());
+    const w = parseInt(parts[0], 10) || fbInfo.w;
+    const h = parseInt(parts[1], 10) || fbInfo.h;
+    const bpp = parseInt(bppStr, 10) || fbInfo.bpp;
+    fbInfo = { w, h, bpp };
+    lastMousePos = { x: Math.floor(fbInfo.w / 2), y: Math.floor(fbInfo.h / 2) };
+  } catch (e) {
+    // keep defaults if reading fails (e.g., not present)
+  }
+}
+readFbInfo();
+
 let ReadlineParserCtor;
 try {
   // v10+: { ReadlineParser }
@@ -17,7 +38,7 @@ try {
 }
 
 // robotjs is used to convert normalized absolute mouse to relative deltas
-//const robot = require('robotjs');
+const robot = require('robotjs');
 
 const CONTROL_PORT = parseInt(process.env.CONTROL_TCP_PORT || '1444', 10);
 const SERIAL_PORT_PATH = process.env.SERIAL_PORT || (process.platform === 'win32' ? 'COM8' : '/dev/ttyACM0');
@@ -108,11 +129,11 @@ function sendToTeensy(line) {
 }
 
 // Convert normalized absolute mouse move (0..1) to relative deltas using robotjs
-/*function handleAbsoluteMove(msg) {
+function handleAbsoluteMove(msg) {
   try {
-    const screen = robot.getScreenSize();
-    const targetX = Math.round(Math.max(0, Math.min(1, msg.x)) * (screen.width - 1));
-    const targetY = Math.round(Math.max(0, Math.min(1, msg.y)) * (screen.height - 1));
+    //const screen = robot.getScreenSize();
+    const targetX = Math.round(Math.max(0, Math.min(1, msg.x)) * (fbInfo.w - 1));
+    const targetY = Math.round(Math.max(0, Math.min(1, msg.y)) * (fbInfo.h - 1));
     const cur = robot.getMousePos();
     const dx = targetX - cur.x;
     const dy = targetY - cur.y;
@@ -120,6 +141,39 @@ function sendToTeensy(line) {
     sendToTeensy(`MREL ${dx} ${dy}\n`);
   } catch (e) {
     console.error('Absolute move conversion failed:', e.message);
+  }
+}
+/*function handleAbsoluteMove(msg) {
+  try {
+    const nx = Math.max(0, Math.min(1, Number(msg.x) || 0));
+    const ny = Math.max(0, Math.min(1, Number(msg.y) || 0));
+    const targetX = Math.round(nx * (fbInfo.w - 1));
+    const targetY = Math.round(ny * (fbInfo.h - 1));
+    const dx = targetX - lastMousePos.x;
+    const dy = targetY - lastMousePos.y;
+    if (dx === 0 && dy === 0) return;
+    // update tracked position (clamp to framebuffer)
+    lastMousePos.x = Math.max(0, Math.min(fbInfo.w - 1, lastMousePos.x + dx));
+    lastMousePos.y = Math.max(0, Math.min(fbInfo.h - 1, lastMousePos.y + dy));
+    process.stdout.write('targetX:' + targetX + ', targetY:' + targetY + ', lastMousePos.x:' + lastMousePos.x + ', lastMousePos.y:' + lastMousePos.y + ', msg.x:' + msg.x + ', msg.y:' + msg.y + '\n');
+    sendToTeensy(`MREL ${dx} ${dy}\n`);
+  } catch (e) {
+    console.error('Absolute move conversion failed:', e && e.message);
+  }
+}*/
+/*function handleAbsoluteMove(msg) {
+  try {
+    const nx = Math.max(0, Math.min(1, Number(msg.x) || 0));
+    const ny = Math.max(0, Math.min(1, Number(msg.y) || 0));
+    const tx = Math.round(nx * (fbInfo.w - 1));
+    const ty = Math.round(ny * (fbInfo.h - 1));
+    // Send MABS to Teensy (Teensy will compute delta internally).
+    sendToTeensy(`MABS ${tx} ${ty}\n`);
+    // Update sink-tracked cursor position (used for future deltas and SETPOS).
+    lastMousePos.x = tx;
+    lastMousePos.y = ty;
+  } catch (e) {
+    console.error('Absolute move conversion failed:', e && e.message);
   }
 }*/
 
@@ -136,7 +190,13 @@ const server = net.createServer((sock) => {
   try {
     //const screen = robot.getScreenSize();
     //sock.write(JSON.stringify({ type: 'info', remoteSize: { w: screen.width, h: screen.height } }) + '\n');
-    sock.write(JSON.stringify({ type: 'info', remoteSize: { w: 1920, h: 1080 } }) + '\n');
+    //sock.write(JSON.stringify({ type: 'info', remoteSize: { w: 1920, h: 1080 } }) + '\n');
+    sendToTeensy(`MSCRSZ ${fbInfo.w} ${fbInfo.h}\n`);
+    sock.write(JSON.stringify({ type: 'info', remoteSize: { w: fbInfo.w, h: fbInfo.h } }) + '\n');
+    // Tell Teensy our tracked starting cursor position so MABS/MREL behave predictably.
+    if (Number.isFinite(lastMousePos.x) && Number.isFinite(lastMousePos.y)) {
+      sendToTeensy(`SETPOS ${lastMousePos.x} ${lastMousePos.y}\n`);
+    }
   } catch (e) {
     console.warn('Could not get screen size:', e.message);
   }
@@ -156,11 +216,23 @@ const server = net.createServer((sock) => {
       if (msg.type === 'mouse') {
         const action = msg.action;
         if (action === 'move') {
-          //handleAbsoluteMove(msg);
+          handleAbsoluteMove(msg);
         } else if (action === 'moveRelative') {
+          /*const dx = Math.trunc(Number.isFinite(msg.dx) ? msg.dx : (msg.x || 0));
+          const dy = Math.trunc(Number.isFinite(msg.dy) ? msg.dy : (msg.y || 0));
+          sendToTeensy(`MREL ${dx} ${dy}\n`);
+          // Update tracked cursor position
+          lastMousePos.x = Math.max(0, Math.min(fbInfo.w - 1, lastMousePos.x + dx));
+          lastMousePos.y = Math.max(0, Math.min(fbInfo.h - 1, lastMousePos.y + dy));*/
+          /*const dx = Math.trunc(Number.isFinite(msg.dx) ? msg.dx : (msg.x || 0));
+          const dy = Math.trunc(Number.isFinite(msg.dy) ? msg.dy : (msg.y || 0));
+          sendToTeensy(`MREL ${dx} ${dy}\n`);*/
           const dx = Math.trunc(Number.isFinite(msg.dx) ? msg.dx : (msg.x || 0));
           const dy = Math.trunc(Number.isFinite(msg.dy) ? msg.dy : (msg.y || 0));
           sendToTeensy(`MREL ${dx} ${dy}\n`);
+          // Update tracked cursor position in framebuffer coords
+          lastMousePos.x = Math.max(0, Math.min(fbInfo.w - 1, lastMousePos.x + dx));
+          lastMousePos.y = Math.max(0, Math.min(fbInfo.h - 1, lastMousePos.y + dy));
         } else if (action === 'down') {
           const btn = (typeof msg.button === 'number') ? msg.button : 0;
           sendToTeensy(`MDOWN ${btn}\n`);
@@ -227,7 +299,13 @@ const server = net.createServer((sock) => {
         process.stdout.write('Sent remoteSize\n');
         //const screen = robot.getScreenSize();
         //sock.write(JSON.stringify({ type: 'info', remoteSize: { w: screen.width, h: screen.height } }) + '\n');
-        sock.write(JSON.stringify({ type: 'info', remoteSize: { w: 1920, h: 1080 } }) + '\n');
+        //sock.write(JSON.stringify({ type: 'info', remoteSize: { w: 1920, h: 1080 } }) + '\n');
+        sendToTeensy(`MSCRSZ ${fbInfo.w} ${fbInfo.h}\n`);
+        sock.write(JSON.stringify({ type: 'info', remoteSize: { w: fbInfo.w, h: fbInfo.h } }) + '\n');
+        // Tell Teensy our tracked starting cursor position so MABS/MREL behave predictably.
+        if (Number.isFinite(lastMousePos.x) && Number.isFinite(lastMousePos.y)) {
+          sendToTeensy(`SETPOS ${lastMousePos.x} ${lastMousePos.y}\n`);
+        }
       } else {
         sendToTeensy('RAW ' + escapeArg(JSON.stringify(msg)) + '\n');
       }

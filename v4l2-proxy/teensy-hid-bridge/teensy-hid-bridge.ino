@@ -14,12 +14,24 @@
 //
 // Reference: Teensyduino USB Keyboard library (press/release and micro manager) [1]
 
+int32_t lastMouseX = INT32_MIN;
+int32_t lastMouseY = INT32_MIN;
+
+#define DEFAULT_XRES 2560
+#define DEFAULT_YRES 1440
+
+//#define DEFAULT_XRES 1920
+//#define DEFAULT_YRES 1080
+
 void setup() {
   Serial.begin(115200);
   while (!Serial && millis() < 2000)
     ;
   Keyboard.begin();
   Mouse.begin();
+  TouchscreenUSB.begin();
+  delay(2000);
+  Mouse.screenSize(DEFAULT_XRES, DEFAULT_YRES);
 }
 
 String readLine() {
@@ -44,14 +56,14 @@ bool isWhitespace(char c) {
 // ---------------- Mouse helpers (unchanged) ----------------
 
 void chunkedMouseMove(int dx, int dy) {
-  const int MAX_STEP = 127;
+  const int MAX_STEP = 40;
   while (dx != 0 || dy != 0) {
     int sx = (dx > 0) ? min(dx, MAX_STEP) : max(dx, -MAX_STEP);
     int sy = (dy > 0) ? min(dy, MAX_STEP) : max(dy, -MAX_STEP);
     Mouse.move(sx, sy, 0);
     dx -= sx;
     dy -= sy;
-    delay(3);
+    //delay(3);
   }
 }
 
@@ -501,7 +513,70 @@ void loop() {
   if (cmd == "MREL" && n >= 3) {
     int dx = tok[1].toInt();
     int dy = tok[2].toInt();
+    /*Mouse.move(dx, dy);
+    Serial.print("MREL ");
+    Serial.print(dx);
+    Serial.print(" ");
+    Serial.println(dy);*/
     chunkedMouseMove(dx, dy);
+    // update tracked absolute position if known
+    if (lastMouseX != INT32_MIN && lastMouseY != INT32_MIN) {
+      lastMouseX += dx;
+      lastMouseY += dy;
+    }
+  } else if (cmd == "MSCRSZ" && n >= 3) {
+    // Screen size constraint limit (pixels)
+    int32_t tx = tok[1].toInt();
+    int32_t ty = tok[2].toInt();
+    Mouse.screenSize(tx, ty);
+    Serial.print("MSCRSZ ");
+    Serial.print(tx);
+    Serial.print(" ");
+    Serial.println(ty);
+  } else if (cmd == "MABS" && n >= 3) {
+    // Absolute target coordinates (pixels)
+    int32_t tx = tok[1].toInt();
+    int32_t ty = tok[2].toInt();
+
+    // Attempt blind move
+    /*Mouse.moveTo(tx, ty);
+    Serial.print("MABS ");
+    Serial.print(tx);
+    Serial.print(" ");
+    Serial.println(ty);*/
+
+    if (lastMouseX == INT32_MIN || lastMouseY == INT32_MIN) {
+      // Tracking not initialized: do not attempt a blind jump.
+      // Optionally set tracked position to tx,ty so subsequent MABS/MREL work.
+      lastMouseX = tx;
+      lastMouseY = ty;
+      // Do not move the host mouse, because we don't know its real position.
+      Serial.print("MABS initial sync, tracking set but no movement\n");
+    } else {
+      int dx = (int)(tx - lastMouseX);
+      int dy = (int)(ty - lastMouseY);
+      if (dx != 0 || dy != 0) {
+        chunkedMouseMove(dx, dy);
+        lastMouseX = tx;
+        lastMouseY = ty;
+      }
+    }
+  } else if (cmd == "SETPOS" && n >= 3) {
+    // Set tracked current cursor position without issuing movement.
+    lastMouseX = tok[1].toInt();
+    lastMouseY = tok[2].toInt();
+    Serial.print("SETPOS tracked: ");
+    Serial.print(lastMouseX);
+    Serial.print(", ");
+    Serial.println(lastMouseY);
+  } else if (cmd == "MABSDOWN" && n >= 4) {
+    int b = tok[1].toInt();   // finger 0-10
+    int tx = tok[2].toInt();  // X-pos
+    int ty = tok[3].toInt();  // Y-pos
+    TouchscreenUSB.press(b, tx, ty);
+  } else if (cmd == "MABSUP" && n >= 2) {
+    int b = tok[1].toInt();
+    TouchscreenUSB.release(b);
   } else if (cmd == "MDOWN" && n >= 2) {
     int b = tok[1].toInt();  // 0 L, 1 M, 2 R
     if (b == 0) Mouse.press(MOUSE_LEFT);
@@ -536,8 +611,14 @@ void loop() {
       delay(2);
     }
   } else if (cmd == "RELALLKEYS") {
-    Serial.println("Releasing all keys!");
+    Serial.println("Releasing all keys..");
+    delay(250);
+    for (int i = 0; i < 4095; i++) {
+      Keyboard.release(i);
+    }
+    delay(250);
     Keyboard.releaseAll();
+    Serial.println("Released all keys!");
   } else if (cmd == "RAW" && n >= 2) {
     Serial.print("RAW: ");
     for (int i = 1; i < n; i++) {
