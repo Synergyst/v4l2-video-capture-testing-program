@@ -149,6 +149,27 @@ static std::atomic<bool> done_flag{false}; // use instead of 'done' if you like
 // Track current streaming resolution even when devices are torn down
 static std::atomic<int> g_cur_width{defaultWidth};
 static std::atomic<int> g_cur_height{defaultHeight};
+CRTParams params {
+  .flicker_60hz = 0.904f,
+  .flicker_noise = 0.093f,
+  .scanline_strength = 0.25f, // 0..1
+  .mask_strength = 0.83f,     // 0..1
+  .grain_strength = 0.025f,   // 0..1
+  .h_warp_amp = 0.33f,        // pixels
+  .h_warp_freq_y = 0.03f,     // per-line
+  .h_warp_freq_t = 0.8f,      // per-second
+  .v_shake_amp = 1.2f,        // lines
+  .wobble_line_noise = 0.33f, // extra wobble noise per line (pixels)
+  .block_rows = 32            // multithread chunk size (rows)
+};
+
+size_t threads = std::thread::hardware_concurrency();
+//if (threads == 0) threads = 4;
+// FPS drives flicker/jitter timing; change later via set_fps()
+int fps = 60;
+
+// TODO for below: Use filter.apply(); when lazy frame mode is enabled and we are trying to generate lazy frames. This is going to be a way for the user to know we are using a stale frame.
+//void apply(const uint8_t* src_rgb24, std::vector<uint8_t>& dst);
 
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
@@ -1018,6 +1039,8 @@ static void no_signal_loop_blocking() {
   const double target_fps = std::max(1.0, allDevicesTargetFramerate);
   const double frame_us = 1000000.0 / target_fps;
 
+  fprintf(stderr, "Entered into no-signal-loop..");
+
   while (!shouldLoop.load()) {
     accept_new_clients(); // allow connections during downtime
 
@@ -1039,6 +1062,8 @@ int main(const int argc, char** argv) {
 
   // Create a window to display the results
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt);
+
+  CRTFilter filter(devInfoMain->startingWidth, devInfoMain->startingHeight, params, threads, fps);
 
   s_restart_thread = std::thread(restart_worker);
 
@@ -1082,29 +1107,6 @@ int main(const int argc, char** argv) {
   std::vector<unsigned char> prev_raw_frame;
   bool have_prev_frame = false;
   int consecutive_same_count = 0; // counts how many consecutive identical frames we've observed
-
-  CRTParams params;
-  // Optional tuning:
-  params.flicker_60hz = 0.904f;
-  params.flicker_noise = 0.093f;
-  params.scanline_strength = 0.25f; // 0..1
-  params.mask_strength = 0.83f;     // 0..1
-  params.grain_strength = 0.025f;   // 0..1
-  params.h_warp_amp = 0.33f;        // pixels
-  params.h_warp_freq_y = 0.03f;     // per-line
-  params.h_warp_freq_t = 0.8f;      // per-second
-  params.v_shake_amp = 1.2f;        // lines
-  params.wobble_line_noise = 0.33f; // extra wobble noise per line (pixels)
-  params.block_rows = 32;           // multithread chunk size (rows)
-
-  size_t threads = std::thread::hardware_concurrency();
-  if (threads == 0) threads = 4;
-  // FPS drives flicker/jitter timing; change later via set_fps()
-  int fps = 60;
-  CRTFilter filter(devInfoMain->startingWidth, devInfoMain->startingHeight, params, threads, fps);
-
-  // TODO for below: Use filter.apply(); when lazy frame mode is enabled and we are trying to generate lazy frames. This is going to be a way for the user to know we are using a stale frame.
-  //void apply(const uint8_t* src_rgb24, std::vector<uint8_t>& dst);
 
   while (true) {
     while (shouldLoop) {
@@ -1275,15 +1277,6 @@ int main(const int argc, char** argv) {
         if (us > 0) usleep((useconds_t)us);
       }
     }
-    /*usleep(250000);
-    shouldLoop.store(true);
-    deinit_bufs(buffersMain, devInfoMain);
-    if (isDualInput) deinit_bufs(buffersAlt, devInfoAlt);
-    free_devinfo(devInfoMain);
-    if (isDualInput) free_devinfo(devInfoAlt);
-    usleep(250000);
-    init_vars(devInfoMain, buffersMain, 3, allDevicesTargetFramerate, true, true, devNames[0].c_str(), 0);
-    if (isDualInput) init_vars(devInfoAlt, buffersAlt, 3, allDevicesTargetFramerate, true, true, devNames[1].c_str(), 1);*/
     {
       // Request async restart
       std::lock_guard<std::mutex> lk(s_restart_mtx);

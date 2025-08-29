@@ -436,6 +436,7 @@ const HTML_PAGE = `<!doctype html>
   chkLock.addEventListener('change', () => {
     setPointerLock(chkLock.checked);
     if (rememberLockPref) saveRememberLockPref(true);
+    setCaptureState(chkLock.checked);
   });
 
   chkAutoCapture.addEventListener('change', () => saveAutoCapturePref(chkAutoCapture.checked));
