@@ -996,13 +996,22 @@ int main(const int argc, char** argv) {
 
   CRTParams params;
   // Optional tuning:
-  params.block_rows = 64;
-  params.scanline_strength = 0.025f;
-  params.mask_strength = 0.015f; // etc.
+  params.flicker_60hz = 0.904f;
+  params.flicker_noise = 0.093f;
+  params.scanline_strength = 0.25f; // 0..1
+  params.mask_strength = 0.83f;     // 0..1
+  params.grain_strength = 0.025f;   // 0..1
+  params.h_warp_amp = 0.33f;        // pixels
+  params.h_warp_freq_y = 0.03f;     // per-line
+  params.h_warp_freq_t = 0.8f;      // per-second
+  params.v_shake_amp = 1.2f;        // lines
+  params.wobble_line_noise = 0.33f; // extra wobble noise per line (pixels)
+  params.block_rows = 32;           // multithread chunk size (rows)
+
   size_t threads = std::thread::hardware_concurrency();
   if (threads == 0) threads = 4;
   // FPS drives flicker/jitter timing; change later via set_fps()
-  int fps = 10;
+  int fps = 60;
   CRTFilter filter(devInfoMain->startingWidth, devInfoMain->startingHeight, params, threads, fps);
 
   // TODO for below: Use filter.apply(); when lazy frame mode is enabled and we are trying to generate lazy frames. This is going to be a way for the user to know we are using a stale frame.
@@ -1070,62 +1079,75 @@ int main(const int argc, char** argv) {
         if (us > 0) usleep((useconds_t)us);
       }*/
 
-      // Lazy-send: compare against previous captured frame (pre-conversion)
-      // If not changed, skip both encoding and sending to save CPU/bandwidth
+      // If the frame has not changed and lazy mode is enabled, render and send a filtered "stale" frame.
+      // IMPORTANT: filtering happens after detection and uses a copy (never mutates devInfoMain->outputFrame),
+      // so the filter's randomness won't break stale-frame detection in future iterations.
       if (g_lazy_send && !frame_changed) {
-        // Instead of completely skipping, generate a "stale" visual frame using CRTFilter
-        // so clients get a visual indication that frame is stale.
-        const int width = devInfoMain->startingWidth;
-        const int height = devInfoMain->startingHeight;
-        const size_t frame_len = (size_t)width * (size_t)height * (size_t)byteScaler;
+        const int w = devInfoMain->startingWidth;
+        const int h = devInfoMain->startingHeight;
 
-        // Prepare an RGB24 source for the filter. prev_raw_frame holds the captured bytes (pre-conversion).
-        std::vector<unsigned char> src_rgb;
+        // Prepare an RGB24 source for the filter without touching the captured buffer used for comparisons.
+        const uint8_t* src_rgb = reinterpret_cast<const uint8_t*>(devInfoMain->outputFrame);
+        std::vector<uint8_t> tmp_rgb; // only used if input is BGR
         if (g_inputIsBGR) {
-          // Convert BGR -> RGB into src_rgb
-          src_rgb.resize(frame_len);
-          const unsigned char* src = prev_raw_frame.data();
-          unsigned char* dst = src_rgb.data();
-          const size_t pixels = (size_t)width * (size_t)height;
-          for (size_t p = 0; p < pixels; ++p) {
-            // src is B,G,R ; dst must be R,G,B
-            dst[0] = src[2];
-            dst[1] = src[1];
-            dst[2] = src[0];
-            src += 3; dst += 3;
+          tmp_rgb.resize(frame_bytes);
+          const unsigned char* s = devInfoMain->outputFrame;
+          unsigned char* d = tmp_rgb.data();
+          const size_t pixels = (size_t)w * (size_t)h;
+          for (size_t i = 0; i < pixels; ++i) {
+            d[0] = s[2];
+            d[1] = s[1];
+            d[2] = s[0];
+            s += 3; d += 3;
           }
-        } else {
-          // Already RGB; make a copy (filter.apply may modify output)
-          src_rgb = prev_raw_frame;
+          src_rgb = tmp_rgb.data();
         }
 
-        // Apply CRT visualizer/filter to produce a visible "stale" frame
-        std::vector<unsigned char> filtered;
-        // filter.apply expects src RGB24 and fills 'filtered' with RGB24 same size
-        filter.apply(src_rgb.data(), filtered);
+        // Apply CRT filter to visually indicate stale frames
+        std::vector<uint8_t> filtered_rgb;
+        filtered_rgb.reserve(frame_bytes);
+        filter.apply(src_rgb, filtered_rgb); // outputs RGB24
 
-        // Sanity: ensure filtered size matches expected RAW frame length; otherwise skip sending
-        if (filtered.size() == frame_len) {
-          if (g_streamCodec == CODEC_MJPEG) {
-            // Encode filtered RGB to JPEG synchronously and broadcast
-            std::vector<unsigned char> jpeg;
-            if (encode_rgb24_to_jpeg_mem(filtered.data(), width, height, g_jpeg_quality, jpeg) && !jpeg.empty()) {
-              broadcast_frame(jpeg.data(), jpeg.size());
-            }
-          } else {
-            // RAW path: clients expect RGB24; broadcast filtered RGB directly
-            broadcast_frame(filtered.data(), filtered.size());
+        if (g_streamCodec == CODEC_MJPEG) {
+          // Encode filtered RGB to JPEG synchronously and broadcast (do not involve the encoder pool,
+          // since the pool assumes unfiltered raw input and may swap channels).
+          std::vector<unsigned char> jpeg;
+          if (encode_rgb24_to_jpeg_mem(filtered_rgb.data(), w, h, g_jpeg_quality, jpeg) && !jpeg.empty()) {
+            broadcast_frame(jpeg.data(), jpeg.size());
           }
         } else {
-          // If filter produced unexpected size, skip sending (safe fallback)
+          // RAW path: filtered output is RGB24 already; just send as-is.
+          broadcast_frame(filtered_rgb.data(), filtered_rgb.size());
         }
 
-        // Maintain original timing behavior if realAndTargetRatesMatch is false
         if (!devInfoMain->realAndTargetRatesMatch) {
           double us = devInfoMain->targetFrameDelayMicros - sw.elapsedMicros();
           if (us > 0) usleep((useconds_t)us);
         }
         continue;
+      }
+
+      // Decide what to do based on stream mode for changed frames
+      if (g_streamCodec == CODEC_MJPEG) {
+        // Enqueue current frame for background encoding (we already verified it's changed)
+        enqueue_encode_job(devInfoMain->outputFrame, frame_bytes, devInfoMain->startingWidth, devInfoMain->startingHeight);
+        // Try to broadcast the freshest encoded JPEG (non-blocking). It's okay if encoder hasn't caught up yet.
+        auto sp = std::atomic_load_explicit(&g_latest_jpeg, std::memory_order_acquire);
+        if (sp && !sp->empty()) {
+          broadcast_frame(sp->data(), sp->size());
+        }
+      } else {
+        // RAW RGB24 stream: if capture is BGR and user requested server convert (--bgr),
+        // do fast in-place swap (multi-threaded on large frames). Only do it when we're sending.
+        if (g_inputIsBGR) {
+          size_t pixels = (size_t)devInfoMain->startingWidth * (size_t)devInfoMain->startingHeight;
+          swap_rb_inplace_mt(devInfoMain->outputFrame, pixels, std::max(1, g_encode_threads)); // reuse enc thread count as hint
+        }
+        broadcast_frame(devInfoMain->outputFrame, frame_bytes);
+      }
+      if (!devInfoMain->realAndTargetRatesMatch) {
+        double us = devInfoMain->targetFrameDelayMicros - sw.elapsedMicros();
+        if (us > 0) usleep((useconds_t)us);
       }
     }
     usleep(2500000);

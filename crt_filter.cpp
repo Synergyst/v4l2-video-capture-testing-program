@@ -95,8 +95,7 @@ void CRTFilter::apply(const uint8_t* src, int frame_idx, int fps, std::vector<ui
             if (y_src >= h_) y_src = h_ - 1;
 
             // Horizontal wobble for this scanline
-            float wobble_base = p_.h_warp_amp *
-                std::sin(TWO_PI * (p_.h_warp_freq_y * (float)y + p_.h_warp_freq_t * fc.t) + phaseH_);
+            float wobble_base = p_.h_warp_amp * std::sin(TWO_PI * (p_.h_warp_freq_y * (float)y + p_.h_warp_freq_t * fc.t) + phaseH_);
             float wobble_noise = p_.wobble_line_noise * hash31_(0, (int)y, frame_idx);
             float wobble = wobble_base + wobble_noise;
 
