@@ -10,7 +10,7 @@ CXX = arm-linux-gnueabihf-g++-12
 #CXX = clang++
 
 EXE = v4l2-capture-test
-SOURCES = v4l2-capture-test.cpp crt_filter.cpp
+SOURCES = v4l2-capture-test.cpp crt_filter.cpp png_loader.cpp
 OBJS = $(addsuffix .o, $(basename $(notdir $(SOURCES))))
 UNAME_S := $(shell uname -s)
 
@@ -20,7 +20,7 @@ CXXFLAGS = -std=gnu++20
 CXXFLAGS += -g -Wall -Wformat -ftree-vectorize -flax-vector-conversions -fopenmp -O1 -Wextra -fno-omit-frame-pointer
 #CXXFLAGS += -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -DTARGET_POSIX -D_LINUX -fPIC -DPIC -D_REENTRANT -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -U_FORTIFY_SOURCE -DHAVE_LIBOPENMAX=2
 LIBS = `pkg-config --libs libv4l2 tbb32`
-LIBS += -lm -ldl -lpopt -ljpeg -lpthread -latomic
+LIBS += -lm -ldl -lpopt -ljpeg -lpthread -latomic -lpng
 
 ##---------------------------------------------------------------------
 ## BUILD FLAGS PER PLATFORM

@@ -48,6 +48,9 @@
 // CRT filter
 #include "crt_filter.h"
 
+// PNG loader
+#include "png_loader.h"
+
 // --------- V4L2 "v4l2-ctl" equivalents for HDMI setup (EDID/DV/Format/Status) ---------
 #ifndef VIDIOC_LOG_STATUS
 #define VIDIOC_LOG_STATUS _IO('V', 70)
@@ -763,8 +766,8 @@ static inline void swap_rb_inplace_mt(unsigned char* buf, size_t pixels, int thr
   for (auto& th : ths) th.join();
 }
 // --------------- V4L2 init/deinit/capture -----------------
-int init_dev_stage1(struct buffer*& buffers, struct devInfo*& devInfos) {
-  fprintf(stderr, "\n[cap%d] Starting V4L2 capture testing program with the following V4L2 device: %s\n", devInfos->index, devInfos->device);
+int init_dev_stage1(struct devInfo*& devInfos) {
+  fprintf(stderr, "[cap%d] Starting V4L2 capture testing program with the following V4L2 device: %s\n", devInfos->index, devInfos->device);
   struct stat st;
   if (-1 == stat(devInfos->device, &st)) {
     fprintf(stderr, "[cap%d] Cannot identify '%s': %d, %s\n", devInfos->index, devInfos->device, errno, strerror(errno));
@@ -808,7 +811,7 @@ int init_dev_stage1(struct buffer*& buffers, struct devInfo*& devInfos) {
   }
   CLEAR(fmt);
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  fprintf(stderr, "[cap%d] Forcing format for %s to: %d\n", devInfos->index, devInfos->device, devInfos->force_format);
+  fprintf(stderr, "[cap%d] Forcing format for %s to: %d ", devInfos->index, devInfos->device, devInfos->force_format);
   if (devInfos->force_format) {
     if (devInfos->force_format == 3) {
       byteScaler = devInfos->force_format;
@@ -816,18 +819,21 @@ int init_dev_stage1(struct buffer*& buffers, struct devInfo*& devInfos) {
       fmt.fmt.pix.height = devInfos->startingHeight;
       fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_RGB24;
       fmt.fmt.pix.field = V4L2_FIELD_NONE;
+      fprintf(stderr, "(RGB24)\n");
     } else if (devInfos->force_format == 2) {
       byteScaler = devInfos->force_format;
       fmt.fmt.pix.width = devInfos->startingWidth;
       fmt.fmt.pix.height = devInfos->startingHeight;
       fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_UYVY;
       fmt.fmt.pix.field = V4L2_FIELD_NONE;
+      fprintf(stderr, "(UYVY)\n");
     } else if (devInfos->force_format == 1) {
       byteScaler = devInfos->force_format;
       fmt.fmt.pix.width = devInfos->startingWidth;
       fmt.fmt.pix.height = devInfos->startingHeight;
       fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_GREY;
       fmt.fmt.pix.field = V4L2_FIELD_NONE;
+      fprintf(stderr, "(GREY)\n");
     }
     if (-1 == xioctl(devInfos->fd, VIDIOC_S_FMT, &fmt))
       errno_exit("VIDIOC_S_FMT");
@@ -1043,7 +1049,7 @@ int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_f
   devInfos->isTC358743 = isTC358743;
   devInfos->index = index;
 
-  init_dev_stage1(bufs, devInfos);
+  init_dev_stage1(devInfos);
   bufs = (buffer*)calloc(devInfos->req.count, sizeof(*bufs));
   init_dev_stage2(bufs, devInfos);
 
@@ -1055,7 +1061,7 @@ int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_f
 // Reinit in-place: no free of devInfo; safe for fallback loop using devInfo fields.
 int reinit_device_inplace(struct devInfo*& devInfos, struct buffer*& bufs) {
   // Stage1 establishes req.count; then allocate bufs; then stage2; ensure outputFrame sized
-  init_dev_stage1(bufs, devInfos);
+  init_dev_stage1(devInfos);
   bufs = (buffer*)calloc(devInfos->req.count, sizeof(*bufs));
   init_dev_stage2(bufs, devInfos);
 
@@ -1190,6 +1196,10 @@ static void enqueue_encode_job(const unsigned char* frameData, size_t bytes, int
   }
   s_enc_cv.notify_one();
 }
+PNGImage png_ctx {
+  .width = 1920,
+  .height = 1080
+};
 // --------------- CRT helpers (condensed) -----------------
 struct CRTContext {
   CRTParams params{};
@@ -1362,6 +1372,8 @@ int main(const int argc, char** argv) {
   // Parse options and devices
   parse_cli_or_die(argc, (const char**)argv);
 
+  load_png_rgb24("/root/v4l2-video-capture-testing-program/nosignal.png", png_ctx, false);
+
   // Init devices
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt);
   // Setup TCP server
@@ -1453,13 +1465,16 @@ int main(const int argc, char** argv) {
     uint64_t static_frame_idx = 0;
     while (programRunning.load() && !shouldLoop.load()) {
       accept_new_clients();
+      /*std::vector<uint8_t> static_rgb;
+      generate_rgb_static_frame(devInfoMain, static_frame_idx++, static_rgb);
       // Inherit current resolution from devInfoMain (safe; recovery thread re-inits in-place)
       ensure_crt_filter(crt, devInfoMain);
-      std::vector<uint8_t> static_rgb;
-      generate_rgb_static_frame(devInfoMain, static_frame_idx++, static_rgb);
       // If you want the CRT look for no-signal as well, uncomment the CRT path and comment direct broadcast:
       apply_crt_and_broadcast(crt, devInfoMain, static_rgb.data(), false);
-      broadcast_rgb24_buffer(devInfoMain, static_rgb);
+      broadcast_rgb24_buffer(devInfoMain, static_rgb);*/
+      ensure_crt_filter(crt, devInfoMain);
+      apply_crt_and_broadcast(crt, devInfoMain, png_ctx.rgb.data(), false);
+      broadcast_rgb24_buffer(devInfoMain, png_ctx.rgb);
       // Pace according to target frame delay
       double us = frame_delay_us(devInfoMain);
       if (us < 1000.0) us = 1000.0; // safety minimum 1ms
