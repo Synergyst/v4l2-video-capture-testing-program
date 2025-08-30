@@ -48,6 +48,15 @@
 // CRT filter
 #include "crt_filter.h"
 
+// --------- V4L2 "v4l2-ctl" equivalents for HDMI setup (EDID/DV/Format/Status) ---------
+#ifndef VIDIOC_LOG_STATUS
+#define VIDIOC_LOG_STATUS _IO('V', 70)
+#endif
+
+#include <dirent.h>
+#include <sys/stat.h>
+#include <glob.h>
+
 using namespace std;
 
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
@@ -137,6 +146,278 @@ int xioctl(int fh, int request, void* arg) {
   } while (-1 == r && errno == EINTR);
   return r;
 }
+
+// Expand "~" in paths (simple HOME-based expansion)
+static std::string expand_user_path(const char* p) {
+  if (!p || !*p) return std::string();
+  std::string s(p);
+  if (s[0] == '~') {
+    const char* home = getenv("HOME");
+    if (home && *home) s = std::string(home) + s.substr(1);
+  }
+  return s;
+}
+
+static bool read_file_binary(const std::string& path, std::vector<uint8_t>& out) {
+  out.clear();
+  FILE* f = fopen(path.c_str(), "rb");
+  if (!f) {
+    fprintf(stderr, "[edid] Failed to open EDID file: %s (%s)\n", path.c_str(), strerror(errno));
+    return false;
+  }
+  fseek(f, 0, SEEK_END);
+  long len = ftell(f);
+  if (len < 0) { fclose(f); fprintf(stderr, "[edid] ftell failed\n"); return false; }
+  fseek(f, 0, SEEK_SET);
+  out.resize((size_t)len);
+  size_t rd = fread(out.data(), 1, (size_t)len, f);
+  fclose(f);
+  if (rd != (size_t)len) {
+    fprintf(stderr, "[edid] Read size mismatch for %s\n", path.c_str());
+    out.clear();
+    return false;
+  }
+  return true;
+}
+
+// Fix EDID checksum for each 128-byte block
+static void fix_edid_checksums_inplace(std::vector<uint8_t>& edid) {
+  if (edid.size() % 128 != 0) {
+    fprintf(stderr, "[edid] Warning: EDID size (%zu) is not a multiple of 128, cannot fix checksums\n", edid.size());
+    return;
+  }
+  const size_t blocks = edid.size() / 128;
+  for (size_t b = 0; b < blocks; ++b) {
+    uint8_t sum = 0;
+    uint8_t* blk = edid.data() + b * 128;
+    for (int i = 0; i < 127; ++i) sum = (uint8_t)(sum + blk[i]);
+    blk[127] = (uint8_t)(0x100 - sum); // so that total % 256 == 0
+  }
+}
+
+static int open_video_node_rw(const char* dev) {
+  int fd = open(dev, O_RDWR | O_NONBLOCK, 0);
+  if (fd < 0) fprintf(stderr, "[v4l2] Cannot open '%s': %d, %s\n", dev, errno, strerror(errno));
+  return fd;
+}
+
+// 1) List /dev/video* and query caps (like: v4l2-ctl --list-devices plus quick info)
+static void list_video_nodes_and_caps() {
+  glob_t g;
+  if (glob("/dev/video*", 0, nullptr, &g) != 0) {
+    fprintf(stderr, "[list] No /dev/video* nodes\n");
+    return;
+  }
+  for (size_t i = 0; i < g.gl_pathc; ++i) {
+    const char* dev = g.gl_pathv[i];
+    struct stat st{};
+    if (stat(dev, &st) != 0 || !S_ISCHR(st.st_mode)) continue;
+
+    int fd = open_video_node_rw(dev);
+    if (fd < 0) { continue; }
+
+    struct v4l2_capability cap;
+    if (xioctl(fd, VIDIOC_QUERYCAP, &cap) == 0) {
+      fprintf(stderr, "%s: driver=%s, card=%s, bus=%s, version=%u.%u.%u, caps=0x%08x\n",
+              dev, (const char*)cap.driver, (const char*)cap.card, (const char*)cap.bus_info,
+              (cap.version >> 16) & 0xFF, (cap.version >> 8) & 0xFF, cap.version & 0xFF,
+              cap.capabilities);
+    } else {
+      fprintf(stderr, "%s: VIDIOC_QUERYCAP failed: %s\n", dev, strerror(errno));
+    }
+    close(fd);
+  }
+  globfree(&g);
+}
+
+// 2) Set EDID from file on a video node (like: v4l2-ctl --set-edid=file<path> --fix-edid-checksums)
+static bool set_device_edid_from_file(const char* dev, const char* edid_path, bool fix_checksums) {
+  std::string path = expand_user_path(edid_path);
+  std::vector<uint8_t> edid;
+  if (!read_file_binary(path, edid)) return false;
+  if (edid.size() < 128 || (edid.size() % 128) != 0) {
+    fprintf(stderr, "[edid] Invalid EDID size %zu (must be 128*N)\n", edid.size());
+    return false;
+  }
+  if (fix_checksums) fix_edid_checksums_inplace(edid);
+
+  int fd = open_video_node_rw(dev);
+  if (fd < 0) return false;
+
+  struct v4l2_edid vedid;
+  CLEAR(vedid);
+  vedid.pad = 0;             // for subdevs with pads; 0 for video node
+  vedid.start_block = 0;
+  vedid.blocks = (uint32_t)(edid.size() / 128);
+  vedid.edid = edid.data();
+
+  int rc = xioctl(fd, VIDIOC_S_EDID, &vedid);
+  if (rc < 0) {
+    fprintf(stderr, "[edid] VIDIOC_S_EDID failed on %s: %s\n", dev, strerror(errno));
+    close(fd);
+    return false;
+  }
+  fprintf(stderr, "[edid] Set %u EDID block(s) on %s from %s\n", vedid.blocks, dev, path.c_str());
+  close(fd);
+  return true;
+}
+
+// 3) Query and set DV timings to current detected timings
+static bool query_and_set_dv_timings(const char* dev) {
+  int fd = open_video_node_rw(dev);
+  if (fd < 0) return false;
+
+  struct v4l2_dv_timings timings;
+  CLEAR(timings);
+  if (xioctl(fd, VIDIOC_QUERY_DV_TIMINGS, &timings) < 0) {
+    fprintf(stderr, "[dv] VIDIOC_QUERY_DV_TIMINGS failed on %s: %s\n", dev, strerror(errno));
+    close(fd);
+    return false;
+  }
+  fprintf(stderr, "[dv] Query timings: %ux%u, pixelclock=%llu\n",
+          timings.bt.width, timings.bt.height, (unsigned long long)timings.bt.pixelclock);
+
+  if (xioctl(fd, VIDIOC_S_DV_TIMINGS, &timings) < 0) {
+    fprintf(stderr, "[dv] VIDIOC_S_DV_TIMINGS failed on %s: %s\n", dev, strerror(errno));
+    close(fd);
+    return false;
+  }
+  fprintf(stderr, "[dv] Set DV timings to current detected timings on %s\n", dev);
+  close(fd);
+  return true;
+}
+
+// 4) Print current format (like v4l2-ctl -V)
+static void print_current_format(const char* dev) {
+  int fd = open_video_node_rw(dev);
+  if (fd < 0) return;
+
+  struct v4l2_format fmt;
+  CLEAR(fmt);
+  fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  if (xioctl(fd, VIDIOC_G_FMT, &fmt) == 0) {
+    uint32_t fourcc = fmt.fmt.pix.pixelformat;
+    char fcc[5] = { (char)(fourcc & 0xFF), (char)((fourcc >> 8) & 0xFF), (char)((fourcc >> 16) & 0xFF), (char)((fourcc >> 24) & 0xFF), 0 };
+    fprintf(stderr, "[fmt] %s: %ux%u, pix=%s, bytesperline=%u, sizeimage=%u, field=%u, colorspace=%u\n",
+            dev,
+            fmt.fmt.pix.width, fmt.fmt.pix.height,
+            fcc, fmt.fmt.pix.bytesperline, fmt.fmt.pix.sizeimage,
+            fmt.fmt.pix.field, fmt.fmt.pix.colorspace);
+  } else {
+    fprintf(stderr, "[fmt] VIDIOC_G_FMT failed on %s: %s\n", dev, strerror(errno));
+  }
+  close(fd);
+}
+
+// 5) Set pixel format to RGB3 (RGB24) like: v4l2-ctl -v pixelformat=RGB3
+static bool set_pixfmt_rgb3(const char* dev) {
+  int fd = open_video_node_rw(dev);
+  if (fd < 0) return false;
+
+  // First get current to preserve width/height
+  struct v4l2_format fmt;
+  CLEAR(fmt);
+  fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  if (xioctl(fd, VIDIOC_G_FMT, &fmt) < 0) {
+    fprintf(stderr, "[fmt] VIDIOC_G_FMT failed on %s: %s\n", dev, strerror(errno));
+    close(fd);
+    return false;
+  }
+  fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_RGB24;
+  fmt.fmt.pix.field = V4L2_FIELD_NONE;
+  if (xioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
+    fprintf(stderr, "[fmt] VIDIOC_S_FMT(RGB24) failed on %s: %s\n", dev, strerror(errno));
+    close(fd);
+    return false;
+  }
+  fprintf(stderr, "[fmt] %s: set pixelformat to RGB3 (RGB24)\n", dev);
+  close(fd);
+  return true;
+}
+
+// Optionally set to UYVY instead
+static bool set_pixfmt_uyvy(const char* dev) {
+  int fd = open_video_node_rw(dev);
+  if (fd < 0) return false;
+
+  struct v4l2_format fmt;
+  CLEAR(fmt);
+  fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  if (xioctl(fd, VIDIOC_G_FMT, &fmt) < 0) {
+    fprintf(stderr, "[fmt] VIDIOC_G_FMT failed on %s: %s\n", dev, strerror(errno));
+    close(fd);
+    return false;
+  }
+  fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_UYVY;
+  fmt.fmt.pix.field = V4L2_FIELD_NONE;
+  if (xioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
+    fprintf(stderr, "[fmt] VIDIOC_S_FMT(UYVY) failed on %s: %s\n", dev, strerror(errno));
+    close(fd);
+    return false;
+  }
+  fprintf(stderr, "[fmt] %s: set pixelformat to UYVY\n", dev);
+  close(fd);
+  return true;
+}
+
+// 6) Log status (like v4l2-ctl --log-status)
+static void log_device_status(const char* dev) {
+  int fd = open_video_node_rw(dev);
+  if (fd < 0) return;
+  if (xioctl(fd, VIDIOC_LOG_STATUS, NULL) < 0) {
+    fprintf(stderr, "[status] VIDIOC_LOG_STATUS failed on %s: %s\n", dev, strerror(errno));
+  } else {
+    fprintf(stderr, "[status] Logged driver status for %s (check dmesg/journal)\n", dev);
+  }
+  close(fd);
+}
+
+// High-level runner replicating your script sequence for a device node
+// Script steps replicated:
+//   list video nodes
+//   for m in 1:
+//     set EDID (with fix checksums), sleep 2
+//     query DV timings, sleep 1
+//     set DV timings to query, sleep 1
+//     print format, sleep 1
+//     set format to RGB3, sleep 1
+//     log status
+static void run_hdmi_setup_for_device(const char* dev_path, const char* edid_file_path, bool fix_checksums, bool set_rgb3_fmt = true) {
+  // Print available devices (equivalent to: ls /dev/video* && v4l2-ctl --list-devices)
+  list_video_nodes_and_caps();
+
+  if (!set_device_edid_from_file(dev_path, edid_file_path, fix_checksums)) {
+    fprintf(stderr, "[setup] Skipping further steps for %s due to EDID failure\n", dev_path);
+    return;
+  }
+  usleep(2 * 1000 * 1000); // sleep 2
+
+  if (!query_and_set_dv_timings(dev_path)) {
+    fprintf(stderr, "[setup] DV timings query/set failed for %s\n", dev_path);
+  }
+  usleep(1 * 1000 * 1000); // sleep 1
+
+  print_current_format(dev_path);
+  usleep(1 * 1000 * 1000); // sleep 1
+
+  if (set_rgb3_fmt) {
+    set_pixfmt_rgb3(dev_path);
+  } else {
+    // set_pixfmt_uyvy(dev_path);
+  }
+  usleep(1 * 1000 * 1000); // sleep 1
+
+  fprintf(stderr, "%s: ", dev_path);
+  log_device_status(dev_path);
+}
+
+// Convenience: run for multiple device nodes
+static void run_hdmi_setup_for_devices(const std::vector<std::string>& devs, const char* edid_file_path, bool fix_checksums, bool set_rgb3_fmt = true) {
+  for (const auto& dev : devs) {
+    run_hdmi_setup_for_device(dev.c_str(), edid_file_path, fix_checksums, set_rgb3_fmt);
+  }
+}
+
 static inline std::string trim_copy(const std::string& s) {
   const char* ws = " \t\r\n";
   const auto b = s.find_first_not_of(ws);
@@ -760,13 +1041,12 @@ void cleanup_vars() {
   if (listen_fd >= 0) { close(listen_fd); listen_fd = -1; }
 }
 void configure_main(struct devInfo*& deviMain, struct buffer*& bufMain, struct devInfo*& deviAlt, struct buffer*& bufAlt) {
-  fprintf(stderr, "[main] Initializing..\n");
+  fprintf(stderr, "[main] Initializing..");
   init_vars(deviMain, bufMain, 3, allDevicesTargetFramerate, true, true, devNames[0].c_str(), 0);
   if (isDualInput) init_vars(deviAlt, bufAlt, 3, allDevicesTargetFramerate, true, true, devNames[1].c_str(), 1);
   shouldLoop.store(true);
   numPixels = devInfoMain->startingWidth * devInfoMain->startingHeight;
   usleep(1000);
-  fprintf(stderr, "\n");
 }
 // ----------------- MJPEG Encoder Thread Pool -----------------
 struct EncodeJob {
@@ -1025,6 +1305,10 @@ static void recovery_worker() {
       shouldLoop.store(true);
     } else {
       fprintf(stderr, "[recovery] Still no signal; will retry reinit cycle.\n");
+      // Optional: perform HDMI/EDID setup before configuring and starting capture
+      const char* edid_path = "/root/v4l2-video-capture-testing-program/customgoodhdmiedid_binary.txt";
+      //run_hdmi_setup_for_device("/dev/video1", edid_path, /*fix_checksums=*/true, /*set_rgb3_fmt=*/true);
+      run_hdmi_setup_for_device(devInfoMain->device, edid_path, true, true);
       // Loop continues; we already waited 0.5s before deinit and 0.5s after reinit each cycle as requested.
     }
   }
@@ -1033,6 +1317,7 @@ static void recovery_worker() {
 int main(const int argc, char** argv) {
   // Parse options and devices
   parse_cli_or_die(argc, (const char**)argv);
+
   // Init devices
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt);
   // Setup TCP server
@@ -1054,7 +1339,7 @@ int main(const int argc, char** argv) {
     std::lock_guard<std::mutex> lk(g_v4l2_mtx);
     if (get_frame(buffersMain, devInfoMain) != 0) break;
   }
-  fprintf(stderr, "\n[main] Starting main loops (stream=%s%s, inputIsBGR=%d, lazy=%d)\n", (g_streamCodec == CODEC_RAW ? "RAW" : "MJPEG"), (g_streamCodec == CODEC_MJPEG ? (std::string(", q=") + std::to_string(g_jpeg_quality)).c_str() : ""), g_inputIsBGR ? 1 : 0, g_lazy_send ? 1 : 0);
+  fprintf(stderr, "[main] Starting main loops (stream=%s%s, inputIsBGR=%d, lazy=%d)\n", (g_streamCodec == CODEC_RAW ? "RAW" : "MJPEG"), (g_streamCodec == CODEC_MJPEG ? (std::string(", q=") + std::to_string(g_jpeg_quality)).c_str() : ""), g_inputIsBGR ? 1 : 0, g_lazy_send ? 1 : 0);
   // Lazy-send state
   std::vector<unsigned char> prev_raw_frame;
   bool have_prev_frame = false;
@@ -1129,7 +1414,7 @@ int main(const int argc, char** argv) {
       std::vector<uint8_t> static_rgb;
       generate_rgb_static_frame(devInfoMain, static_frame_idx++, static_rgb);
       // If you want the CRT look for no-signal as well, uncomment the CRT path and comment direct broadcast:
-      // apply_crt_and_broadcast(crt, devInfoMain, static_rgb.data(), /*is_bgr*/ false);
+      apply_crt_and_broadcast(crt, devInfoMain, static_rgb.data(), false);
       broadcast_rgb24_buffer(devInfoMain, static_rgb);
       // Pace according to target frame delay
       double us = frame_delay_us(devInfoMain);
