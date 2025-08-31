@@ -8,7 +8,6 @@
 // - Dedicated recovery thread handles V4L2 select timeouts: deinit/reinit with specified delays.
 // - Secondary loop outputs "no-signal" frames while capture is down.
 // - Memory leak fixes preserved; deinit and free helpers intact.
-
 #include <cmath>
 #include <vector>
 #include <chrono>
@@ -46,69 +45,53 @@
 #include <memory>
 #include <optional>
 #include <system_error>
-
 // CRT filter
 #include "crt_filter.h"
-
 // PNG loader
 #include "png_loader.h"
-
 // --------- V4L2 "v4l2-ctl" equivalents for HDMI setup (EDID/DV/Format/Status) ---------
 #ifndef VIDIOC_LOG_STATUS
 #define VIDIOC_LOG_STATUS _IO('V', 70)
 #endif
-
 #include <dirent.h>
 #include <sys/stat.h>
 #include <glob.h>
-
 using namespace std;
-
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
-
 // Globals/config
 int byteScaler = 3, defaultWidth = 1920, defaultHeight = 1080, numPixels = defaultWidth * defaultHeight;
 double allDevicesTargetFramerate = 240;
 bool isDualInput = false;
 std::atomic<bool> shouldLoop;          // true => main capture loop active; false => no-signal loop active
 std::atomic<bool> programRunning{true};
-
 std::future<int> background_task_cap_main;
 std::future<int> background_task_cap_alt;
 std::vector<std::string> devNames;
-
 // TCP server globals
 int listenPort = 0;
 int listen_fd = -1;
 std::vector<int> client_fds;
-
 // Stream encoding globals
 enum StreamCodec { CODEC_RAW = 0, CODEC_MJPEG = 1 };
 StreamCodec g_streamCodec = CODEC_RAW;
 int g_jpeg_quality = 80;   // 1-100
 bool g_inputIsBGR = false; // set by --bgr
-
 // Lazy-send toggle
 bool g_lazy_send = true;
 int g_lazy_threshold = 1;
-
 // New: encoder threading controls
 int g_encode_threads = 0;       // 0 => auto
 size_t g_encode_queue_max = 0;  // later relative to threads
-
 // Latest JPEG encoded by workers
 std::shared_ptr<std::vector<unsigned char>> g_latest_jpeg;
 std::atomic<uint64_t> g_latest_jpeg_id{0};
-
 // Simple synch for V4L2 calls and device (re)init sequences
 static std::mutex g_v4l2_mtx;
-
 // Types
 struct buffer {
   void* start;
   size_t length;
 };
-
 struct devInfo {
   int frame_number,
     framerate,
@@ -132,13 +115,11 @@ struct devInfo {
   unsigned char* outputFrame;
   char* device;
 };
-
 // Globals for devices
 struct buffer* buffersMain = nullptr;
 struct buffer* buffersAlt = nullptr;
 struct devInfo* devInfoMain = nullptr;
 struct devInfo* devInfoAlt = nullptr;
-
 // Helpers
 void errno_exit(const char* s) {
   fprintf(stderr, "%s error %d, %s\n", s, errno, strerror(errno));
@@ -152,6 +133,46 @@ int xioctl(int fh, int request, void* arg) {
   return r;
 }
 
+// ---- New: Easily-callable V4L2 DV timings helper (matches: v4l2-ctl -d X --query-dv-timings; sleep 2; v4l2-ctl -d X --set-dv-bt-timings query)
+namespace v4l2util {
+
+// Returns std::nullopt on success, or an error message on failure.
+// If outTimings is provided, it will be filled with the queried timings on success.
+// sleepSeconds controls the delay between query and set (default 2 seconds).
+inline std::optional<std::string>
+queryAndSetDvBtTimings(const std::string& devnode, v4l2_dv_timings* outTimings = nullptr, unsigned sleepSeconds = 2) {
+  int fd = open(devnode.c_str(), O_RDWR);
+  if (fd < 0) {
+    return std::string("open(") + devnode + ") failed: " + std::strerror(errno);
+  }
+
+  v4l2_dv_timings timings{};
+  if (xioctl(fd, VIDIOC_QUERY_DV_TIMINGS, &timings) < 0) {
+    int saved = errno;
+    close(fd);
+    return std::string("VIDIOC_QUERY_DV_TIMINGS failed: ") + std::strerror(saved);
+  }
+
+  if (outTimings) {
+    *outTimings = timings;
+  }
+
+  if (sleepSeconds > 0) {
+    std::this_thread::sleep_for(std::chrono::seconds(sleepSeconds));
+  }
+
+  if (xioctl(fd, VIDIOC_S_DV_TIMINGS, &timings) < 0) {
+    int saved = errno;
+    close(fd);
+    return std::string("VIDIOC_S_DV_TIMINGS failed: ") + std::strerror(saved);
+  }
+
+  close(fd);
+  return std::nullopt;
+}
+
+} // namespace v4l2util
+
 // Expand "~" in paths (simple HOME-based expansion)
 static std::string expand_user_path(const char* p) {
   if (!p || !*p) return std::string();
@@ -162,7 +183,6 @@ static std::string expand_user_path(const char* p) {
   }
   return s;
 }
-
 // Tag formatter and device index parsing for /dev/videoN
 static void make_tag(char* out, size_t cap, const char* base, int idx) {
   if (idx >= 0) snprintf(out, cap, "[%s%d]", base, idx);
@@ -177,17 +197,14 @@ static int parse_video_index_from_path(const char* dev) {
   while (start >= 0 && isdigit((unsigned char)dev[start])) start--;
   start++;
   if (start <= end) {
-    // ensure prefix looks like "...video"
     const char* p = strstr(dev, "video");
     if (p) {
-      // Accept any trailing digits after last 'video'
       return atoi(dev + start);
     }
     return atoi(dev + start);
   }
   return -1;
 }
-
 static bool read_file_binary(const std::string& path, std::vector<uint8_t>& out, int dev_index = -1) {
   out.clear();
   FILE* f = fopen(path.c_str(), "rb");
@@ -210,7 +227,6 @@ static bool read_file_binary(const std::string& path, std::vector<uint8_t>& out,
   }
   return true;
 }
-
 // Fix EDID checksum for each 128-byte block
 static void fix_edid_checksums_inplace(std::vector<uint8_t>& edid, int dev_index = -1) {
   char tag[32]; make_tag(tag, sizeof(tag), "edid", dev_index);
@@ -226,7 +242,6 @@ static void fix_edid_checksums_inplace(std::vector<uint8_t>& edid, int dev_index
     blk[127] = (uint8_t)(0x100 - sum); // so that total % 256 == 0
   }
 }
-
 static int open_video_node_rw(const char* dev, int dev_index = -1) {
   int fd = open(dev, O_RDWR | O_NONBLOCK, 0);
   if (fd < 0) {
@@ -235,7 +250,6 @@ static int open_video_node_rw(const char* dev, int dev_index = -1) {
   }
   return fd;
 }
-
 // 1) List /dev/video* and query caps (like: v4l2-ctl --list-devices plus quick info)
 static void list_video_nodes_and_caps() {
   glob_t g;
@@ -247,15 +261,12 @@ static void list_video_nodes_and_caps() {
     const char* dev = g.gl_pathv[i];
     struct stat st{};
     if (stat(dev, &st) != 0 || !S_ISCHR(st.st_mode)) continue;
-
     int idx = parse_video_index_from_path(dev);
     char tag[32];
     if (idx >= 0) snprintf(tag, sizeof(tag), "[list%d]", idx);
     else snprintf(tag, sizeof(tag), "[list]");
-
     int fd = open_video_node_rw(dev, idx);
     if (fd < 0) { continue; }
-
     struct v4l2_capability cap;
     if (xioctl(fd, VIDIOC_QUERYCAP, &cap) == 0) {
       fprintf(stderr, "%s %s: driver=%s, card=%s, bus=%s, version=%u.%u.%u, caps=0x%08x\n",
@@ -269,7 +280,6 @@ static void list_video_nodes_and_caps() {
   }
   globfree(&g);
 }
-
 // 2) Set EDID from file on a video node (like: v4l2-ctl --set-edid=file<path> --fix-edid-checksums)
 static bool set_device_edid_from_file(const char* dev, const char* edid_path, bool fix_checksums, int dev_index = -1) {
   std::string path = expand_user_path(edid_path);
@@ -281,17 +291,14 @@ static bool set_device_edid_from_file(const char* dev, const char* edid_path, bo
     return false;
   }
   if (fix_checksums) fix_edid_checksums_inplace(edid, dev_index);
-
   int fd = open_video_node_rw(dev, dev_index);
   if (fd < 0) return false;
-
   struct v4l2_edid vedid;
   CLEAR(vedid);
   vedid.pad = 0;             // for subdevs with pads; 0 for video node
   vedid.start_block = 0;
   vedid.blocks = (uint32_t)(edid.size() / 128);
   vedid.edid = edid.data();
-
   int rc = xioctl(fd, VIDIOC_S_EDID, &vedid);
   if (rc < 0) {
     fprintf(stderr, "%s VIDIOC_S_EDID failed on %s: %s\n", tag, dev, strerror(errno));
@@ -302,13 +309,11 @@ static bool set_device_edid_from_file(const char* dev, const char* edid_path, bo
   close(fd);
   return true;
 }
-
-// 3) Query and set DV timings to current detected timings
+// 3) Query and set DV timings to current detected timings (legacy helper; kept for compatibility)
 static bool query_and_set_dv_timings(const char* dev, int dev_index = -1) {
   char tag[32]; make_tag(tag, sizeof(tag), "dvt", dev_index);
   int fd = open_video_node_rw(dev, dev_index);
   if (fd < 0) return false;
-
   struct v4l2_dv_timings timings;
   CLEAR(timings);
   if (xioctl(fd, VIDIOC_QUERY_DV_TIMINGS, &timings) < 0) {
@@ -318,7 +323,6 @@ static bool query_and_set_dv_timings(const char* dev, int dev_index = -1) {
   }
   fprintf(stderr, "%s Query timings: %ux%u, pixelclock=%llu\n",
           tag, timings.bt.width, timings.bt.height, (unsigned long long)timings.bt.pixelclock);
-
   if (xioctl(fd, VIDIOC_S_DV_TIMINGS, &timings) < 0) {
     fprintf(stderr, "%s VIDIOC_S_DV_TIMINGS failed on %s: %s\n", tag, dev, strerror(errno));
     close(fd);
@@ -328,13 +332,11 @@ static bool query_and_set_dv_timings(const char* dev, int dev_index = -1) {
   close(fd);
   return true;
 }
-
 // 4) Print current format (like v4l2-ctl -V)
 static void print_current_format(const char* dev, int dev_index = -1) {
   char tag[32]; make_tag(tag, sizeof(tag), "fmt", dev_index);
   int fd = open_video_node_rw(dev, dev_index);
   if (fd < 0) return;
-
   struct v4l2_format fmt;
   CLEAR(fmt);
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -352,13 +354,11 @@ static void print_current_format(const char* dev, int dev_index = -1) {
   }
   close(fd);
 }
-
 // 5) Set pixel format to RGB3 (RGB24) like: v4l2-ctl -v pixelformat=RGB3
 static bool set_pixfmt_rgb3(const char* dev, int dev_index = -1) {
   char tag[32]; make_tag(tag, sizeof(tag), "fmt", dev_index);
   int fd = open_video_node_rw(dev, dev_index);
   if (fd < 0) return false;
-
   // First get current to preserve width/height
   struct v4l2_format fmt;
   CLEAR(fmt);
@@ -379,13 +379,11 @@ static bool set_pixfmt_rgb3(const char* dev, int dev_index = -1) {
   close(fd);
   return true;
 }
-
 // Optionally set to UYVY instead
 static bool set_pixfmt_uyvy(const char* dev, int dev_index = -1) {
   char tag[32]; make_tag(tag, sizeof(tag), "fmt", dev_index);
   int fd = open_video_node_rw(dev, dev_index);
   if (fd < 0) return false;
-
   struct v4l2_format fmt;
   CLEAR(fmt);
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -405,7 +403,6 @@ static bool set_pixfmt_uyvy(const char* dev, int dev_index = -1) {
   close(fd);
   return true;
 }
-
 // 6) Log status (like v4l2-ctl --log-status)
 static void log_device_status(const char* dev, int dev_index = -1) {
   char tag[32]; make_tag(tag, sizeof(tag), "status", dev_index);
@@ -418,44 +415,43 @@ static void log_device_status(const char* dev, int dev_index = -1) {
   }
   close(fd);
 }
-
 // High-level runner replicating your script sequence for a device node
 // Script steps replicated:
 //   list video nodes
 //   for m in 1:
 //     set EDID (with fix checksums), sleep 2
-//     query DV timings, sleep 1
-//     set DV timings to query, sleep 1
+//     query DV timings, sleep 2 inside helper, set DV timings to query
 //     print format, sleep 1
 //     set format to RGB3, sleep 1
 //     log status
 static void run_hdmi_setup_for_device(const char* dev_path, const char* edid_file_path, bool fix_checksums, bool set_rgb3_fmt = true, int dev_index = -1) {
   // Print available devices (equivalent to: ls /dev/video* && v4l2-ctl --list-devices)
   list_video_nodes_and_caps();
-
   char tag[32]; make_tag(tag, sizeof(tag), "setup", dev_index);
-
   if (!set_device_edid_from_file(dev_path, edid_file_path, fix_checksums, dev_index)) {
     fprintf(stderr, "%s Skipping further steps for %s due to EDID failure\n", tag, dev_path);
     return;
   }
   usleep(2 * 1000 * 1000); // sleep 2
-
-  if (!query_and_set_dv_timings(dev_path, dev_index)) {
-    fprintf(stderr, "%s DV timings query/set failed for %s\n", tag, dev_path);
+  {
+    v4l2_dv_timings t{};
+    auto err = v4l2util::queryAndSetDvBtTimings(dev_path, &t, 2); // query; sleep 2; set
+    if (err) {
+      fprintf(stderr, "%s DV timings query/set failed for %s: %s\n", tag, dev_path, err->c_str());
+    } else {
+      fprintf(stderr, "%s DV timings set from current detected timings: %ux%u, pixelclock=%llu\n",
+              tag, t.bt.width, t.bt.height, (unsigned long long)t.bt.pixelclock);
+    }
   }
   usleep(1 * 1000 * 1000); // sleep 1
-
   print_current_format(dev_path, dev_index);
   usleep(1 * 1000 * 1000); // sleep 1
-
   if (set_rgb3_fmt) {
     set_pixfmt_rgb3(dev_path, dev_index);
   } else {
     set_pixfmt_uyvy(dev_path, dev_index);
   }
   usleep(1 * 1000 * 1000); // sleep 1
-
   log_device_status(dev_path, dev_index);
 }
 
@@ -467,79 +463,6 @@ static void run_hdmi_setup_for_device(const char* dev_path, const char* edid_fil
   }
 }*/
 
-namespace v4l2util {
-
-// Helper: ioctl with EINTR retry
-inline int xioctl(int fd, unsigned long req, void* arg) {
-    int r;
-    do {
-        r = ioctl(fd, req, arg);
-    } while (r == -1 && errno == EINTR);
-    return r;
-}
-
-// Returns std::nullopt on success, or an error message on failure.
-// If outTimings is provided, it will be filled with the queried timings on success.
-inline std::optional<std::string>
-queryAndSetDvBtTimings(const std::string& devnode, v4l2_dv_timings* outTimings = nullptr, unsigned sleepSeconds = 2) {
-    int fd = open(devnode.c_str(), O_RDWR);
-    if (fd < 0) {
-        return std::string("open(") + devnode + ") failed: " + std::strerror(errno);
-    }
-
-    v4l2_dv_timings timings;
-    std::memset(&timings, 0, sizeof(timings));
-
-    // Equivalent to: v4l2-ctl -d <dev> --query-dv-timings
-    if (xioctl(fd, VIDIOC_QUERY_DV_TIMINGS, &timings) < 0) {
-        int saved = errno;
-        close(fd);
-        // Common errors include ENODATA when no signal is detected.
-        return std::string("VIDIOC_QUERY_DV_TIMINGS failed: ") + std::strerror(saved);
-    }
-
-    // Optional: pass back the queried timings to the caller
-    if (outTimings) {
-        *outTimings = timings;
-    }
-
-    // Equivalent to: sleep 2
-    if (sleepSeconds > 0) {
-        std::this_thread::sleep_for(std::chrono::seconds(sleepSeconds));
-    }
-
-    // Equivalent to: v4l2-ctl -d <dev> --set-dv-bt-timings query
-    // i.e., set exactly the timings we just queried
-    if (xioctl(fd, VIDIOC_S_DV_TIMINGS, &timings) < 0) {
-        int saved = errno;
-        close(fd);
-        return std::string("VIDIOC_S_DV_TIMINGS failed: ") + std::strerror(saved);
-    }
-
-    close(fd);
-    return std::nullopt; // success
-}
-
-} // namespace v4l2util
-
-#ifdef DV_TIMINGS_STANDALONE_TEST
-#include <iostream>
-int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " /dev/videoX\n";
-        return 1;
-    }
-    v4l2_dv_timings t{};
-    auto err = v4l2util::queryAndSetDvBtTimings(argv[1], &t, 2);
-    if (err) {
-        std::cerr << "Error: " << *err << "\n";
-        return 2;
-    }
-    std::cout << "DV timings queried and set successfully.\n";
-    return 0;
-}
-#endif
-
 static inline std::string trim_copy(const std::string& s) {
   const char* ws = " \t\r\n";
   const auto b = s.find_first_not_of(ws);
@@ -547,7 +470,6 @@ static inline std::string trim_copy(const std::string& s) {
   const auto e = s.find_last_not_of(ws);
   return s.substr(b, e - b + 1);
 }
-
 static inline size_t frame_bytes(const devInfo* d) {
   return (size_t)d->startingWidth * (size_t)d->startingHeight * (size_t)byteScaler;
 }
@@ -557,7 +479,6 @@ static inline pair<int,int> get_resolution(const devInfo* d) {
 static inline double frame_delay_us(const devInfo* d) {
   return d->targetFrameDelayMicros;
 }
-
 // Networking helpers
 static int set_nonblocking(int fd) {
   int flags = fcntl(fd, F_GETFL, 0);
@@ -768,16 +689,12 @@ void parse_cli_or_die(int argc, const char** argv) {
   if (opt_q > 100) opt_q = 100;
   g_jpeg_quality = opt_q;
   g_inputIsBGR = (opt_bgr != 0);
-
   g_streamCodec = (opt_mjpeg && !opt_raw) ? CODEC_MJPEG : CODEC_RAW;
   g_encode_threads = opt_enc_threads;
-
   if (opt_no_lazy) g_lazy_send = false;
   else if (opt_lazy) g_lazy_send = true;
-
   if (opt_lazy_thresh < 1) opt_lazy_thresh = 1;
   g_lazy_threshold = opt_lazy_thresh;
-
   fprintf(stderr, "[main] Parsed options: --fps=%.3f, --devices=%s%s%s, --port=%d, --stream=%s%s, --bgr=%d, --encode-threads=%d, --lazy=%d, --lazy-threshold=%d\n",
           allDevicesTargetFramerate,
           devNames[0].c_str(),
@@ -791,9 +708,7 @@ void parse_cli_or_die(int argc, const char** argv) {
           g_lazy_send ? 1 : 0,
           g_lazy_threshold);
 }
-
 bool doubles_equal(double a, double b, double epsilon = 0.001) { return std::fabs(a - b) < epsilon; }
-
 class MicroStopwatch {
   std::chrono::high_resolution_clock::time_point start_time;
 public:
@@ -923,7 +838,6 @@ int init_dev_stage1(struct devInfo*& devInfos) {
   min = fmt.fmt.pix.bytesperline * fmt.fmt.pix.height;
   if (fmt.fmt.pix.sizeimage < min)
     fmt.fmt.pix.sizeimage = min;
-
   CLEAR(devInfos->req);
   devInfos->req.count = 4;
   devInfos->req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -960,7 +874,6 @@ int init_dev_stage2(struct buffer*& buffers, struct devInfo*& devInfos) {
     if (MAP_FAILED == buffers[devInfos->n_buffers].start)
       errno_exit("mmap");
   }
-
   if (devInfos->isTC358743) {
     struct v4l2_dv_timings timings;
     memset(&timings, 0, sizeof timings);
@@ -1123,23 +1036,19 @@ int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_f
   devInfos->fd = -1;
   devInfos->isTC358743 = isTC358743;
   devInfos->index = index;
-
   init_dev_stage1(devInfos);
   bufs = (buffer*)calloc(devInfos->req.count, sizeof(*bufs));
   init_dev_stage2(bufs, devInfos);
-
   devInfos->outputFrame = (unsigned char*)calloc((size_t)devInfos->startingWidth * (size_t)devInfos->startingHeight * (size_t)byteScaler, sizeof(unsigned char));
   did_memory_allocate_correctly(devInfos);
   return 0;
 }
-
 // Reinit in-place: no free of devInfo; safe for fallback loop using devInfo fields.
 int reinit_device_inplace(struct devInfo*& devInfos, struct buffer*& bufs) {
   // Stage1 establishes req.count; then allocate bufs; then stage2; ensure outputFrame sized
   init_dev_stage1(devInfos);
   bufs = (buffer*)calloc(devInfos->req.count, sizeof(*bufs));
   init_dev_stage2(bufs, devInfos);
-
   size_t needed = (size_t)devInfos->startingWidth * (size_t)devInfos->startingHeight * (size_t)byteScaler;
   if (!devInfos->outputFrame) {
     devInfos->outputFrame = (unsigned char*)calloc(needed, sizeof(unsigned char));
@@ -1186,7 +1095,6 @@ static std::deque<EncodeJob> s_enc_queue;
 static std::vector<std::thread> s_enc_workers;
 static std::atomic<bool> s_enc_stop{false};
 static std::atomic<uint64_t> s_frame_id_counter{0};
-
 static void encoder_worker_loop() {
   thread_local std::vector<unsigned char> tls_rgb;
   while (true) {
@@ -1330,15 +1238,12 @@ static void apply_crt_and_broadcast(CRTContext& ctx, const devInfo* d, const uin
   ensure_crt_filter(ctx, d);
   auto [w, h] = get_resolution(d);
   size_t bytes = (size_t)w * (size_t)h * 3ull;
-
   const uint8_t* src_rgb = nullptr;
   std::vector<uint8_t> tmp_rgb;
   make_rgb_view_for_filter(src_bgr_or_rgb, is_bgr, bytes, w, h, tmp_rgb, src_rgb);
-
   std::vector<uint8_t> filtered_rgb;
   filtered_rgb.reserve(bytes);
   ctx.filter->apply(src_rgb, filtered_rgb); // produces RGB24
-
   if (g_streamCodec == CODEC_MJPEG) {
     std::vector<unsigned char> jpeg;
     if (encode_rgb24_to_jpeg_mem(filtered_rgb.data(), w, h, g_jpeg_quality, jpeg) && !jpeg.empty()) {
@@ -1407,7 +1312,8 @@ static void recovery_worker() {
       continue;
     }
     // No-signal state: perform deinit/reinit cycles with specified delays.
-    // 0.5s before deinit, then deinit, reinit, then 0.5s delay BEFORE probing get_frame.
+    // 0.5s before deinit, then deinit, perform HDMI/EDID/DV config while device is idle,
+    // then reinit, then 0.5s delay BEFORE probing get_frame.
     usleep(500000);
     {
       std::lock_guard<std::mutex> lk(g_v4l2_mtx);
@@ -1415,6 +1321,12 @@ static void recovery_worker() {
         deinit_bufs(buffersMain, devInfoMain);
       }
     }
+
+    // Perform HDMI/EDID/DV/format setup while device is closed (avoids EBUSY on S_DV_TIMINGS/S_FMT)
+    const char* edid_path = "/root/v4l2-video-capture-testing-program/customgoodhdmiedid_binary.txt";
+    int idx = devInfoMain ? devInfoMain->index : 0;
+    run_hdmi_setup_for_device(devInfoMain ? devInfoMain->device : "/dev/video0", edid_path, true, true, idx);
+
     {
       std::lock_guard<std::mutex> lk(g_v4l2_mtx);
       // Reinit in place (do not free devInfoMain, preserve device path and allocation pattern)
@@ -1434,11 +1346,7 @@ static void recovery_worker() {
       shouldLoop.store(true);
     } else {
       fprintf(stderr, "[recovery] Still no signal; will retry reinit cycle.\n");
-      // Optional: perform HDMI/EDID setup before configuring and starting capture
-      const char* edid_path = "/root/v4l2-video-capture-testing-program/customgoodhdmiedid_binary.txt";
-      //run_hdmi_setup_for_device("/dev/video1", edid_path, /*fix_checksums=*/true, /*set_rgb3_fmt=*/true);
-      run_hdmi_setup_for_device(devInfoMain->device, edid_path, true, true, devInfoMain->index);
-      // Loop continues; we already waited 0.5s before deinit and 0.5s after reinit each cycle as requested.
+      // Loop continues.
     }
   }
 }
@@ -1446,9 +1354,7 @@ static void recovery_worker() {
 int main(const int argc, char** argv) {
   // Parse options and devices
   parse_cli_or_die(argc, (const char**)argv);
-
   load_png_rgb24("/root/v4l2-video-capture-testing-program/nosignal.png", png_ctx, false);
-
   // Init devices
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt);
   // Setup TCP server
@@ -1540,9 +1446,7 @@ int main(const int argc, char** argv) {
     uint64_t static_frame_idx = 0;
     while (programRunning.load() && !shouldLoop.load()) {
       accept_new_clients();
-      //ensure_crt_filter(crt, devInfoMain);
       apply_crt_and_broadcast(crt, devInfoMain, png_ctx.rgb.data(), false);
-      //broadcast_rgb24_buffer(devInfoMain, png_ctx.rgb);
       // Pace according to target frame delay
       double us = frame_delay_us(devInfoMain);
       if (us < 1000.0) us = 1000.0; // safety minimum 1ms
