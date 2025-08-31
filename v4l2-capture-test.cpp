@@ -44,6 +44,8 @@
 #include <condition_variable>
 #include <deque>
 #include <memory>
+#include <optional>
+#include <system_error>
 
 // CRT filter
 #include "crt_filter.h"
@@ -464,6 +466,79 @@ static void run_hdmi_setup_for_device(const char* dev_path, const char* edid_fil
     run_hdmi_setup_for_device(dev.c_str(), edid_file_path, fix_checksums, set_rgb3_fmt, idx);
   }
 }*/
+
+namespace v4l2util {
+
+// Helper: ioctl with EINTR retry
+inline int xioctl(int fd, unsigned long req, void* arg) {
+    int r;
+    do {
+        r = ioctl(fd, req, arg);
+    } while (r == -1 && errno == EINTR);
+    return r;
+}
+
+// Returns std::nullopt on success, or an error message on failure.
+// If outTimings is provided, it will be filled with the queried timings on success.
+inline std::optional<std::string>
+queryAndSetDvBtTimings(const std::string& devnode, v4l2_dv_timings* outTimings = nullptr, unsigned sleepSeconds = 2) {
+    int fd = open(devnode.c_str(), O_RDWR);
+    if (fd < 0) {
+        return std::string("open(") + devnode + ") failed: " + std::strerror(errno);
+    }
+
+    v4l2_dv_timings timings;
+    std::memset(&timings, 0, sizeof(timings));
+
+    // Equivalent to: v4l2-ctl -d <dev> --query-dv-timings
+    if (xioctl(fd, VIDIOC_QUERY_DV_TIMINGS, &timings) < 0) {
+        int saved = errno;
+        close(fd);
+        // Common errors include ENODATA when no signal is detected.
+        return std::string("VIDIOC_QUERY_DV_TIMINGS failed: ") + std::strerror(saved);
+    }
+
+    // Optional: pass back the queried timings to the caller
+    if (outTimings) {
+        *outTimings = timings;
+    }
+
+    // Equivalent to: sleep 2
+    if (sleepSeconds > 0) {
+        std::this_thread::sleep_for(std::chrono::seconds(sleepSeconds));
+    }
+
+    // Equivalent to: v4l2-ctl -d <dev> --set-dv-bt-timings query
+    // i.e., set exactly the timings we just queried
+    if (xioctl(fd, VIDIOC_S_DV_TIMINGS, &timings) < 0) {
+        int saved = errno;
+        close(fd);
+        return std::string("VIDIOC_S_DV_TIMINGS failed: ") + std::strerror(saved);
+    }
+
+    close(fd);
+    return std::nullopt; // success
+}
+
+} // namespace v4l2util
+
+#ifdef DV_TIMINGS_STANDALONE_TEST
+#include <iostream>
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " /dev/videoX\n";
+        return 1;
+    }
+    v4l2_dv_timings t{};
+    auto err = v4l2util::queryAndSetDvBtTimings(argv[1], &t, 2);
+    if (err) {
+        std::cerr << "Error: " << *err << "\n";
+        return 2;
+    }
+    std::cout << "DV timings queried and set successfully.\n";
+    return 0;
+}
+#endif
 
 static inline std::string trim_copy(const std::string& s) {
   const char* ws = " \t\r\n";
@@ -1467,7 +1542,7 @@ int main(const int argc, char** argv) {
       accept_new_clients();
       //ensure_crt_filter(crt, devInfoMain);
       apply_crt_and_broadcast(crt, devInfoMain, png_ctx.rgb.data(), false);
-      broadcast_rgb24_buffer(devInfoMain, png_ctx.rgb);
+      //broadcast_rgb24_buffer(devInfoMain, png_ctx.rgb);
       // Pace according to target frame delay
       double us = frame_delay_us(devInfoMain);
       if (us < 1000.0) us = 1000.0; // safety minimum 1ms
