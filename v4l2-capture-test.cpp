@@ -379,7 +379,7 @@ static bool set_pixfmt_rgb3(const char* dev, int dev_index = -1) {
 }
 
 // Optionally set to UYVY instead
-/*static bool set_pixfmt_uyvy(const char* dev, int dev_index = -1) {
+static bool set_pixfmt_uyvy(const char* dev, int dev_index = -1) {
   char tag[32]; make_tag(tag, sizeof(tag), "fmt", dev_index);
   int fd = open_video_node_rw(dev, dev_index);
   if (fd < 0) return false;
@@ -402,7 +402,7 @@ static bool set_pixfmt_rgb3(const char* dev, int dev_index = -1) {
   fprintf(stderr, "%s %s: set pixelformat to UYVY\n", tag, dev);
   close(fd);
   return true;
-}*/
+}
 
 // 6) Log status (like v4l2-ctl --log-status)
 static void log_device_status(const char* dev, int dev_index = -1) {
@@ -450,7 +450,7 @@ static void run_hdmi_setup_for_device(const char* dev_path, const char* edid_fil
   if (set_rgb3_fmt) {
     set_pixfmt_rgb3(dev_path, dev_index);
   } else {
-    // set_pixfmt_uyvy(dev_path, dev_index);
+    set_pixfmt_uyvy(dev_path, dev_index);
   }
   usleep(1 * 1000 * 1000); // sleep 1
 
@@ -625,7 +625,7 @@ void parse_cli_or_die(int argc, const char** argv) {
   int opt_lazy_thresh = 1;
   struct poptOption optionsTable[] = {
     { "fps",     'f',    POPT_ARG_DOUBLE,   &opt_fps,      0,    "Target framerate for all devices",                        "FPS" },
-    { "devices", 'd',    POPT_ARG_STRING,   &opt_devices,  0,    "V4L2 device(s): /dev/video0 or /dev/video0,/dev/video1",  "DEV[,DEV]" },
+    { "devices", 'd',    POPT_ARG_STRING,   &opt_devices,  0,    "V4L2 video device(s): /dev/video0 or /dev/video0,/dev/video1",  "DEV[,DEV]" },
     { "port",    'p',    POPT_ARG_INT,      &opt_port,     0,    "TCP listen port for streaming frames",                    "PORT" },
     { "mjpeg",   0,      POPT_ARG_NONE,     &opt_mjpeg,    0,    "Encode and stream Motion-JPEG instead of raw RGB24",      nullptr },
     { "raw",     0,      POPT_ARG_NONE,     &opt_raw,      0,    "Force raw-RGB24 stream (default)",                         nullptr },
@@ -767,7 +767,7 @@ static inline void swap_rb_inplace_mt(unsigned char* buf, size_t pixels, int thr
 }
 // --------------- V4L2 init/deinit/capture -----------------
 int init_dev_stage1(struct devInfo*& devInfos) {
-  fprintf(stderr, "[cap%d] Starting V4L2 capture testing program with the following V4L2 device: %s\n", devInfos->index, devInfos->device);
+  fprintf(stderr, "[cap%d] Starting V4L2 capture testing program with the following V4L2 video device: %s\n", devInfos->index, devInfos->device);
   struct stat st;
   if (-1 == stat(devInfos->device, &st)) {
     fprintf(stderr, "[cap%d] Cannot identify '%s': %d, %s\n", devInfos->index, devInfos->device, errno, strerror(errno));
@@ -782,7 +782,7 @@ int init_dev_stage1(struct devInfo*& devInfos) {
     fprintf(stderr, "[cap%d] Cannot open '%s': %d, %s\n", devInfos->index, devInfos->device, errno, strerror(errno));
     exit(EXIT_FAILURE);
   }
-  fprintf(stderr, "[cap%d] Opened V4L2 device: %s\n", devInfos->index, devInfos->device);
+  fprintf(stderr, "[cap%d] Opened V4L2 video device: %s\n", devInfos->index, devInfos->device);
   struct v4l2_capability cap;
   struct v4l2_cropcap cropcap;
   struct v4l2_crop crop;
@@ -790,7 +790,7 @@ int init_dev_stage1(struct devInfo*& devInfos) {
   unsigned int min;
   if (-1 == xioctl(devInfos->fd, VIDIOC_QUERYCAP, &cap)) {
     if (EINVAL == errno) {
-      fprintf(stderr, "[cap%d] %s is no V4L2 device\n", devInfos->index, devInfos->device);
+      fprintf(stderr, "[cap%d] %s is no V4L2 video device\n", devInfos->index, devInfos->device);
       exit(EXIT_FAILURE);
     } else {
       errno_exit("VIDIOC_QUERYCAP");
@@ -951,7 +951,7 @@ int init_dev_stage2(struct buffer*& buffers, struct devInfo*& devInfos) {
   if (-1 == xioctl(devInfos->fd, VIDIOC_STREAMON, &devInfos->type)) {
     // ignore for robustness
   }
-  fprintf(stderr, "[cap%d] Initialized V4L2 device: %s\n", devInfos->index, devInfos->device);
+  fprintf(stderr, "[cap%d] Initialized V4L2 video device: %s\n", devInfos->index, devInfos->device);
   return 0;
 }
 int get_frame(struct buffer* buffers, struct devInfo* devInfos) {
@@ -971,7 +971,7 @@ int get_frame(struct buffer* buffers, struct devInfo* devInfos) {
     errno_exit("select");
   }
   if (0 == r) {
-    fprintf(stderr, "[cap%d] select timeout\n", devInfos->index);
+    fprintf(stderr, "[cap%d] No V4L2 video signal, select timeout\n", devInfos->index);
     shouldLoop.store(false);
     return 1;
   }
@@ -1018,11 +1018,11 @@ int deinit_bufs(struct buffer*& buffers, struct devInfo*& devInfos) {
     free(buffers);
     buffers = nullptr;
   }
-  fprintf(stderr, "[cap%d] Uninitialized V4L2 device: %s\n", devInfos->index, devInfos->device);
+  fprintf(stderr, "[cap%d] Uninitialized V4L2 video device: %s\n", devInfos->index, devInfos->device);
   if (devInfos->fd >= 0) {
     if (-1 == close(devInfos->fd)) errno_exit("close");
     devInfos->fd = -1;
-    fprintf(stderr, "[cap%d] Closed V4L2 device: %s\n", devInfos->index, devInfos->device);
+    fprintf(stderr, "[cap%d] Closed V4L2 video device: %s\n", devInfos->index, devInfos->device);
   }
   fprintf(stderr, "\n");
   return 0;
@@ -1205,7 +1205,7 @@ struct CRTContext {
   CRTParams params{};
   std::unique_ptr<CRTFilter> filter;
   size_t threads = 0;
-  int fps = 60;
+  int fps = 30;
   int w = 0, h = 0;
 };
 static void crtctx_init_defaults(CRTContext& ctx) {
@@ -1223,7 +1223,7 @@ static void crtctx_init_defaults(CRTContext& ctx) {
   ctx.params.block_rows = 32;           // multithread chunk
   size_t th = std::thread::hardware_concurrency();
   ctx.threads = (th == 0 ? 4 : th);
-  ctx.fps = 60;
+  ctx.fps = 30;
 }
 static void ensure_crt_filter(CRTContext& ctx, const devInfo* d) {
   auto [w, h] = get_resolution(d);
@@ -1465,14 +1465,7 @@ int main(const int argc, char** argv) {
     uint64_t static_frame_idx = 0;
     while (programRunning.load() && !shouldLoop.load()) {
       accept_new_clients();
-      /*std::vector<uint8_t> static_rgb;
-      generate_rgb_static_frame(devInfoMain, static_frame_idx++, static_rgb);
-      // Inherit current resolution from devInfoMain (safe; recovery thread re-inits in-place)
-      ensure_crt_filter(crt, devInfoMain);
-      // If you want the CRT look for no-signal as well, uncomment the CRT path and comment direct broadcast:
-      apply_crt_and_broadcast(crt, devInfoMain, static_rgb.data(), false);
-      broadcast_rgb24_buffer(devInfoMain, static_rgb);*/
-      ensure_crt_filter(crt, devInfoMain);
+      //ensure_crt_filter(crt, devInfoMain);
       apply_crt_and_broadcast(crt, devInfoMain, png_ctx.rgb.data(), false);
       broadcast_rgb24_buffer(devInfoMain, png_ctx.rgb);
       // Pace according to target frame delay
