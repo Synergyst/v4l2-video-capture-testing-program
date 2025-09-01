@@ -1034,7 +1034,7 @@ int init_vars(struct devInfo*& devInfos, struct buffer*& bufs, const int force_f
   devInfos->device = (char*)calloc(strlen(dev_name) + 1, sizeof(char));
   strcpy(devInfos->device, dev_name);
   devInfos->frame_number = 0;
-  devInfos->framerate = 30;
+  devInfos->framerate = 60;
   devInfos->framerateDivisor = 1;
   devInfos->startingWidth = defaultWidth;
   devInfos->startingHeight = defaultHeight;
@@ -1197,7 +1197,7 @@ struct CRTContext {
   CRTParams params{};
   std::unique_ptr<CRTFilter> filter;
   size_t threads = 0;
-  int fps = 30;
+  int fps = 60;
   int w = 0, h = 0;
 };
 static void crtctx_init_defaults(CRTContext& ctx) {
@@ -1215,7 +1215,7 @@ static void crtctx_init_defaults(CRTContext& ctx) {
   ctx.params.block_rows = 32;           // multithread chunk
   size_t th = std::thread::hardware_concurrency();
   ctx.threads = (th == 0 ? 4 : th);
-  ctx.fps = 30;
+  ctx.fps = 60;
 }
 static void ensure_crt_filter(CRTContext& ctx, const devInfo* d) {
   auto [w, h] = get_resolution(d);
