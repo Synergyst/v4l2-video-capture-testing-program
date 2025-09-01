@@ -318,7 +318,7 @@ static bool set_device_edid_from_file(const char* dev, const char* edid_path, bo
   return true;
 }
 // 3) Query and set DV timings to current detected timings (legacy helper; kept for compatibility)
-/*static bool query_and_set_dv_timings(const char* dev, int dev_index = -1) {
+static bool query_and_set_dv_timings(const char* dev, int dev_index = -1) {
   char tag[32]; make_tag(tag, sizeof(tag), "dvt", dev_index);
   int fd = open_video_node_rw(dev, dev_index);
   if (fd < 0) return false;
@@ -339,7 +339,7 @@ static bool set_device_edid_from_file(const char* dev, const char* edid_path, bo
   fprintf(stderr, "%s Set DV timings to current detected timings on %s\n", tag, dev);
   close(fd);
   return true;
-}*/
+}
 // 4) Print current format (like v4l2-ctl -V)
 static void print_current_format(const char* dev, int dev_index = -1) {
   char tag[32]; make_tag(tag, sizeof(tag), "fmt", dev_index);
@@ -464,12 +464,12 @@ static void run_hdmi_setup_for_device(const char* dev_path, const char* edid_fil
 }
 
 // Convenience: run for multiple device nodes
-/*static void run_hdmi_setup_for_devices(const std::vector<std::string>& devs, const char* edid_file_path, bool fix_checksums, bool set_rgb3_fmt = true) {
+static void run_hdmi_setup_for_devices(const std::vector<std::string>& devs, const char* edid_file_path, bool fix_checksums, bool set_rgb3_fmt = true) {
   for (const auto& dev : devs) {
     int idx = parse_video_index_from_path(dev.c_str());
     run_hdmi_setup_for_device(dev.c_str(), edid_file_path, fix_checksums, set_rgb3_fmt, idx);
   }
-}*/
+}
 
 static inline std::string trim_copy(const std::string& s) {
   const char* ws = " \t\r\n";
@@ -1236,8 +1236,10 @@ static void vignettectx_init_defaults(VignetteContext& ctx) {
   ctx.params.center_y = 0.5f;
   ctx.params.inner_radius = 0.073;
   ctx.params.outer_radius = 0.098f;
-  ctx.params.axis_scale_x = 20.57f;
-  ctx.params.axis_scale_y = 11.71f;
+  //ctx.params.axis_scale_x = 20.57f;
+  //ctx.params.axis_scale_y = 11.71f;
+  ctx.params.axis_scale_x = 20.957f;
+  ctx.params.axis_scale_y = 11.971f;
   ctx.params.angle_deg = 0.0f;
   ctx.params.strength = 1.85f;
   ctx.params.mode = VignetteBlendMode::Multiply; // darken
@@ -1248,10 +1250,42 @@ static void ensure_vignette_filter(VignetteContext& ctx, const devInfo* d) {
   auto [w, h] = get_resolution(d);
   if (!ctx.filter || ctx.w != w || ctx.h != h) {
     ctx.w = w; ctx.h = h;
-    ctx.filter = std::make_unique<VignetteFilter>(w, h, ctx.params, /*threads=*/1);
+    ctx.filter = std::make_unique<VignetteFilter>(w, h, ctx.params, /*threads=*/6);
   } else {
     // keep size, push updated parameters
     ctx.filter->setParams(ctx.params);
+  }
+}
+struct VignetteBoxContext {
+  VignetteBoxParams params{};
+  std::unique_ptr<VignetteFilter> filter;
+  int w = 0, h = 0;
+};
+
+static void vignetteboxctx_init_defaults(VignetteBoxContext& ctx) {
+  // Example: centered box with rounded corners and feathered edge, darkening blend
+  ctx.params.x0 = 0.08f; ctx.params.y0 = 0.08f;
+  ctx.params.x1 = 0.92f; ctx.params.y1 = 0.92f;
+  ctx.params.corner_radius_norm = 0.12f; // 12% of min(box_w, box_h)
+  ctx.params.feather = 0.08f;            // 8% of min(box_w, box_h)
+  ctx.params.strength = 0.9f;
+  ctx.params.mode = VignetteBlendMode::Multiply; // darken
+  ctx.params.color[0] = 0.0f; ctx.params.color[1] = 0.0f; ctx.params.color[2] = 0.0f;
+  ctx.params.gamma_correct = true; ctx.params.gamma = 2.2f;
+  ctx.params.invert = false; // fade inside the box edge
+}
+
+static void ensure_vignettebox_filter(VignetteBoxContext& ctx, const devInfo* d) {
+  auto [w, h] = get_resolution(d);
+  if (!ctx.filter || ctx.w != w || ctx.h != h) {
+    ctx.w = w; ctx.h = h;
+    // Construct with a neutral/unused elliptical params; we’ll call applyRoundedBox() later.
+    VignetteParams dummy{};
+    dummy.strength = 0.0f; // neutral effect for the ellipse path
+    ctx.filter = std::make_unique<VignetteFilter>(w, h, dummy, /*threads=*/6);
+  } else {
+    // If size changed in-place, just resize the filter
+    ctx.filter->resize(w, h);
   }
 }
 // Convert BGR->RGB if needed for filter
@@ -1314,7 +1348,7 @@ static inline uint32_t xorshift32(uint32_t& s) {
   s ^= s << 5;
   return s;
 }
-/*static void generate_rgb_static_frame(const devInfo* d, uint64_t frame_index, std::vector<uint8_t>& out_rgb24) {
+static void generate_rgb_static_frame(const devInfo* d, uint64_t frame_index, std::vector<uint8_t>& out_rgb24) {
   auto [w, h] = get_resolution(d);
   out_rgb24.resize((size_t)w * (size_t)h * 3ull);
   uint32_t seed = (uint32_t)((frame_index * 1664525u) ^ 1013904223u) ^ (uint32_t)w ^ ((uint32_t)h << 1);
@@ -1340,7 +1374,7 @@ static void broadcast_rgb24_buffer(const devInfo* d, const std::vector<uint8_t>&
   } else {
     broadcast_frame(rgb.data(), rgb.size());
   }
-}*/
+}
 // --------------- Recovery thread ---------------
 static std::thread g_recover_thread;
 static void recovery_worker() {
@@ -1506,7 +1540,7 @@ int main(const int argc, char** argv) {
   vignettectx_init_defaults(vignette);
   ensure_vignette_filter(vignette, devInfoMain);
   vignette.filter->apply(png_ctx.rgb.data(), png_ctx.rgb);
-  applyGaussianBlurRGB24_neon_inplace(png_ctx.rgb.data(), png_ctx.width, png_ctx.height, 14.5f);
+  applyGaussianBlurRGB24_neon_inplace(png_ctx.rgb.data(), png_ctx.width, png_ctx.height, 4.0f);
   // Timing helpers
   MicroStopwatch sw;
   // OUTER loop: alternate between primary capture loop and no-signal loop
@@ -1554,7 +1588,7 @@ int main(const int argc, char** argv) {
       // Stale frame path with CRT filter once threshold reached
       if (g_lazy_send && !frame_changed) {
         if (consecutive_same_count >= g_lazy_threshold) {
-          applyGaussianBlurRGB24_neon_inplace(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, 2);
+          applyGaussianBlurRGB24_neon_inplace(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, 1.0f);
           //vignette.filter->apply(devInfoMain->outputFrame, devInfoMain->outputFrame);
           apply_crt_and_broadcast(crt, devInfoMain, devInfoMain->outputFrame, g_inputIsBGR);
         }

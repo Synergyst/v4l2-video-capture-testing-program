@@ -17,6 +17,45 @@ struct VignetteParams {
   VignetteBlendMode mode = VignetteBlendMode::Multiply;
 };
 
+// New: parameters for a rounded-rectangle (bounding-box) vignette
+struct VignetteBoxParams {
+  // Box in normalized coordinates [0..1], axis-aligned
+  // x0 < x1, y0 < y1 (will be clamped/ordered in code)
+  float x0 = 0.1f;
+  float y0 = 0.1f;
+  float x1 = 0.9f;
+  float y1 = 0.9f;
+
+  // Corner radius normalized to the box min dimension
+  // radius_px = corner_radius_norm * min(box_w, box_h)
+  float corner_radius_norm = 0.08f;
+
+  // Edge feather width (how wide the falloff band is)
+  // If <= 0, no feather. If in (0..1], treated as normalized to min(box_w, box_h)
+  // If > 1, treated as pixels. Typical normalized values: 0.02..0.15
+  float feather = 0.08f;
+
+  // Strength [0..1]
+  float strength = 1.0f;
+
+  // Blend target color (range [0..1], RGB), same semantics as for ellipse vignette
+  float color[3] = {0.0f, 0.0f, 0.0f};
+
+  // Blend mode
+  VignetteBlendMode mode = VignetteBlendMode::Multiply;
+
+  // Gamma-correct blending
+  bool  gamma_correct = true;
+  float gamma = 2.2f;
+
+  // If false: fade on the inside edge (classic vignette inside the box).
+  // If true:  fade on the outside edge (effect outside the box, inside remains intact).
+  bool invert = false;
+
+  // Clamp final output to [0..255]
+  bool clamp_output = true;
+};
+
 class VignetteFilter {
 public:
   VignetteFilter(int width, int height, const VignetteParams& params, std::size_t threads = 0);
@@ -44,6 +83,25 @@ public:
                     std::size_t strideBytes = 0,
                     uint8_t* optionalMaskOut = nullptr) const;
 
+  void applyRoundedBoxInPlace(uint8_t* buf_rgb24,
+                    const VignetteBoxParams& box,
+                    std::size_t strideBytes = 0,
+                    uint8_t* optionalMaskOut = nullptr) const;
+
+  // New: Rounded-rectangle vignette, vector API
+  void applyRoundedBox(const uint8_t* src_rgb24,
+                       std::vector<uint8_t>& dst_rgb24,
+                       const VignetteBoxParams& box,
+                       std::vector<uint8_t>* optionalMaskOut = nullptr) const;
+
+  // New: Rounded-rectangle vignette, pointer API (supports raw arrays/std::array)
+  // strideBytes: 0 => tightly packed (width*3)
+  // optionalMaskOut: if non-null, must be width*height bytes
+  void applyRoundedBox(const uint8_t* src_rgb24,
+                       uint8_t* dst_rgb24,
+                       const VignetteBoxParams& box,
+                       std::size_t strideBytes = 0,
+                       uint8_t* optionalMaskOut = nullptr) const;
 private:
   int w_ = 0, h_ = 0;
   std::size_t threads_ = 1;

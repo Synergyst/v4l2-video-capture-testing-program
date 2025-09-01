@@ -173,7 +173,9 @@ static inline void gb_hpass_neon_row(const uint8_t* srow, uint8_t* drow,
     for (int x = 0; x < std::min(radius, w); ++x) {
       int accR = 0, accG = 0, accB = 0;
       for (int t = -radius; t <= radius; ++t) {
-        int xi = x + t; if (xi < 0) xi = 0; if (xi >= w) xi = w - 1;
+        int xi = x + t;
+        if (xi < 0) xi = 0;
+        if (xi >= w) xi = w - 1;
         const uint8_t* p = srow + (size_t)xi * 3u;
         int wq = k[(size_t)(t + radius)];
         accR += p[0] * wq; accG += p[1] * wq; accB += p[2] * wq;
@@ -191,7 +193,9 @@ static inline void gb_hpass_neon_row(const uint8_t* srow, uint8_t* drow,
   for (int x = x_tail_start; x < w; ++x) {
     int accR = 0, accG = 0, accB = 0;
     for (int t = -radius; t <= radius; ++t) {
-      int xi = x + t; if (xi < 0) xi = 0; if (xi >= w) xi = w - 1;
+      int xi = x + t;
+      if (xi < 0) xi = 0;
+      if (xi >= w) xi = w - 1;
       const uint8_t* p = srow + (size_t)xi * 3u;
       int wq = k[(size_t)(t + radius)];
       accR += p[0] * wq; accG += p[1] * wq; accB += p[2] * wq;
@@ -280,7 +284,8 @@ static inline void gb_vpass_neon_blocky(const uint8_t* src, uint8_t* dst,
       int accR = 0, accG = 0, accB = 0;
       for (int t = -radius; t <= radius; ++t) {
         int yi = y + t; // interior so no clamp needed here, but keep safe
-        if (yi < 0) yi = 0; if (yi >= h) yi = h - 1;
+        if (yi < 0) yi = 0;
+        if (yi >= h) yi = h - 1;
         const uint8_t* p = src + (size_t)yi * stride + (size_t)x * 3u;
         int wq = k[(size_t)(t + radius)];
         accR += p[0] * wq; accG += p[1] * wq; accB += p[2] * wq;
