@@ -59,18 +59,20 @@ struct VignetteBoxParams {
 class VignetteFilter {
 public:
   VignetteFilter(int width, int height, const VignetteParams& params, std::size_t threads = 0);
+
   void setParams(const VignetteParams& params);
   const VignetteParams& params() const { return params_; }
+
   void resize(int width, int height);
   int width() const { return w_; }
   int height() const { return h_; }
 
-  // Existing vector-based API
+  // Elliptical vignette: vector-based API
   void apply(const uint8_t* src_rgb24,
              std::vector<uint8_t>& dst_rgb24,
              std::vector<uint8_t>* optionalMaskOut = nullptr) const;
 
-  // New pointer-based API (supports arrays, std::array, raw buffers).
+  // Elliptical vignette: pointer-based API (supports raw arrays/std::array)
   // strideBytes: 0 => tightly packed (width*3). dst shares the same stride.
   // optionalMaskOut: if non-null, must be width*height bytes.
   void apply(const uint8_t* src_rgb24,
@@ -78,30 +80,30 @@ public:
              std::size_t strideBytes = 0,
              uint8_t* optionalMaskOut = nullptr) const;
 
-  // New in-place convenience: reads from buf, writes back to buf (uses a temp copy internally).
+  // Elliptical vignette: in-place convenience
   void applyInPlace(uint8_t* buf_rgb24,
                     std::size_t strideBytes = 0,
                     uint8_t* optionalMaskOut = nullptr) const;
 
-  void applyRoundedBoxInPlace(uint8_t* buf_rgb24,
-                    const VignetteBoxParams& box,
-                    std::size_t strideBytes = 0,
-                    uint8_t* optionalMaskOut = nullptr) const;
-
-  // New: Rounded-rectangle vignette, vector API
+  // Rounded-rectangle vignette: vector API
   void applyRoundedBox(const uint8_t* src_rgb24,
                        std::vector<uint8_t>& dst_rgb24,
                        const VignetteBoxParams& box,
                        std::vector<uint8_t>* optionalMaskOut = nullptr) const;
 
-  // New: Rounded-rectangle vignette, pointer API (supports raw arrays/std::array)
-  // strideBytes: 0 => tightly packed (width*3)
-  // optionalMaskOut: if non-null, must be width*height bytes
+  // Rounded-rectangle vignette: pointer API
   void applyRoundedBox(const uint8_t* src_rgb24,
                        uint8_t* dst_rgb24,
                        const VignetteBoxParams& box,
                        std::size_t strideBytes = 0,
                        uint8_t* optionalMaskOut = nullptr) const;
+
+  // Rounded-rectangle vignette: in-place convenience
+  void applyRoundedBoxInPlace(uint8_t* buf_rgb24,
+                              const VignetteBoxParams& box,
+                              std::size_t strideBytes = 0,
+                              uint8_t* optionalMaskOut = nullptr) const;
+
 private:
   int w_ = 0, h_ = 0;
   std::size_t threads_ = 1;

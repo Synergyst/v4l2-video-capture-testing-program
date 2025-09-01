@@ -1,4 +1,3 @@
-// ... existing includes ...
 #pragma once
 #include <vector>
 #include <random>
@@ -22,13 +21,13 @@ struct CRTParams {
 // Stateful multithread CRT filter (not thread-safe across apply() calls on the same instance)
 class CRTFilter {
 public:
-    // New: fps is stored internally (default 30). Call set_fps() to change later.
+    // fps is stored internally (default 30). Call set_fps() to change later.
     CRTFilter(int width, int height, const CRTParams& p, size_t threads, int fps = 30);
 
     int width() const { return w_; }
     int height() const { return h_; }
 
-    // New: apply using internal frame counter (auto-incremented each call).
+    // apply using internal frame counter (auto-incremented each call).
     void apply(const uint8_t* src_rgb24, std::vector<uint8_t>& dst);
 
     // Legacy API (still supported): explicit frame index + fps
@@ -51,7 +50,7 @@ private:
     int v_bounce_frames_ = 0;
     float v_bounce_amp_ = 0.0f;
 
-    // New: internal timeline
+    // internal timeline
     int fps_ = 30;
     long long frame_idx_ = 0;
 
@@ -59,10 +58,23 @@ private:
         float t;
         float flicker;
         float v_shift;
-        int vphase;
+        int vphase; // 0/1
     };
 
     FrameConsts prepare_frame_(int frame_idx, int fps);
-    static inline uint8_t clamp_u8_(int v);
-    static inline float hash31_(int x, int y, int t); // [-1,1]
+
+    static inline uint8_t clamp_u8_(int v) {
+        return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
+    }
+    static inline float frand_(std::mt19937& rng, float a, float b) {
+        std::uniform_real_distribution<float> dist(a, b);
+        return dist(rng);
+    }
+    static inline float hash31_(int x, int y, int t) {
+        // integer hash -> [-1,1]
+        uint32_t h = (uint32_t)(x * 374761393u + y * 668265263u) ^ (uint32_t)(t * 362437u);
+        h = (h ^ (h >> 13)) * 1274126177u;
+        h ^= (h >> 16);
+        return ((h & 0x7FFFFFu) / float(0x3FFFFFu)) * 2.0f - 1.0f;
+    }
 };

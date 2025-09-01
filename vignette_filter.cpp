@@ -1,4 +1,5 @@
 #include "vignette_filter.h"
+
 #include <algorithm>
 #include <cmath>
 #include <thread>
@@ -67,7 +68,7 @@ inline uint8_t VignetteFilter::toDisplay_(float lin) const {
   return static_cast<uint8_t>(std::lround(v * 255.0f));
 }
 
-// Pointer-based core
+// Elliptical vignette: pointer-based core
 void VignetteFilter::apply(const uint8_t* src_rgb24,
                            uint8_t* dst_rgb24,
                            std::size_t strideBytes,
@@ -95,12 +96,10 @@ void VignetteFilter::apply(const uint8_t* src_rgb24,
       uint8_t* maskRow = optionalMaskOut ? (optionalMaskOut + static_cast<std::size_t>(y) * static_cast<std::size_t>(w_)) : nullptr;
 
       const float dy = (static_cast<float>(y) + 0.5f) - cy_;
-
       for (int x = 0; x < w_; ++x) {
         const float dx = (static_cast<float>(x) + 0.5f) - cx_;
         const float xr = dx * ca_ + dy * sa_;
         const float yr = -dx * sa_ + dy * ca_;
-
         const float xn = xr / hx_;
         const float yn = yr / hy_;
         const float r = std::sqrt(xn * xn + yn * yn);
@@ -158,7 +157,7 @@ void VignetteFilter::apply(const uint8_t* src_rgb24,
   }
 }
 
-// Vector overload forwards to pointer-based core
+// Elliptical vignette: vector overload forwards to pointer-based core
 void VignetteFilter::apply(const uint8_t* src_rgb24,
                            std::vector<uint8_t>& dst_rgb24,
                            std::vector<uint8_t>* optionalMaskOut) const {
@@ -171,7 +170,6 @@ void VignetteFilter::apply(const uint8_t* src_rgb24,
   dst_rgb24.resize(static_cast<std::size_t>(h_) * stride);
 
   uint8_t* maskPtr = nullptr;
-  std::vector<uint8_t> dummyMask;
   if (optionalMaskOut) {
     optionalMaskOut->assign(static_cast<std::size_t>(w_) * static_cast<std::size_t>(h_), 0);
     maskPtr = optionalMaskOut->data();
@@ -179,7 +177,7 @@ void VignetteFilter::apply(const uint8_t* src_rgb24,
   apply(src_rgb24, dst_rgb24.data(), /*strideBytes=*/0, maskPtr);
 }
 
-// In-place convenience
+// Elliptical vignette: in-place convenience
 void VignetteFilter::applyInPlace(uint8_t* buf_rgb24,
                                   std::size_t strideBytes,
                                   uint8_t* optionalMaskOut) const {
@@ -187,9 +185,6 @@ void VignetteFilter::applyInPlace(uint8_t* buf_rgb24,
 }
 
 // Signed distance to an axis-aligned rounded rectangle (Inigo Quilez)
-// p: point in pixels relative to box center
-// b: half extents (half width/height) in pixels
-// r: corner radius in pixels
 static inline float sdf_rounded_box(float px, float py, float bx, float by, float r) {
   const float ax = std::fabs(px);
   const float ay = std::fabs(py);
@@ -197,12 +192,12 @@ static inline float sdf_rounded_box(float px, float py, float bx, float by, floa
   const float qy = ay - by + r;
   const float mx = std::max(qx, 0.0f);
   const float my = std::max(qy, 0.0f);
-  const float outside = std::hypot(mx, my);
+  const float outside = std::sqrt(mx * mx + my * my);
   const float inside  = std::min(std::max(qx, qy), 0.0f);
   return outside + inside - r; // <0 inside shape, 0 at edge, >0 outside
 }
 
-// vignette_filter.cpp (replace the body of VignetteFilter::applyRoundedBox pointer overload)
+// Rounded-box vignette: pointer-based
 void VignetteFilter::applyRoundedBox(const uint8_t* src_rgb24,
                                      uint8_t* dst_rgb24,
                                      const VignetteBoxParams& box,
@@ -251,7 +246,6 @@ void VignetteFilter::applyRoundedBox(const uint8_t* src_rgb24,
   auto toDisplay = [&](float lin) -> uint8_t {
     float v = doGamma ? std::pow(std::max(0.0f, lin), 1.0f / box.gamma) : std::max(0.0f, lin);
     if (box.clamp_output) v = std::clamp(v, 0.0f, 1.0f);
-    // Faster than lround in hot path:
     return static_cast<uint8_t>(v * 255.0f + 0.5f);
   };
   float color_lin[3] = { box.color[0], box.color[1], box.color[2] };
@@ -272,30 +266,25 @@ void VignetteFilter::applyRoundedBox(const uint8_t* src_rgb24,
       uint8_t* drow = dst_rgb24 + static_cast<std::size_t>(y) * stride;
       uint8_t* mrow = optionalMaskOut ? (optionalMaskOut + static_cast<std::size_t>(y) * static_cast<std::size_t>(w_)) : nullptr;
 
-      // Precompute y-relative coords
       const float py = (static_cast<float>(y) + 0.5f) - cy;
       const float ay = std::fabs(py);
-      // Quick outside-rect saturation: far beyond box + feather => m=1 for invert=false
       const bool fully_outside_y = (ay >= by + feather_px);
 
       for (int x = 0; x < w_; ++x) {
-        const uint8_t* sp = srow + static_cast<std::size_t>(x) * 3u;
-        uint8_t* dp = drow + static_cast<std::size_t>(x) * 3u;
-
-        // If we are fully outside on Y and also far outside on X, skip SDF in favor of saturated mask.
         float m;
+
         if (!box.invert && fully_outside_y) {
           const float px = (static_cast<float>(x) + 0.5f) - cx;
           const float ax = std::fabs(px);
           if (ax >= bx + feather_px) {
-            m = box.strength; // full effect
+            m = box.strength; // full effect far outside
           } else {
-            // Need exact m near the X border: compute SDF once
+            // compute SDF near the X border
             const float qx = std::max(ax - bx + radius_px, 0.0f);
             const float qy = std::max(ay - by + radius_px, 0.0f);
             const float outside = std::sqrt(qx*qx + qy*qy);
             const float inside  = std::min(std::max(ax - bx + radius_px, ay - by + radius_px), 0.0f);
-            float d = outside + inside - radius_px; // signed distance
+            float d = outside + inside - radius_px;
             if (feather_px <= 0.0f) {
               m = (d >= 0.0f) ? 1.0f : 0.0f;
             } else {
@@ -304,11 +293,9 @@ void VignetteFilter::applyRoundedBox(const uint8_t* src_rgb24,
             m = std::clamp(m * box.strength, 0.0f, 1.0f);
           }
         } else {
-          // General path
           const float px = (static_cast<float>(x) + 0.5f) - cx;
           const float ax = std::fabs(px);
 
-          // Fast SDF to rounded rect (inline, avoiding std::hypot)
           const float qx = std::max(ax - bx + radius_px, 0.0f);
           const float qy = std::max(ay - by + radius_px, 0.0f);
           const float outside = std::sqrt(qx*qx + qy*qy);
@@ -333,7 +320,9 @@ void VignetteFilter::applyRoundedBox(const uint8_t* src_rgb24,
 
         if (mrow) mrow[x] = static_cast<uint8_t>(m * 255.0f + 0.5f);
 
-        // Blend (gamma-aware)
+        const uint8_t* sp = srow + static_cast<std::size_t>(x) * 3u;
+        uint8_t* dp = drow + static_cast<std::size_t>(x) * 3u;
+
         float inR = toLinear(sp[0]);
         float inG = toLinear(sp[1]);
         float inB = toLinear(sp[2]);
@@ -376,14 +365,7 @@ void VignetteFilter::applyRoundedBox(const uint8_t* src_rgb24,
   }
 }
 
-// vignette_filter.cpp (add the in-place rounded-box wrapper)
-void VignetteFilter::applyRoundedBoxInPlace(uint8_t* buf_rgb24,
-                                            const VignetteBoxParams& box,
-                                            std::size_t strideBytes,
-                                            uint8_t* optionalMaskOut) const {
-  applyRoundedBox(buf_rgb24, buf_rgb24, box, strideBytes, optionalMaskOut);
-}
-
+// Rounded-box vignette: vector overload
 void VignetteFilter::applyRoundedBox(const uint8_t* src_rgb24,
                                      std::vector<uint8_t>& dst_rgb24,
                                      const VignetteBoxParams& box,
@@ -404,4 +386,12 @@ void VignetteFilter::applyRoundedBox(const uint8_t* src_rgb24,
   }
 
   applyRoundedBox(src_rgb24, dst_rgb24.data(), box, /*strideBytes=*/0, maskPtr);
+}
+
+// Rounded-box vignette: in-place convenience
+void VignetteFilter::applyRoundedBoxInPlace(uint8_t* buf_rgb24,
+                                            const VignetteBoxParams& box,
+                                            std::size_t strideBytes,
+                                            uint8_t* optionalMaskOut) const {
+  applyRoundedBox(buf_rgb24, buf_rgb24, box, strideBytes, optionalMaskOut);
 }
