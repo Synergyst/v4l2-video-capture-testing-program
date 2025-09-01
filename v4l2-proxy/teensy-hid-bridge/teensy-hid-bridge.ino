@@ -1,37 +1,25 @@
-// teensy-hid-bridge.ino
-// Teensy 3.1: Serial -> USB HID Keyboard/Mouse
-// FIX: KDOWN/KUP now use Teensy's micro manager API (set_modifier/set_key*/send_now)
-// so special keys like Backspace, Tab, Enter are sent as HID key codes, not ASCII.
-//
-// Supported commands (one per line):
-//   MREL dx dy
-//   MDOWN n
-//   MUP n
-//   MWHEEL dx dy
-//   KDOWN code key ctrl shift alt meta
-//   KUP   code key ctrl shift alt meta
-//   RAW text
-//
-// Reference: Teensyduino USB Keyboard library (press/release and micro manager) [1]
+#include <Arduino.h>
+#include <Mouse.h>
+#include <Keyboard.h>
+#include <limits.h>
 
+// ---------------- Config ----------------
 int32_t lastMouseX = INT32_MIN;
 int32_t lastMouseY = INT32_MIN;
+#define DEFAULT_XRES 1920
+#define DEFAULT_YRES 1080
 
-#define DEFAULT_XRES 2560
-#define DEFAULT_YRES 1440
-
-//#define DEFAULT_XRES 1920
-//#define DEFAULT_YRES 1080
-
+// ---------------- Serial helpers ----------------
 void setup() {
-  Serial.begin(115200);
-  while (!Serial && millis() < 2000)
-    ;
+  Serial.begin(2000000);
+  // Give USB a moment to come up
+  uint32_t t0 = millis();
+  while (!Serial && (millis() - t0) < 2000) { /* wait briefly */
+  }
+
   Keyboard.begin();
   Mouse.begin();
-  TouchscreenUSB.begin();
   delay(2000);
-  Mouse.screenSize(DEFAULT_XRES, DEFAULT_YRES);
 }
 
 String readLine() {
@@ -54,9 +42,8 @@ bool isWhitespace(char c) {
 }
 
 // ---------------- Mouse helpers (unchanged) ----------------
-
 void chunkedMouseMove(int dx, int dy) {
-  const int MAX_STEP = 40;
+  const int MAX_STEP = 127;
   while (dx != 0 || dy != 0) {
     int sx = (dx > 0) ? min(dx, MAX_STEP) : max(dx, -MAX_STEP);
     int sy = (dy > 0) ? min(dy, MAX_STEP) : max(dy, -MAX_STEP);
@@ -69,25 +56,30 @@ void chunkedMouseMove(int dx, int dy) {
 
 void chunkedWheel(int dx, int dy) {
   const int MAX_STEP = 127;
-  // Vertical wheel (Teensy uses third arg of Mouse.move)
+  // Vertical wheel
   while (dy != 0) {
     int step = (dy > 0) ? min(dy, MAX_STEP) : max(dy, -MAX_STEP);
     Mouse.move(0, 0, step);
     dy -= step;
-    delay(3);
+    //delay(3);
   }
   // Horizontal wheel ignored by default; add mapping if you need it.
 }
 
 // ---------------- Keyboard micro manager state ----------------
 //
-// We maintain:
-// - modMask: MODIFIERKEY_* bitmask
-// - keys[6]: up to 6 currently pressed normal keys (KEY_* / KEYPAD_*)
-// Then push with Keyboard.set_modifier + set_key1..6 + send_now() [1].
+// We maintain our own modifier bitmask (8 bits matching USB order) and a list of up to 6 concurrent keys.
+// For Arduino (RP2040), we do not have raw HID frame setters, so we diff against previous state and call
+// Keyboard.press()/Keyboard.release() as needed.
 
-uint8_t modMask = 0;
-uint8_t keys[6] = { 0, 0, 0, 0, 0, 0 };
+// Our modifier bit layout matches USB HID usage (so it’s easy to reason about):
+// bit0 LCTRL, bit1 LSHIFT, bit2 LALT, bit3 LGUI, bit4 RCTRL, bit5 RSHIFT, bit6 RALT, bit7 RGUI
+static uint8_t modMask = 0;
+static uint8_t keys[6] = { 0, 0, 0, 0, 0, 0 };
+
+// Track what we actually have down on the host so we can diff and send precise press/release
+static uint8_t prevModMask = 0;
+static uint8_t prevKeys[6] = { 0, 0, 0, 0, 0, 0 };
 
 String unquote(String s) {
   if (s.startsWith("\"") && s.endsWith("\"") && s.length() >= 2) {
@@ -96,15 +88,10 @@ String unquote(String s) {
   return s;
 }
 
-void sendFrame() {
-  Keyboard.set_modifier(modMask);  // MODIFIERKEY_* bitmask [1]
-  Keyboard.set_key1(keys[0]);
-  Keyboard.set_key2(keys[1]);
-  Keyboard.set_key3(keys[2]);
-  Keyboard.set_key4(keys[3]);
-  Keyboard.set_key5(keys[4]);
-  Keyboard.set_key6(keys[5]);
-  Keyboard.send_now();  // send HID state frame [1]
+static inline bool arrContains(const uint8_t arr[6], uint8_t k) {
+  for (int i = 0; i < 6; i++)
+    if (arr[i] == k) return true;
+  return false;
 }
 
 bool addKey(uint8_t k) {
@@ -119,7 +106,7 @@ bool addKey(uint8_t k) {
       return true;
     }
   }
-  // no room: drop (or replace oldest if you prefer)
+  // no room: drop (or replace oldest if preferred)
   return false;
 }
 
@@ -143,61 +130,73 @@ bool removeKey(uint8_t k) {
   return removed;
 }
 
-// ---------------- Mapping: code -> MODIFIERKEY_* or KEY_* ----------------
+// ---------------- Mapping helpers ----------------
+
+// Modifier bits (internal)
+#define MODBIT_LCTRL 0x01
+#define MODBIT_LSHIFT 0x02
+#define MODBIT_LALT 0x04
+#define MODBIT_LGUI 0x08
+#define MODBIT_RCTRL 0x10
+#define MODBIT_RSHIFT 0x20
+#define MODBIT_RALT 0x40
+#define MODBIT_RGUI 0x80
 
 uint8_t codeToModifierMask(const String &code) {
   String c = unquote(code);
   String lc = c;
   lc.toLowerCase();
-  if (lc == "shiftleft") return MODIFIERKEY_SHIFT;
-  if (lc == "shiftright") return MODIFIERKEY_RIGHT_SHIFT;
-  if (lc == "controlleft") return MODIFIERKEY_CTRL;
-  if (lc == "controlright") return MODIFIERKEY_RIGHT_CTRL;
-  if (lc == "altleft") return MODIFIERKEY_ALT;
-  if (lc == "altright") return MODIFIERKEY_RIGHT_ALT;
-  if (lc == "metaleft" || lc == "osleft" || lc == "superleft") return MODIFIERKEY_GUI;
-  if (lc == "metaright" || lc == "osright" || lc == "superright") return MODIFIERKEY_RIGHT_GUI;
+  if (lc == "shiftleft") return MODBIT_LSHIFT;
+  if (lc == "shiftright") return MODBIT_RSHIFT;
+  if (lc == "controlleft") return MODBIT_LCTRL;
+  if (lc == "controlright") return MODBIT_RCTRL;
+  if (lc == "altleft") return MODBIT_LALT;
+  if (lc == "altright") return MODBIT_RALT;
+  if (lc == "metaleft" || lc == "osleft" || lc == "superleft") return MODBIT_LGUI;
+  if (lc == "metaright" || lc == "osright" || lc == "superright") return MODBIT_RGUI;
   return 0;
 }
 
-// Map KeyboardEvent.code to Teensy KEY_* / KEYPAD_* usage codes.
-// Only usage codes here; NO ASCII.
+// Map KeyboardEvent.code -> Arduino Keyboard keycode:
+// - Printable keys: return their unshifted ASCII ('a', '1', '-', etc.)
+// - Special keys: return Arduino KEY_* constants.
+// If not known, return 0 and we may try char fallback.
 uint8_t codeToKeyCode(const String &code) {
   String c = unquote(code);
 
-  // Letters KeyA..KeyZ
+  // Letters KeyA..KeyZ -> 'a'..'z' (unshifted)
   if (c.length() == 4 && c.startsWith("Key")) {
     char L = c.charAt(3);
     if (L >= 'A' && L <= 'Z') {
-      // Teensy has KEY_A..KEY_Z [1]
-      return KEY_A + (L - 'A');
+      return (uint8_t)('a' + (L - 'A'));
     }
   }
-  // Top-row digits Digit1..Digit0 (note: 0 comes after 9)
+
+  // Top-row digits Digit1..Digit0 (note: 0 comes after 9) -> '1'..'0'
   if (c.startsWith("Digit") && c.length() == 6) {
     char d = c.charAt(5);
-    if (d >= '1' && d <= '9') return KEY_1 + (d - '1');
-    if (d == '0') return KEY_0;
+    if (d >= '1' && d <= '9') return (uint8_t)d;
+    if (d == '0') return (uint8_t)'0';
   }
 
-  // Main punctuation (US) [1]
-  if (c == "Minus") return KEY_MINUS;
-  if (c == "Equal") return KEY_EQUAL;
-  if (c == "BracketLeft") return KEY_LEFT_BRACE;
-  if (c == "BracketRight") return KEY_RIGHT_BRACE;
-  if (c == "Backslash") return KEY_BACKSLASH;
-  if (c == "IntlBackslash") return KEY_BACKSLASH;  // best-effort
-  if (c == "Semicolon") return KEY_SEMICOLON;
-  if (c == "Quote") return KEY_QUOTE;
-  if (c == "Comma") return KEY_COMMA;
-  if (c == "Period") return KEY_PERIOD;
-  if (c == "Slash") return KEY_SLASH;
-  if (c == "Backquote") return KEY_TILDE;  // backtick/tilde key
-  if (c == "Space") return KEY_SPACE;
+  // Main punctuation (US, unshifted)
+  if (c == "Minus") return (uint8_t)'-';
+  if (c == "Equal") return (uint8_t)'=';
+  if (c == "BracketLeft") return (uint8_t)'[';
+  if (c == "BracketRight") return (uint8_t)']';
+  if (c == "Backslash") return (uint8_t)'\\';
+  if (c == "IntlBackslash") return (uint8_t)'\\';  // best-effort
+  if (c == "Semicolon") return (uint8_t)';';
+  if (c == "Quote") return (uint8_t)'\'';
+  if (c == "Comma") return (uint8_t)',';
+  if (c == "Period") return (uint8_t)'.';
+  if (c == "Slash") return (uint8_t)'/';
+  if (c == "Backquote") return (uint8_t)'`';
+  if (c == "Space") return (uint8_t)' ';
 
-  // Non-printable / navigation / editing [1]
-  if (c == "Enter") return KEY_ENTER;
-  if (c == "NumpadEnter") return KEYPAD_ENTER;
+  // Non-printable / navigation / editing
+  if (c == "Enter") return KEY_RETURN;
+  if (c == "NumpadEnter") return KEY_RETURN;  // keypad enter -> return
   if (c == "Backspace") return KEY_BACKSPACE;
   if (c == "Tab") return KEY_TAB;
   if (c == "Escape") return KEY_ESC;
@@ -207,226 +206,255 @@ uint8_t codeToKeyCode(const String &code) {
   if (c == "End") return KEY_END;
   if (c == "PageUp") return KEY_PAGE_UP;
   if (c == "PageDown") return KEY_PAGE_DOWN;
-  if (c == "ArrowLeft") return KEY_LEFT;
-  if (c == "ArrowRight") return KEY_RIGHT;
-  if (c == "ArrowUp") return KEY_UP;
-  if (c == "ArrowDown") return KEY_DOWN;
+  if (c == "ArrowLeft") return KEY_LEFT_ARROW;
+  if (c == "ArrowRight") return KEY_RIGHT_ARROW;
+  if (c == "ArrowUp") return KEY_UP_ARROW;
+  if (c == "ArrowDown") return KEY_DOWN_ARROW;
   if (c == "CapsLock") return KEY_CAPS_LOCK;
-  if (c == "PrintScreen") return KEY_PRINTSCREEN;
+// These may not be present on all cores; if they aren't, they’ll be 0 and ignored.
+// If your core defines them differently, adjust here:
+#ifdef KEY_PRINT_SCREEN
+  if (c == "PrintScreen") return KEY_PRINT_SCREEN;
+#endif
+#ifdef KEY_PAUSE
   if (c == "Pause") return KEY_PAUSE;
+#endif
 
-  // Function keys [1]
+  // Function keys
   if (c.length() >= 2 && c.charAt(0) == 'F') {
     int fn = c.substring(1).toInt();
-    if (fn >= 1 && fn <= 12) return KEY_F1 + (fn - 1);
+    if (fn >= 1 && fn <= 12) {
+      switch (fn) {
+        case 1: return KEY_F1;
+        case 2: return KEY_F2;
+        case 3: return KEY_F3;
+        case 4: return KEY_F4;
+        case 5: return KEY_F5;
+        case 6: return KEY_F6;
+        case 7: return KEY_F7;
+        case 8: return KEY_F8;
+        case 9: return KEY_F9;
+        case 10: return KEY_F10;
+        case 11: return KEY_F11;
+        case 12: return KEY_F12;
+      }
+    }
   }
 
-  // Numpad digits/operators [1]
-  if (c == "Numpad0") return KEYPAD_0;
-  if (c == "Numpad1") return KEYPAD_1;
-  if (c == "Numpad2") return KEYPAD_2;
-  if (c == "Numpad3") return KEYPAD_3;
-  if (c == "Numpad4") return KEYPAD_4;
-  if (c == "Numpad5") return KEYPAD_5;
-  if (c == "Numpad6") return KEYPAD_6;
-  if (c == "Numpad7") return KEYPAD_7;
-  if (c == "Numpad8") return KEYPAD_8;
-  if (c == "Numpad9") return KEYPAD_9;
-  if (c == "NumpadDecimal") return KEYPAD_PERIOD;
-  if (c == "NumpadAdd") return KEYPAD_PLUS;
-  if (c == "NumpadSubtract") return KEYPAD_MINUS;
-  if (c == "NumpadMultiply") return KEYPAD_ASTERIX;
-  if (c == "NumpadDivide") return KEYPAD_SLASH;
+  // Numpad digits/operators -> map to printable equivalents
+  if (c == "Numpad0") return (uint8_t)'0';
+  if (c == "Numpad1") return (uint8_t)'1';
+  if (c == "Numpad2") return (uint8_t)'2';
+  if (c == "Numpad3") return (uint8_t)'3';
+  if (c == "Numpad4") return (uint8_t)'4';
+  if (c == "Numpad5") return (uint8_t)'5';
+  if (c == "Numpad6") return (uint8_t)'6';
+  if (c == "Numpad7") return (uint8_t)'7';
+  if (c == "Numpad8") return (uint8_t)'8';
+  if (c == "Numpad9") return (uint8_t)'9';
+  if (c == "NumpadDecimal") return (uint8_t)'.';
+  if (c == "NumpadAdd") return (uint8_t)'+';
+  if (c == "NumpadSubtract") return (uint8_t)'-';
+  if (c == "NumpadMultiply") return (uint8_t)'*';
+  if (c == "NumpadDivide") return (uint8_t)'/';
 
   return 0;  // unknown
 }
 
-// Optional fallback for single-character key tokens, mapped to KEY_* codes.
-// Avoids ASCII path entirely.
+// Fallback for a single-character token -> base ASCII + optional SHIFT bit (unshifted code + needShift)
 bool charToKeyCode(char ch, uint8_t &code, uint8_t &needShift) {
   code = 0;
   needShift = 0;
+
   // Letters
   if (ch >= 'a' && ch <= 'z') {
-    code = KEY_A + (ch - 'a');
+    code = (uint8_t)ch;
     return true;
   }
   if (ch >= 'A' && ch <= 'Z') {
-    code = KEY_A + (ch - 'A');
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)(ch - 'A' + 'a');  // unshifted letter
+    needShift = MODBIT_LSHIFT;         // use shift
     return true;
   }
+
   // Digits
   if (ch >= '1' && ch <= '9') {
-    code = KEY_1 + (ch - '1');
+    code = (uint8_t)ch;
     return true;
   }
   if (ch == '0') {
-    code = KEY_0;
+    code = (uint8_t)'0';
     return true;
   }
+
   // Space
   if (ch == ' ') {
-    code = KEY_SPACE;
+    code = (uint8_t)' ';
     return true;
   }
+
   // Common US punctuation (unshifted)
-  if (ch == '-') {
-    code = KEY_MINUS;
-    return true;
+  const char unshifted[] = "-=[]\\;'`,./";
+  for (unsigned i = 0; i < sizeof(unshifted) - 1; i++) {
+    if (ch == unshifted[i]) {
+      code = (uint8_t)ch;
+      return true;
+    }
   }
-  if (ch == '=') {
-    code = KEY_EQUAL;
-    return true;
-  }
-  if (ch == '[') {
-    code = KEY_LEFT_BRACE;
-    return true;
-  }
-  if (ch == ']') {
-    code = KEY_RIGHT_BRACE;
-    return true;
-  }
-  if (ch == '\\') {
-    code = KEY_BACKSLASH;
-    return true;
-  }
-  if (ch == ';') {
-    code = KEY_SEMICOLON;
-    return true;
-  }
-  if (ch == '\'') {
-    code = KEY_QUOTE;
-    return true;
-  }
-  if (ch == ',') {
-    code = KEY_COMMA;
-    return true;
-  }
-  if (ch == '.') {
-    code = KEY_PERIOD;
-    return true;
-  }
-  if (ch == '/') {
-    code = KEY_SLASH;
-    return true;
-  }
-  if (ch == '`') {
-    code = KEY_TILDE;
-    return true;
-  }
-  // Shifted variants (examples)
+
+  // Shifted variants -> map to base + SHIFT
   if (ch == '_') {
-    code = KEY_MINUS;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'-';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '+') {
-    code = KEY_EQUAL;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'=';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '{') {
-    code = KEY_LEFT_BRACE;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'[';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '}') {
-    code = KEY_RIGHT_BRACE;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)']';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '|') {
-    code = KEY_BACKSLASH;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'\\';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == ':') {
-    code = KEY_SEMICOLON;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)';';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '"') {
-    code = KEY_QUOTE;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'\'';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '<') {
-    code = KEY_COMMA;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)',';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '>') {
-    code = KEY_PERIOD;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'.';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '?') {
-    code = KEY_SLASH;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'/';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '~') {
-    code = KEY_TILDE;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'`';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '!') {
-    code = KEY_1;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'1';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '@') {
-    code = KEY_2;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'2';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '#') {
-    code = KEY_3;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'3';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '$') {
-    code = KEY_4;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'4';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '%') {
-    code = KEY_5;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'5';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '^') {
-    code = KEY_6;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'6';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '&') {
-    code = KEY_7;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'7';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '*') {
-    code = KEY_8;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'8';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == '(') {
-    code = KEY_9;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'9';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
   if (ch == ')') {
-    code = KEY_0;
-    needShift = MODIFIERKEY_SHIFT;
+    code = (uint8_t)'0';
+    needShift = MODBIT_LSHIFT;
     return true;
   }
+
   return false;
+}
+
+// Apply a "frame": press/release differences between prev and current states
+void sendFrame() {
+  // 1) Modifiers diff
+  auto modPressRelease = [](bool press, uint8_t bit, uint8_t keycode) {
+    if (press) Keyboard.press(keycode);
+    else Keyboard.release(keycode);
+  };
+
+  uint8_t changed = modMask ^ prevModMask;
+  if (changed) {
+    // LCTRL
+    if (changed & MODBIT_LCTRL) modPressRelease(modMask & MODBIT_LCTRL, MODBIT_LCTRL, KEY_LEFT_CTRL);
+    if (changed & MODBIT_LSHIFT) modPressRelease(modMask & MODBIT_LSHIFT, MODBIT_LSHIFT, KEY_LEFT_SHIFT);
+    if (changed & MODBIT_LALT) modPressRelease(modMask & MODBIT_LALT, MODBIT_LALT, KEY_LEFT_ALT);
+    if (changed & MODBIT_LGUI) modPressRelease(modMask & MODBIT_LGUI, MODBIT_LGUI, KEY_LEFT_GUI);
+    if (changed & MODBIT_RCTRL) modPressRelease(modMask & MODBIT_RCTRL, MODBIT_RCTRL, KEY_RIGHT_CTRL);
+    if (changed & MODBIT_RSHIFT) modPressRelease(modMask & MODBIT_RSHIFT, MODBIT_RSHIFT, KEY_RIGHT_SHIFT);
+    if (changed & MODBIT_RALT) modPressRelease(modMask & MODBIT_RALT, MODBIT_RALT, KEY_RIGHT_ALT);
+    if (changed & MODBIT_RGUI) modPressRelease(modMask & MODBIT_RGUI, MODBIT_RGUI, KEY_RIGHT_GUI);
+    prevModMask = modMask;
+  }
+
+  // 2) Normal keys diff: release keys that disappeared
+  for (int i = 0; i < 6; i++) {
+    uint8_t k = prevKeys[i];
+    if (k != 0 && !arrContains(keys, k)) {
+      Keyboard.release(k);
+    }
+  }
+  // 3) Press keys that are new
+  for (int i = 0; i < 6; i++) {
+    uint8_t k = keys[i];
+    if (k != 0 && !arrContains(prevKeys, k)) {
+      Keyboard.press(k);
+    }
+  }
+  // Update prevKeys snapshot
+  for (int i = 0; i < 6; i++) prevKeys[i] = keys[i];
 }
 
 // Apply KDOWN/KUP using micro manager state.
 void handleKeyEvent(bool isDown, const String &codeTok, const String &keyTok) {
-  // 1) If it's a modifier code, toggle modMask and send frame [1].
+  // 1) If it's a modifier code, toggle modMask and send frame.
   uint8_t mm = codeToModifierMask(codeTok);
   if (mm) {
     if (isDown) modMask |= mm;
@@ -435,10 +463,10 @@ void handleKeyEvent(bool isDown, const String &codeTok, const String &keyTok) {
     return;
   }
 
-  // 2) Try to map KeyboardEvent.code to a KEY_* / KEYPAD_* usage code.
+  // 2) Map KeyboardEvent.code -> ASCII or KEY_* keycode
   uint8_t kc = codeToKeyCode(codeTok);
 
-  // 3) Fallback: if not mapped and keyTok is a single character, map that to KEY_*.
+  // 3) Fallback: if not mapped and keyTok is a single character, map that to ASCII + optional SHIFT
   if (kc == 0) {
     String k = unquote(keyTok);
     if (k.length() == 1) {
@@ -452,11 +480,10 @@ void handleKeyEvent(bool isDown, const String &codeTok, const String &keyTok) {
             addedShift = true;
           }
           if (addKey(kc)) sendFrame();
-          // Note: we do NOT auto-remove shift here; release happens when KUP arrives.
-          // If you want per-stroke shift, uncomment below in KUP path.
+          // If you want per-stroke shift strictly (release on KUP), uncomment in KUP path below.
         } else {
           if (removeKey(kc)) {
-            // Optional: if this key needed a temporary shift, drop it now.
+            // Optional: if this key needed a temporary shift, drop it now (if you tracked it)
             // modMask &= ~needShift;  // uncomment if you want per-stroke shift
             sendFrame();
           }
@@ -478,7 +505,6 @@ void handleKeyEvent(bool isDown, const String &codeTok, const String &keyTok) {
 }
 
 // ---------------- Main loop ----------------
-
 void loop() {
   String line = readLine();
   if (line.length() == 0) return;
@@ -513,44 +539,17 @@ void loop() {
   if (cmd == "MREL" && n >= 3) {
     int dx = tok[1].toInt();
     int dy = tok[2].toInt();
-    /*Mouse.move(dx, dy);
-    Serial.print("MREL ");
-    Serial.print(dx);
-    Serial.print(" ");
-    Serial.println(dy);*/
     chunkedMouseMove(dx, dy);
-    // update tracked absolute position if known
     if (lastMouseX != INT32_MIN && lastMouseY != INT32_MIN) {
       lastMouseX += dx;
       lastMouseY += dy;
     }
-  } else if (cmd == "MSCRSZ" && n >= 3) {
-    // Screen size constraint limit (pixels)
-    int32_t tx = tok[1].toInt();
-    int32_t ty = tok[2].toInt();
-    Mouse.screenSize(tx, ty);
-    Serial.print("MSCRSZ ");
-    Serial.print(tx);
-    Serial.print(" ");
-    Serial.println(ty);
   } else if (cmd == "MABS" && n >= 3) {
-    // Absolute target coordinates (pixels)
     int32_t tx = tok[1].toInt();
     int32_t ty = tok[2].toInt();
-
-    // Attempt blind move
-    /*Mouse.moveTo(tx, ty);
-    Serial.print("MABS ");
-    Serial.print(tx);
-    Serial.print(" ");
-    Serial.println(ty);*/
-
     if (lastMouseX == INT32_MIN || lastMouseY == INT32_MIN) {
-      // Tracking not initialized: do not attempt a blind jump.
-      // Optionally set tracked position to tx,ty so subsequent MABS/MREL work.
       lastMouseX = tx;
       lastMouseY = ty;
-      // Do not move the host mouse, because we don't know its real position.
       Serial.print("MABS initial sync, tracking set but no movement\n");
     } else {
       int dx = (int)(tx - lastMouseX);
@@ -562,21 +561,12 @@ void loop() {
       }
     }
   } else if (cmd == "SETPOS" && n >= 3) {
-    // Set tracked current cursor position without issuing movement.
     lastMouseX = tok[1].toInt();
     lastMouseY = tok[2].toInt();
     Serial.print("SETPOS tracked: ");
     Serial.print(lastMouseX);
     Serial.print(", ");
     Serial.println(lastMouseY);
-  } else if (cmd == "MABSDOWN" && n >= 4) {
-    int b = tok[1].toInt();   // finger 0-10
-    int tx = tok[2].toInt();  // X-pos
-    int ty = tok[3].toInt();  // Y-pos
-    TouchscreenUSB.press(b, tx, ty);
-  } else if (cmd == "MABSUP" && n >= 2) {
-    int b = tok[1].toInt();
-    TouchscreenUSB.release(b);
   } else if (cmd == "MDOWN" && n >= 2) {
     int b = tok[1].toInt();  // 0 L, 1 M, 2 R
     if (b == 0) Mouse.press(MOUSE_LEFT);
@@ -595,7 +585,7 @@ void loop() {
     bool isDown = (cmd == "KDOWN");
     String codeTok = tok[1];
     String keyTok = tok[2];
-    // Note: We ignore ctrl/shift/alt/meta flags here and rely on explicit modifier key events.
+    // We ignore ctrl/shift/alt/meta flags in the remaining tokens and rely on explicit modifier key events.
     handleKeyEvent(isDown, codeTok, keyTok);
   } else if (cmd == "KTEXT" && n >= 2) {
     // Rejoin tokens with spaces (they came from a quoted string already split)
@@ -604,20 +594,20 @@ void loop() {
       if (i > 1) s += ' ';
       s += tok[i];
     }
-    // s is unquoted text (quotes stripped by tokenizer). Type it.
-    // Small chunks to avoid overwhelming host
+    // Type it with a tiny pacing
     for (unsigned int i = 0; i < s.length(); i++) {
       Keyboard.print(s.charAt(i));
       delay(2);
     }
   } else if (cmd == "RELALLKEYS") {
     Serial.println("Releasing all keys..");
-    delay(250);
-    for (int i = 0; i < 4095; i++) {
-      Keyboard.release(i);
-    }
-    delay(250);
-    Keyboard.releaseAll();
+    // Clear our state and sync to host
+    modMask = 0;
+    for (int i = 0; i < 6; i++) keys[i] = 0;
+    sendFrame();            // releases modifiers and any tracked keys
+    Keyboard.releaseAll();  // safety net in case anything was missed
+    for (int i = 0; i < 6; i++) prevKeys[i] = 0;
+    prevModMask = 0;
     Serial.println("Released all keys!");
   } else if (cmd == "RAW" && n >= 2) {
     Serial.print("RAW: ");
