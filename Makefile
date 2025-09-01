@@ -17,7 +17,8 @@ UNAME_S := $(shell uname -s)
 CXXFLAGS = -std=gnu++20
 #CXXFLAGS += -g -Wall -Wformat -O3 -march=armv8-a -mfpu=neon -ftree-vectorize -flax-vector-conversions -fopenmp
 #CXXFLAGS += -g -Wall -Wformat -ftree-vectorize -flax-vector-conversions -fopenmp -O1 -Wextra -fno-omit-frame-pointer -fsanitize=address
-CXXFLAGS += -g -Wall -Wformat -ftree-vectorize -flax-vector-conversions -fopenmp -O1 -Wextra -fno-omit-frame-pointer
+#CXXFLAGS += -g -Wall -Wformat -ftree-vectorize -flax-vector-conversions -fopenmp -O1 -Wextra -fno-omit-frame-pointer
+CXXFLAGS += -Wall -Wformat -ftree-vectorize -O3 -ffast-math -funroll-loops -fopenmp -mfpu=neon -ftree-vectorize -flax-vector-conversions -Wextra -fno-omit-frame-pointer
 #CXXFLAGS += -D__STDC_CONSTANT_MACROS -D__STDC_LIMIT_MACROS -DTARGET_POSIX -D_LINUX -fPIC -DPIC -D_REENTRANT -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -U_FORTIFY_SOURCE -DHAVE_LIBOPENMAX=2
 LIBS = `pkg-config --libs libv4l2 tbb32`
 LIBS += -lm -ldl -lpopt -ljpeg -lpthread -latomic -lpng

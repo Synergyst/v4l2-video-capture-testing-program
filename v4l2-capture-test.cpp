@@ -49,6 +49,12 @@
 #include "crt_filter.h"
 // Vignette filter
 #include "vignette_filter.h"
+// Gaussian blur filter (fast)
+#include "gaussian_blur_fast.hpp"
+// Gaussian blur filter (fast)
+#include "gaussian_blur_neon.hpp"
+// Stack blur filter (faster)
+#include "stack_blur_rgb24.hpp"
 // PNG loader
 #include "png_loader.h"
 // --------- V4L2 "v4l2-ctl" equivalents for HDMI setup (EDID/DV/Format/Status) ---------
@@ -1228,9 +1234,12 @@ struct VignetteContext {
 static void vignettectx_init_defaults(VignetteContext& ctx) {
   ctx.params.center_x = 0.5f;
   ctx.params.center_y = 0.5f;
-  ctx.params.inner_radius = 0.81;
-  ctx.params.outer_radius = 0.093f;
-  ctx.params.strength = 2.85f;
+  ctx.params.inner_radius = 0.073;
+  ctx.params.outer_radius = 0.098f;
+  ctx.params.axis_scale_x = 20.57f;
+  ctx.params.axis_scale_y = 11.71f;
+  ctx.params.angle_deg = 0.0f;
+  ctx.params.strength = 1.85f;
   ctx.params.mode = VignetteBlendMode::Multiply; // darken
   // ctx.params.color defaults to black, gamma_correct=true, gamma=2.2
 }
@@ -1497,7 +1506,7 @@ int main(const int argc, char** argv) {
   vignettectx_init_defaults(vignette);
   ensure_vignette_filter(vignette, devInfoMain);
   vignette.filter->apply(png_ctx.rgb.data(), png_ctx.rgb);
-  applyGaussianBlurRGB24(png_ctx.rgb.data(), png_ctx.width, png_ctx.height, 4.5f);
+  applyGaussianBlurRGB24_neon_inplace(png_ctx.rgb.data(), png_ctx.width, png_ctx.height, 14.5f);
   // Timing helpers
   MicroStopwatch sw;
   // OUTER loop: alternate between primary capture loop and no-signal loop
@@ -1545,8 +1554,8 @@ int main(const int argc, char** argv) {
       // Stale frame path with CRT filter once threshold reached
       if (g_lazy_send && !frame_changed) {
         if (consecutive_same_count >= g_lazy_threshold) {
-          //applyGaussianBlurRGB24(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, 0.1f);
-          vignette.filter->apply(devInfoMain->outputFrame, devInfoMain->outputFrame);
+          applyGaussianBlurRGB24_neon_inplace(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, 2);
+          //vignette.filter->apply(devInfoMain->outputFrame, devInfoMain->outputFrame);
           apply_crt_and_broadcast(crt, devInfoMain, devInfoMain->outputFrame, g_inputIsBGR);
         }
       } else {
