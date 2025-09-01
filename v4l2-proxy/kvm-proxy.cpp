@@ -1,6 +1,8 @@
 #include <uwebsockets/App.h>
 #include <nlohmann/json.hpp>
 
+#include <sys/stat.h>
+#include <limits.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -46,6 +48,51 @@ static int set_keepalive(int fd, int idle_ms) {
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
 #endif
     return 0;
+}
+
+// Resolve the directory of the running executable (Linux: /proc/self/exe)
+static std::string getExecutableDir() {
+    char buf[PATH_MAX];
+    ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return ".";
+    buf[n] = '\0';
+    // Strip filename to keep the directory
+    char *slash = strrchr(buf, '/');
+    if (!slash) return ".";
+    *slash = '\0';
+    return std::string(buf);
+}
+
+// Read an entire small file into a std::string (binary-safe)
+static bool readFileToString(const std::string &path, std::string &out) {
+    int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) return false;
+
+    struct stat st;
+    if (::fstat(fd, &st) != 0) {
+        ::close(fd);
+        return false;
+    }
+
+    out.clear();
+    if (st.st_size > 0) out.reserve(static_cast<size_t>(st.st_size));
+
+    char buf[8192];
+    for (;;) {
+        ssize_t n = ::read(fd, buf, sizeof(buf));
+        if (n > 0) {
+            out.append(buf, buf + n);
+        } else if (n == 0) {
+            break; // EOF
+        } else {
+            if (errno == EINTR) continue;
+            ::close(fd);
+            return false;
+        }
+    }
+
+    ::close(fd);
+    return true;
 }
 
 // Non-blocking connect with timeout
@@ -104,7 +151,7 @@ static const std::string TCP_HOST = envStr("TCP_HOST", "192.168.168.175");
 static const int TCP_PORT = envInt("TCP_PORT", 1337);
 static const std::string CONTROL_TCP_HOST = envStr("CONTROL_TCP_HOST", "192.168.168.46");
 static const int CONTROL_TCP_PORT = envInt("CONTROL_TCP_PORT", 1444);
-static const int HTTP_PORT = envInt("HTTP_PORT", 8080);
+static const int HTTP_PORT = envInt("HTTP_PORT", 34878);
 static const std::string AUTH_TOKEN = envStr("AUTH_TOKEN", "");
 static const std::string WSS_PATH = "/ws";
 static const std::string ALLOWED_CONTROL_SUBNETS_RAW = envStr("ALLOWED_CONTROL_SUBNETS", "192.168.168.0/24,127.0.0.1,75.132.12.230");
@@ -347,7 +394,7 @@ static const char *HTML_TEMPLATE = R"HTML(<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MJPEG over WebSocket + Input</title>
+<title>KVM Proxy</title>
 <style>
   :root{color-scheme:dark}
   html,body{height:100%;margin:0;background:#000;overflow:hidden}
@@ -372,6 +419,7 @@ static const char *HTML_TEMPLATE = R"HTML(<!doctype html>
   #btnHelp{background:#111;border:1px solid #333;color:#0af;padding:.35rem .6rem;border-radius:6px;cursor:pointer}
   #vfURL.hidden{display:none}
 </style>
+<link rel="icon" type="image/png" href="/favicon.png?1">
 </head>
 <body>
   <div id="wrap">
@@ -1139,6 +1187,18 @@ int main() {
     });
     app.any("/*", [](auto *res, auto * /*req*/) {
         res->writeStatus("404 Not Found")->end("Not found");
+    });
+    app.get("/favicon.png", [](auto *res, auto */*req*/) {
+        std::string ico;
+        // Prefer the directory where the binary resides; fallback to CWD
+        const std::string exeDir = getExecutableDir();
+        const std::string pathA = exeDir + "/favicon.png";
+        const std::string pathB = "favicon.png";
+        if (!readFileToString(pathA, ico) && !readFileToString(pathB, ico)) {
+            res->writeStatus("404 Not Found")->end("favicon.png not found");
+            return;
+        }
+        res->writeHeader("Content-Type", "image/png")->writeHeader("Cache-Control", "public, max-age=86400")->end(std::move(ico));
     });
 
     // WebSocket behavior
