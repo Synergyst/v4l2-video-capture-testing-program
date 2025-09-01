@@ -1,0 +1,107 @@
+# -------------------------------
+# Toolchain / target
+# -------------------------------
+#CXX = g++-12
+CXX ?= g++
+EXE = control-agent
+SOURCES = control-agent.cpp
+OBJS = $(addsuffix .o, $(basename $(notdir $(SOURCES))))
+UNAME_S := $(shell uname -s)
+
+# -------------------------------
+# Third-party paths
+# -------------------------------
+UWS_DIR ?= external/uWebSockets
+USOCKETS_DIR := $(UWS_DIR)/uSockets
+# NOTE: uSockets builds to "uSockets.a" (not libusockets.a)
+USOCKETS_A := $(USOCKETS_DIR)/uSockets.a
+
+# JSON single-header root (contains nlohmann/json.hpp)
+JSON_INC_DIR ?= third_party
+
+# Shim include prefix that provides "uwebsockets/" include folder
+SHIM_INC_DIR ?= deps/include
+
+# -------------------------------
+# Flags
+# -------------------------------
+CXXFLAGS ?= -std=gnu++17
+CXXFLAGS += -O2 -g -Wall -Wextra -fno-omit-frame-pointer
+
+# Include dirs:
+#  - SHIM_INC_DIR (contains "uwebsockets" -> symlink to uWebSockets/src)
+#  - UWS_DIR/src for direct include of internal headers if needed
+#  - USOCKETS_DIR/src for lib headers
+#  - JSON_INC_DIR for nlohmann/json.hpp
+CXXFLAGS += -I$(SHIM_INC_DIR) -I$(UWS_DIR)/src -I$(USOCKETS_DIR)/src -I$(JSON_INC_DIR)
+
+# Use pkg-config for OpenSSL and zlib if available
+SSL_CFLAGS := $(shell pkg-config --cflags openssl 2>/dev/null)
+SSL_LIBS   := $(shell pkg-config --libs openssl 2>/dev/null)
+ZLIB_CFLAGS:= $(shell pkg-config --cflags zlib 2>/dev/null)
+ZLIB_LIBS  := $(shell pkg-config --libs zlib 2>/dev/null)
+
+CXXFLAGS += $(SSL_CFLAGS) $(ZLIB_CFLAGS)
+
+LIBS = $(USOCKETS_A) $(SSL_LIBS) $(ZLIB_LIBS) -lpthread
+
+# Fallback if pkg-config missing
+ifeq ($(strip $(SSL_LIBS)),)
+	LIBS += -lssl -lcrypto
+endif
+ifeq ($(strip $(ZLIB_LIBS)),)
+	LIBS += -lz
+endif
+
+# Platform specifics
+ifeq ($(UNAME_S), Linux)
+	ECHO_MESSAGE = "Linux"
+	LIBS += -ldl
+endif
+ifeq ($(UNAME_S), Darwin)
+	ECHO_MESSAGE = "macOS"
+endif
+
+# -------------------------------
+# Phony targets
+# -------------------------------
+.PHONY: all clean deps uws usockets json headers
+
+# -------------------------------
+# Build rules
+# -------------------------------
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+all: deps $(EXE)
+	@echo Build complete for $(ECHO_MESSAGE)
+
+$(EXE): $(OBJS)
+	$(CXX) -o $@ $^ $(CXXFLAGS) $(LIBS)
+
+clean:
+	rm -f $(EXE) $(OBJS)
+
+# -------------------------------
+# Dependency prep
+# -------------------------------
+deps: uws usockets json headers
+
+uws:
+	@test -d "$(UWS_DIR)" || (echo "ERROR: $(UWS_DIR) not found. Clone uWebSockets: git clone --recursive https://github.com/uNetworking/uWebSockets.git $(UWS_DIR)"; exit 1)
+
+usockets: uws
+	@$(MAKE) -C $(USOCKETS_DIR) -j
+	@test -f "$(USOCKETS_A)" || (echo "ERROR: $(USOCKETS_A) missing; ensure uSockets built"; exit 1)
+
+json:
+	@test -f "$(JSON_INC_DIR)/nlohmann/json.hpp" || ( \
+		mkdir -p "$(JSON_INC_DIR)/nlohmann" && \
+		echo "Fetching nlohmann/json single header..." && \
+		curl -L -o "$(JSON_INC_DIR)/nlohmann/json.hpp" https://raw.githubusercontent.com/nlohmann/json/develop/single_include/nlohmann/json.hpp \
+	)
+
+# Create shim so <uwebsockets/App.h> resolves to external/uWebSockets/src/App.h
+headers:
+	@mkdir -p "$(SHIM_INC_DIR)"
+	@ln -snf ../../$(UWS_DIR)/src "$(SHIM_INC_DIR)/uwebsockets"
