@@ -47,6 +47,8 @@
 #include <system_error>
 // CRT filter
 #include "crt_filter.h"
+// Vignette filter
+#include "vignette_filter.h"
 // PNG loader
 #include "png_loader.h"
 // --------- V4L2 "v4l2-ctl" equivalents for HDMI setup (EDID/DV/Format/Status) ---------
@@ -310,7 +312,7 @@ static bool set_device_edid_from_file(const char* dev, const char* edid_path, bo
   return true;
 }
 // 3) Query and set DV timings to current detected timings (legacy helper; kept for compatibility)
-static bool query_and_set_dv_timings(const char* dev, int dev_index = -1) {
+/*static bool query_and_set_dv_timings(const char* dev, int dev_index = -1) {
   char tag[32]; make_tag(tag, sizeof(tag), "dvt", dev_index);
   int fd = open_video_node_rw(dev, dev_index);
   if (fd < 0) return false;
@@ -331,7 +333,7 @@ static bool query_and_set_dv_timings(const char* dev, int dev_index = -1) {
   fprintf(stderr, "%s Set DV timings to current detected timings on %s\n", tag, dev);
   close(fd);
   return true;
-}
+}*/
 // 4) Print current format (like v4l2-ctl -V)
 static void print_current_format(const char* dev, int dev_index = -1) {
   char tag[32]; make_tag(tag, sizeof(tag), "fmt", dev_index);
@@ -1181,7 +1183,8 @@ static void enqueue_encode_job(const unsigned char* frameData, size_t bytes, int
 }
 PNGImage png_ctx {
   .width = 1920,
-  .height = 1080
+  .height = 1080,
+  .rgb = {}
 };
 // --------------- CRT helpers (condensed) -----------------
 struct CRTContext {
@@ -1213,6 +1216,33 @@ static void ensure_crt_filter(CRTContext& ctx, const devInfo* d) {
   if (!ctx.filter || ctx.w != w || ctx.h != h) {
     ctx.w = w; ctx.h = h;
     ctx.filter = std::make_unique<CRTFilter>(w, h, ctx.params, ctx.threads, ctx.fps);
+  }
+}
+// ------------ Vignette helpers (condensed) ---------------
+struct VignetteContext {
+  VignetteParams params{};
+  std::unique_ptr<VignetteFilter> filter;
+  int w = 0, h = 0;
+};
+
+static void vignettectx_init_defaults(VignetteContext& ctx) {
+  ctx.params.center_x = 0.5f;
+  ctx.params.center_y = 0.5f;
+  ctx.params.inner_radius = 0.81;
+  ctx.params.outer_radius = 0.093f;
+  ctx.params.strength = 2.85f;
+  ctx.params.mode = VignetteBlendMode::Multiply; // darken
+  // ctx.params.color defaults to black, gamma_correct=true, gamma=2.2
+}
+
+static void ensure_vignette_filter(VignetteContext& ctx, const devInfo* d) {
+  auto [w, h] = get_resolution(d);
+  if (!ctx.filter || ctx.w != w || ctx.h != h) {
+    ctx.w = w; ctx.h = h;
+    ctx.filter = std::make_unique<VignetteFilter>(w, h, ctx.params, /*threads=*/1);
+  } else {
+    // keep size, push updated parameters
+    ctx.filter->setParams(ctx.params);
   }
 }
 // Convert BGR->RGB if needed for filter
@@ -1275,7 +1305,7 @@ static inline uint32_t xorshift32(uint32_t& s) {
   s ^= s << 5;
   return s;
 }
-static void generate_rgb_static_frame(const devInfo* d, uint64_t frame_index, std::vector<uint8_t>& out_rgb24) {
+/*static void generate_rgb_static_frame(const devInfo* d, uint64_t frame_index, std::vector<uint8_t>& out_rgb24) {
   auto [w, h] = get_resolution(d);
   out_rgb24.resize((size_t)w * (size_t)h * 3ull);
   uint32_t seed = (uint32_t)((frame_index * 1664525u) ^ 1013904223u) ^ (uint32_t)w ^ ((uint32_t)h << 1);
@@ -1301,7 +1331,7 @@ static void broadcast_rgb24_buffer(const devInfo* d, const std::vector<uint8_t>&
   } else {
     broadcast_frame(rgb.data(), rgb.size());
   }
-}
+}*/
 // --------------- Recovery thread ---------------
 static std::thread g_recover_thread;
 static void recovery_worker() {
@@ -1350,6 +1380,84 @@ static void recovery_worker() {
     }
   }
 }
+// In-place Gaussian blur on RGB24 buffer (width*height*3).
+// - buf: pointer to RGB24 pixels
+// - width, height: frame dimensions
+// - sigma: blur strength in pixels (<=0 => no-op). Typical range: 0.5 .. 5.0
+// - strideBytes: bytes per row; 0 means tightly packed (width * 3)
+// - iterations: apply multiple times (e.g., 2 for stronger blur with same sigma)
+static void applyGaussianBlurRGB24(uint8_t* buf, int width, int height, float sigma, size_t strideBytes = 0, int iterations = 1) {
+  if (!buf || width <= 0 || height <= 0 || sigma <= 0.f || iterations <= 0) return;
+
+  const size_t stride = (strideBytes == 0) ? (size_t)width * 3u : strideBytes;
+
+  // Build 1D Gaussian kernel
+  const int radius = std::max(1, (int)std::ceil(3.f * sigma));   // ~99.7% coverage
+  const int ksize = 2 * radius + 1;
+  std::vector<float> kernel(ksize);
+  {
+    const float inv2s2 = 1.f / (2.f * sigma * sigma);
+    float sum = 0.f;
+    for (int i = -radius; i <= radius; ++i) {
+      float w = std::exp(- (i * i) * inv2s2);
+      kernel[i + radius] = w;
+      sum += w;
+    }
+    // Normalize
+    for (float& v : kernel) v /= sum;
+  }
+
+  std::vector<uint8_t> tmp((size_t)height * stride); // intermediate buffer
+
+  auto clampi = [](int v, int lo, int hi) {
+    return (v < lo) ? lo : (v > hi ? hi : v);
+  };
+
+  for (int it = 0; it < iterations; ++it) {
+    // Horizontal pass: src = buf, dst = tmp
+    for (int y = 0; y < height; ++y) {
+      const uint8_t* srcRow = buf + (size_t)y * stride;
+      uint8_t* dstRow = tmp.data() + (size_t)y * stride;
+
+      for (int x = 0; x < width; ++x) {
+        // Accumulate per channel
+        float accR = 0.f, accG = 0.f, accB = 0.f;
+        for (int k = -radius; k <= radius; ++k) {
+          const int xi = clampi(x + k, 0, width - 1);
+          const float w = kernel[k + radius];
+          const uint8_t* p = srcRow + (size_t)xi * 3u;
+          accR += w * p[0];
+          accG += w * p[1];
+          accB += w * p[2];
+        }
+        uint8_t* q = dstRow + (size_t)x * 3u;
+        q[0] = (uint8_t)std::lround(std::clamp(accR, 0.f, 255.f));
+        q[1] = (uint8_t)std::lround(std::clamp(accG, 0.f, 255.f));
+        q[2] = (uint8_t)std::lround(std::clamp(accB, 0.f, 255.f));
+      }
+    }
+
+    // Vertical pass: src = tmp, dst = buf
+    for (int y = 0; y < height; ++y) {
+      uint8_t* dstRow = buf + (size_t)y * stride;
+      for (int x = 0; x < width; ++x) {
+        float accR = 0.f, accG = 0.f, accB = 0.f;
+        for (int k = -radius; k <= radius; ++k) {
+          const int yi = clampi(y + k, 0, height - 1);
+          const float w = kernel[k + radius];
+          const uint8_t* p = tmp.data() + (size_t)yi * stride + (size_t)x * 3u;
+          accR += w * p[0];
+          accG += w * p[1];
+          accB += w * p[2];
+        }
+        uint8_t* q = dstRow + (size_t)x * 3u;
+        q[0] = (uint8_t)std::lround(std::clamp(accR, 0.f, 255.f));
+        q[1] = (uint8_t)std::lround(std::clamp(accG, 0.f, 255.f));
+        q[2] = (uint8_t)std::lround(std::clamp(accB, 0.f, 255.f));
+      }
+    }
+  }
+}
 // ----------------- main -----------------
 int main(const int argc, char** argv) {
   // Parse options and devices
@@ -1384,6 +1492,12 @@ int main(const int argc, char** argv) {
   // CRT context
   CRTContext crt;
   crtctx_init_defaults(crt);
+  // CRT context
+  VignetteContext vignette;
+  vignettectx_init_defaults(vignette);
+  ensure_vignette_filter(vignette, devInfoMain);
+  vignette.filter->apply(png_ctx.rgb.data(), png_ctx.rgb);
+  applyGaussianBlurRGB24(png_ctx.rgb.data(), png_ctx.width, png_ctx.height, 4.5f);
   // Timing helpers
   MicroStopwatch sw;
   // OUTER loop: alternate between primary capture loop and no-signal loop
@@ -1431,6 +1545,8 @@ int main(const int argc, char** argv) {
       // Stale frame path with CRT filter once threshold reached
       if (g_lazy_send && !frame_changed) {
         if (consecutive_same_count >= g_lazy_threshold) {
+          //applyGaussianBlurRGB24(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, 0.1f);
+          vignette.filter->apply(devInfoMain->outputFrame, devInfoMain->outputFrame);
           apply_crt_and_broadcast(crt, devInfoMain, devInfoMain->outputFrame, g_inputIsBGR);
         }
       } else {
@@ -1443,7 +1559,7 @@ int main(const int argc, char** argv) {
       }
     }
     // No-signal loop: output RGB static placeholder until recovery thread flips shouldLoop=true
-    uint64_t static_frame_idx = 0;
+    //uint64_t static_frame_idx = 0;
     while (programRunning.load() && !shouldLoop.load()) {
       accept_new_clients();
       apply_crt_and_broadcast(crt, devInfoMain, png_ctx.rgb.data(), false);

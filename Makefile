@@ -10,7 +10,7 @@ CXX = arm-linux-gnueabihf-g++-12
 #CXX = clang++
 
 EXE = v4l2-capture-test
-SOURCES = v4l2-capture-test.cpp crt_filter.cpp png_loader.cpp
+SOURCES = v4l2-capture-test.cpp crt_filter.cpp vignette_filter.cpp png_loader.cpp
 OBJS = $(addsuffix .o, $(basename $(notdir $(SOURCES))))
 UNAME_S := $(shell uname -s)
 
