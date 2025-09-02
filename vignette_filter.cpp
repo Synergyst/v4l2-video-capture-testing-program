@@ -90,6 +90,7 @@ void VignetteFilter::apply(const uint8_t* src_rgb24,
   const float r1 = std::max(r0 + 1e-6f, params_.outer_radius);
 
   auto process_rows = [&](int y0, int y1) {
+#pragma omp parallel for
     for (int y = y0; y < y1; ++y) {
       const uint8_t* srow = src + static_cast<std::size_t>(y) * stride;
       uint8_t* drow = dst_rgb24 + static_cast<std::size_t>(y) * stride;
@@ -261,6 +262,7 @@ void VignetteFilter::applyRoundedBox(const uint8_t* src_rgb24,
 
   // Row worker
   auto work_rows = [&](int y0r, int y1r) {
+#pragma omp parallel for
     for (int y = y0r; y < y1r; ++y) {
       const uint8_t* srow = src_rgb24 + static_cast<std::size_t>(y) * stride;
       uint8_t* drow = dst_rgb24 + static_cast<std::size_t>(y) * stride;

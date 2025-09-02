@@ -73,6 +73,7 @@ void CRTFilter::apply(const uint8_t* src, int frame_idx, int fps, std::vector<ui
         {0.80f, 0.75f, 1.00f}, // x%3==2
     };
     float tri_gainR[3], tri_gainG[3], tri_gainB[3];
+#pragma omp parallel for
     for (int i = 0; i < 3; ++i) {
         tri_gainR[i] = (1.0f - ms) + ms * triad[i][0];
         tri_gainG[i] = (1.0f - ms) + ms * triad[i][1];
@@ -111,6 +112,7 @@ void CRTFilter::apply(const uint8_t* src, int frame_idx, int fps, std::vector<ui
             int right = std::min(w_, w_ - wob_i);
 
             // Left edge (clamped)
+#pragma omp parallel for
             for (int x = 0; x < left; ++x) {
                 int tri = x % 3;
                 float mr = base_gain * tri_gainR[tri];
@@ -259,6 +261,7 @@ void CRTFilter::apply(const uint8_t* src, int frame_idx, int fps, std::vector<ui
 #endif // CRT_NEON
 
                 // Scalar tail of interior region
+#pragma omp parallel for
                 for (int i = 0; i < remaining; ++i) {
                     int x = left + i;
                     int xs = x + wob_i;
@@ -282,6 +285,7 @@ void CRTFilter::apply(const uint8_t* src, int frame_idx, int fps, std::vector<ui
             }
 
             // Right edge (clamped)
+#pragma omp parallel for
             for (int x = right; x < w_; ++x) {
                 int tri = x % 3;
                 float mr = base_gain * tri_gainR[tri];

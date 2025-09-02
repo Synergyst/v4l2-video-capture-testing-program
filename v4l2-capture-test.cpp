@@ -9,6 +9,8 @@
 // - Secondary loop outputs "no-signal" frames while capture is down.
 // - Memory leak fixes preserved; deinit and free helpers intact.
 #include <cmath>
+#include <arm_neon.h>
+#include <omp.h>
 #include <vector>
 #include <chrono>
 #include <cstdio>
@@ -45,6 +47,7 @@
 #include <memory>
 #include <optional>
 #include <system_error>
+#include <cctype>
 // CRT filter
 #include "crt_filter.h"
 // Vignette filter
@@ -595,10 +598,10 @@ static void accept_new_clients() {
     client_fds.push_back(cfd);
     int w = (devInfoMain ? devInfoMain->startingWidth : defaultWidth);
     int h = (devInfoMain ? devInfoMain->startingHeight : defaultHeight);
-    for (int i = 0; i < 60; i++) seed_initial_frame_for_fd(cfd, w, h);
+    const int kSeedFrames = (g_streamCodec == CODEC_MJPEG) ? 2 : 1;
+    for (int i = 0; i < kSeedFrames; i++) seed_initial_frame_for_fd(cfd, w, h);
     char ip[64]; inet_ntop(AF_INET, &cliaddr.sin_addr, ip, sizeof(ip));
-    fprintf(stderr, "[net] Client connected: %s:%d (fd=%d). Total clients: %zu\n",
-            ip, ntohs(cliaddr.sin_port), cfd, client_fds.size());
+    fprintf(stderr, "[net] Client connected: %s:%d (fd=%d). Total clients: %zu\n", ip, ntohs(cliaddr.sin_port), cfd, client_fds.size());
   }
 }
 static void broadcast_frame(const unsigned char* data, size_t len) {
@@ -731,6 +734,7 @@ public:
 };
 // R/B swap
 static inline void swap_rb_inplace(unsigned char* buf, size_t pixels) {
+#pragma omp parallel for
   for (size_t i = 0; i < pixels; ++i) {
     unsigned char* p = buf + i * 3;
     unsigned char t = p[0];
@@ -1004,11 +1008,19 @@ static void free_devinfo(struct devInfo*& d) {
 }
 int deinit_bufs(struct buffer*& buffers, struct devInfo*& devInfos) {
   if (!devInfos) return 0;
+
+  if (devInfos->fd >= 0) {
+    enum v4l2_buf_type t = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    // Best-effort; ignore errors
+    xioctl(devInfos->fd, VIDIOC_STREAMOFF, &t);
+  }
+
   if (buffers) {
     for (unsigned int i = 0; i < devInfos->n_buffers; ++i) {
       if (buffers[i].start && buffers[i].length) {
-        if (-1 == munmap(buffers[i].start, buffers[i].length))
-          errno_exit("munmap");
+        if (-1 == munmap(buffers[i].start, buffers[i].length)) {
+          perror("munmap");
+        }
       }
     }
     free(buffers);
@@ -1016,7 +1028,7 @@ int deinit_bufs(struct buffer*& buffers, struct devInfo*& devInfos) {
   }
   fprintf(stderr, "[cap%d] Uninitialized V4L2 video device: %s\n", devInfos->index, devInfos->device);
   if (devInfos->fd >= 0) {
-    if (-1 == close(devInfos->fd)) errno_exit("close");
+    if (-1 == close(devInfos->fd)) perror("close");
     devInfos->fd = -1;
     fprintf(stderr, "[cap%d] Closed V4L2 video device: %s\n", devInfos->index, devInfos->device);
   }
@@ -1202,7 +1214,7 @@ struct CRTContext {
 };
 static void crtctx_init_defaults(CRTContext& ctx) {
   // Example params; tweak as desired
-  ctx.params.flicker_60hz = 0.904f;
+  ctx.params.flicker_60hz = 0.494f;
   ctx.params.flicker_noise = 0.093f;
   ctx.params.scanline_strength = 0.25f; // 0..1
   ctx.params.mask_strength = 0.83f;     // 0..1
@@ -1250,7 +1262,7 @@ static void ensure_vignette_filter(VignetteContext& ctx, const devInfo* d) {
   auto [w, h] = get_resolution(d);
   if (!ctx.filter || ctx.w != w || ctx.h != h) {
     ctx.w = w; ctx.h = h;
-    ctx.filter = std::make_unique<VignetteFilter>(w, h, ctx.params, /*threads=*/6);
+    ctx.filter = std::make_unique<VignetteFilter>(w, h, ctx.params, /*threads=*/3);
   } else {
     // keep size, push updated parameters
     ctx.filter->setParams(ctx.params);
@@ -1282,7 +1294,7 @@ static void ensure_vignettebox_filter(VignetteBoxContext& ctx, const devInfo* d)
     // Construct with a neutral/unused elliptical params; we’ll call applyRoundedBox() later.
     VignetteParams dummy{};
     dummy.strength = 0.0f; // neutral effect for the ellipse path
-    ctx.filter = std::make_unique<VignetteFilter>(w, h, dummy, /*threads=*/6);
+    ctx.filter = std::make_unique<VignetteFilter>(w, h, dummy, /*threads=*/3);
   } else {
     // If size changed in-place, just resize the filter
     ctx.filter->resize(w, h);
@@ -1298,6 +1310,7 @@ static void make_rgb_view_for_filter(const uint8_t* src_in, bool is_bgr, size_t 
   const uint8_t* s = src_in;
   uint8_t* d = tmp_rgb.data();
   size_t pixels = (size_t)w * (size_t)h;
+#pragma omp parallel for
   for (size_t i = 0; i < pixels; ++i) {
     d[0] = s[2];
     d[1] = s[1];
@@ -1331,8 +1344,13 @@ static void send_current_frame(const devInfo* d) {
   const size_t bytes = frame_bytes(d);
   if (g_streamCodec == CODEC_MJPEG) {
     enqueue_encode_job(d->outputFrame, bytes, d->startingWidth, d->startingHeight);
+    static uint64_t last_sent_id = 0;
     auto sp = std::atomic_load_explicit(&g_latest_jpeg, std::memory_order_acquire);
-    if (sp && !sp->empty()) broadcast_frame(sp->data(), sp->size());
+    uint64_t cur_id = g_latest_jpeg_id.load(std::memory_order_acquire);
+    if (sp && !sp->empty() && cur_id != last_sent_id) {
+      broadcast_frame(sp->data(), sp->size());
+      last_sent_id = cur_id;
+    }
   } else {
     if (g_inputIsBGR) {
       size_t pixels = (size_t)d->startingWidth * (size_t)d->startingHeight;
@@ -1353,6 +1371,7 @@ static void generate_rgb_static_frame(const devInfo* d, uint64_t frame_index, st
   out_rgb24.resize((size_t)w * (size_t)h * 3ull);
   uint32_t seed = (uint32_t)((frame_index * 1664525u) ^ 1013904223u) ^ (uint32_t)w ^ ((uint32_t)h << 1);
   uint8_t* p = out_rgb24.data();
+#pragma omp parallel for collapse(2)
   for (int y = 0; y < h; ++y) {
     for (int x = 0; x < w; ++x) {
       uint32_t s = seed ^ (uint32_t)(x * 374761393u + y * 668265263u);
@@ -1423,6 +1442,19 @@ static void recovery_worker() {
     }
   }
 }
+static inline bool frames_likely_equal_fast(const uint8_t* a, const uint8_t* b, int w, int h) {
+  const int stride = w * 3;
+  // Sample 8 rows spread across the frame
+  const int samples = 8;
+  for (int i = 0; i < samples; ++i) {
+    int y = (h * (i + 1)) / (samples + 1);
+    const uint8_t* ra = a + y * stride;
+    const uint8_t* rb = b + y * stride;
+    // Compare first 256 bytes of the row
+    if (memcmp(ra, rb, std::min(stride, 256)) != 0) return false;
+  }
+  return true;
+}
 // In-place Gaussian blur on RGB24 buffer (width*height*3).
 // - buf: pointer to RGB24 pixels
 // - width, height: frame dimensions
@@ -1465,6 +1497,7 @@ static void applyGaussianBlurRGB24(uint8_t* buf, int width, int height, float si
       for (int x = 0; x < width; ++x) {
         // Accumulate per channel
         float accR = 0.f, accG = 0.f, accB = 0.f;
+#pragma omp parallel for
         for (int k = -radius; k <= radius; ++k) {
           const int xi = clampi(x + k, 0, width - 1);
           const float w = kernel[k + radius];
@@ -1485,6 +1518,7 @@ static void applyGaussianBlurRGB24(uint8_t* buf, int width, int height, float si
       uint8_t* dstRow = buf + (size_t)y * stride;
       for (int x = 0; x < width; ++x) {
         float accR = 0.f, accG = 0.f, accB = 0.f;
+#pragma omp parallel for
         for (int k = -radius; k <= radius; ++k) {
           const int yi = clampi(y + k, 0, height - 1);
           const float w = kernel[k + radius];
@@ -1503,9 +1537,22 @@ static void applyGaussianBlurRGB24(uint8_t* buf, int width, int height, float si
 }
 // ----------------- main -----------------
 int main(const int argc, char** argv) {
+  omp_set_num_threads(4);
   // Parse options and devices
   parse_cli_or_die(argc, (const char**)argv);
-  load_png_rgb24("/root/v4l2-video-capture-testing-program/nosignal.png", png_ctx, false);
+  //load_png_rgb24("/root/v4l2-video-capture-testing-program/nosignal.png", png_ctx, false);
+  if (!load_png_rgb24("/root/v4l2-video-capture-testing-program/nosignal.png", png_ctx, false) ||
+    png_ctx.rgb.empty()) {
+    fprintf(stderr, "[png] nosignal.png load failed; falling back to generated noise\n");
+    std::vector<uint8_t> fallback;
+    devInfo tmp{};
+    tmp.startingWidth = defaultWidth;
+    tmp.startingHeight = defaultHeight;
+    generate_rgb_static_frame(&tmp, 0, fallback);
+    png_ctx.rgb = std::move(fallback);
+    png_ctx.width = defaultWidth;
+    png_ctx.height = defaultHeight;
+  }
   // Init devices
   configure_main(devInfoMain, buffersMain, devInfoAlt, buffersAlt);
   // Setup TCP server
@@ -1562,7 +1609,12 @@ int main(const int argc, char** argv) {
       bool frame_changed = true;
       bool is_same = false;
       if (g_lazy_send && have_prev_frame && prev_raw_frame.size() == frame_bytes_cnt) {
-        is_same = (std::memcmp(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes_cnt) == 0);
+        //is_same = (std::memcmp(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes_cnt) == 0);
+        if (frames_likely_equal_fast(prev_raw_frame.data(), devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight)) {
+          is_same = (std::memcmp(prev_raw_frame.data(), devInfoMain->outputFrame, frame_bytes_cnt) == 0);
+        } else {
+          is_same = false;
+        }
       }
       if (!have_prev_frame) {
         prev_raw_frame.resize(frame_bytes_cnt);
@@ -1599,6 +1651,11 @@ int main(const int argc, char** argv) {
       if (!devInfoMain->realAndTargetRatesMatch) {
         double us = devInfoMain->targetFrameDelayMicros - sw.elapsedMicros();
         if (us > 0) usleep((useconds_t)us);
+      } else {
+        // TESTING-ONLY: Add extra frame delay
+        double us = (frame_delay_us(devInfoMain) / 2.0);
+        if (us < 3000.0) us = 3000.0; // safety minimum 3ms
+        usleep((useconds_t)us);
       }
     }
     // No-signal loop: output RGB static placeholder until recovery thread flips shouldLoop=true

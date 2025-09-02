@@ -336,6 +336,7 @@ static inline void applyGaussianBlurRGB24_neon(const uint8_t* src,
 
   // H pass
 #if GB_NEON
+#pragma omp parallel for
   for (int y = 0; y < h; ++y) {
     const uint8_t* srow = src + (size_t)y * stride;
     uint8_t* drow = tmp.data() + (size_t)y * stride;
