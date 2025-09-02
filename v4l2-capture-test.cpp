@@ -1212,19 +1212,20 @@ struct CRTContext {
   int fps = 60;
   int w = 0, h = 0;
 };
+CRTContext crt;
 static void crtctx_init_defaults(CRTContext& ctx) {
   // Example params; tweak as desired
-  ctx.params.flicker_60hz = 0.494f;
-  ctx.params.flicker_noise = 0.093f;
-  ctx.params.scanline_strength = 0.25f; // 0..1
-  ctx.params.mask_strength = 0.83f;     // 0..1
-  ctx.params.grain_strength = 0.025f;   // 0..1
-  ctx.params.h_warp_amp = 0.33f;        // pixels
-  ctx.params.h_warp_freq_y = 0.03f;     // per-line
-  ctx.params.h_warp_freq_t = 0.8f;      // per-second
-  ctx.params.v_shake_amp = 1.2f;        // lines
-  ctx.params.wobble_line_noise = 0.33f; // pixels
-  ctx.params.block_rows = 32;           // multithread chunk
+  ctx.params.flicker_60hz = 0.394f;
+  ctx.params.flicker_noise = 0.1393f;
+  ctx.params.scanline_strength = 0.925f; // 0..1
+  ctx.params.mask_strength = 0.83f;      // 0..1
+  ctx.params.grain_strength = 0.0125f;   // 0..1
+  ctx.params.h_warp_amp = 0.33f;         // pixels
+  ctx.params.h_warp_freq_y = 0.03f;      // per-line
+  ctx.params.h_warp_freq_t = 0.8f;       // per-second
+  ctx.params.v_shake_amp = 1.2f;         // lines
+  ctx.params.wobble_line_noise = 0.36f;  // pixels
+  ctx.params.block_rows = 32;            // multithread chunk
   size_t th = std::thread::hardware_concurrency();
   ctx.threads = (th == 0 ? 4 : th);
   ctx.fps = 60;
@@ -1242,7 +1243,7 @@ struct VignetteContext {
   std::unique_ptr<VignetteFilter> filter;
   int w = 0, h = 0;
 };
-
+VignetteContext vignette;
 static void vignettectx_init_defaults(VignetteContext& ctx) {
   ctx.params.center_x = 0.5f;
   ctx.params.center_y = 0.5f;
@@ -1262,7 +1263,7 @@ static void ensure_vignette_filter(VignetteContext& ctx, const devInfo* d) {
   auto [w, h] = get_resolution(d);
   if (!ctx.filter || ctx.w != w || ctx.h != h) {
     ctx.w = w; ctx.h = h;
-    ctx.filter = std::make_unique<VignetteFilter>(w, h, ctx.params, /*threads=*/3);
+    ctx.filter = std::make_unique<VignetteFilter>(w, h, ctx.params, /*threads=*/6);
   } else {
     // keep size, push updated parameters
     ctx.filter->setParams(ctx.params);
@@ -1294,7 +1295,7 @@ static void ensure_vignettebox_filter(VignetteBoxContext& ctx, const devInfo* d)
     // Construct with a neutral/unused elliptical params; we’ll call applyRoundedBox() later.
     VignetteParams dummy{};
     dummy.strength = 0.0f; // neutral effect for the ellipse path
-    ctx.filter = std::make_unique<VignetteFilter>(w, h, dummy, /*threads=*/3);
+    ctx.filter = std::make_unique<VignetteFilter>(w, h, dummy, /*threads=*/6);
   } else {
     // If size changed in-place, just resize the filter
     ctx.filter->resize(w, h);
@@ -1330,6 +1331,9 @@ static void apply_crt_and_broadcast(CRTContext& ctx, const devInfo* d, const uin
   std::vector<uint8_t> filtered_rgb;
   filtered_rgb.reserve(bytes);
   ctx.filter->apply(src_rgb, filtered_rgb); // produces RGB24
+
+  vignette.filter->apply(filtered_rgb.data(), filtered_rgb.data());
+
   if (g_streamCodec == CODEC_MJPEG) {
     std::vector<unsigned char> jpeg;
     if (encode_rgb24_to_jpeg_mem(filtered_rgb.data(), w, h, g_jpeg_quality, jpeg) && !jpeg.empty()) {
@@ -1580,10 +1584,10 @@ int main(const int argc, char** argv) {
   bool have_prev_frame = false;
   int consecutive_same_count = 0;
   // CRT context
-  CRTContext crt;
+  //CRTContext crt;
   crtctx_init_defaults(crt);
   // CRT context
-  VignetteContext vignette;
+  //VignetteContext vignette;
   vignettectx_init_defaults(vignette);
   ensure_vignette_filter(vignette, devInfoMain);
   vignette.filter->apply(png_ctx.rgb.data(), png_ctx.rgb);
@@ -1640,7 +1644,7 @@ int main(const int argc, char** argv) {
       // Stale frame path with CRT filter once threshold reached
       if (g_lazy_send && !frame_changed) {
         if (consecutive_same_count >= g_lazy_threshold) {
-          applyGaussianBlurRGB24_neon_inplace(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, 1.0f);
+          //applyGaussianBlurRGB24_neon_inplace(devInfoMain->outputFrame, devInfoMain->startingWidth, devInfoMain->startingHeight, 1.0f);
           //vignette.filter->apply(devInfoMain->outputFrame, devInfoMain->outputFrame);
           apply_crt_and_broadcast(crt, devInfoMain, devInfoMain->outputFrame, g_inputIsBGR);
         }
