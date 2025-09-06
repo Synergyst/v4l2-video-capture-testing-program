@@ -147,14 +147,16 @@ static int envInt(const char *name, int defv) {
     try { return std::stoi(p); } catch (...) { return defv; }
 }
 
-static const std::string TCP_HOST = envStr("TCP_HOST", "192.168.168.175");
+static const std::string TCP_HOST = envStr("TCP_HOST", "192.168.168.163");
 static const int TCP_PORT = envInt("TCP_PORT", 1337);
-static const std::string CONTROL_TCP_HOST = envStr("CONTROL_TCP_HOST", "192.168.168.46");
+static const std::string CONTROL_TCP_HOST = envStr("CONTROL_TCP_HOST", "192.168.168.42");
+//static const std::string CONTROL_TCP_HOST = envStr("CONTROL_TCP_HOST", "192.168.168.44");
+//static const std::string CONTROL_TCP_HOST = envStr("CONTROL_TCP_HOST", "192.168.168.46");
 static const int CONTROL_TCP_PORT = envInt("CONTROL_TCP_PORT", 1444);
 static const int HTTP_PORT = envInt("HTTP_PORT", 34878);
 static const std::string AUTH_TOKEN = envStr("AUTH_TOKEN", "");
 static const std::string WSS_PATH = "/ws";
-static const std::string ALLOWED_CONTROL_SUBNETS_RAW = envStr("ALLOWED_CONTROL_SUBNETS", "192.168.168.0/24,127.0.0.1,75.132.12.230");
+static const std::string ALLOWED_CONTROL_SUBNETS_RAW = envStr("ALLOWED_CONTROL_SUBNETS", "192.168.168.0/24,127.0.0.1,75.132.2.132");
 static const std::string TRUSTED_PROXIES_RAW = envStr("TRUSTED_PROXIES", "127.0.0.1,::1,192.168.168.170,192.168.168.178");
 static const std::string FALLBACK_IMAGE_URL = envStr("FALLBACK_IMAGE_URL", "https://totallynotbombcodes.synergyst.club/nosignal.png");
 static const std::string FALLBACK_MJPEG_URL = envStr("FALLBACK_MJPEG_URL", "");
@@ -448,6 +450,7 @@ static const char *HTML_TEMPLATE = R"HTML(<!doctype html>
     <button id="btnSendText" title="Send plain text as keystrokes">Send Text</button>
     <button id="btnShell" title="Execute shell command on agent">Shell</button>
     <button id="btnRelAllKeys" title="Releases all keys which the USB HID may have held down">Release keys</button>
+    <button id="btnKillAgent" title="Kills and agent">Kill agent</button>
     <button id="btnHelp" class="small" style="display:none">Help</button>
   </div>
   <div id="help">
@@ -481,6 +484,7 @@ static const char *HTML_TEMPLATE = R"HTML(<!doctype html>
   const btnSendText = document.getElementById('btnSendText');
   const btnShell = document.getElementById('btnShell');
   const btnRelAllKeys = document.getElementById('btnRelAllKeys');
+  const btnKillAgent = document.getElementById('btnKillAgent');
   const vfModeSel = document.getElementById('vfMode');
   const vfURLInput = document.getElementById('vfURL');
   const vfApply = document.getElementById('vfApply');
@@ -739,6 +743,7 @@ static const char *HTML_TEMPLATE = R"HTML(<!doctype html>
     }
   });
   btnRelAllKeys.addEventListener('click', () => { if (confirm('Release all potentially held down keys?')) sendRelAllKeys(); });
+  btnKillAgent.addEventListener('click', () => { if (confirm('Kill the agent?')) send({type:'killagent', action:'control'}); });
   vfModeSel.addEventListener('change', () => { updateUrlVisibility(); checkPrefsChanged(); });
   vfURLInput.addEventListener('input', () => checkPrefsChanged());
   vfApply.addEventListener('click', () => {
@@ -958,6 +963,7 @@ static void videoThreadFunc() {
             for (auto *ws : clients) {
                 if (ws->getUserData()->allowedControl) ws->send(s, uWS::OpCode::TEXT);
             }
+            std::cout << "[video] Reconnected to " << TCP_HOST << ":" << TCP_PORT << "\n";
         });
 
         std::vector<uint8_t> acc;
@@ -1050,6 +1056,7 @@ static void controlThreadFunc() {
                 inf["remoteSize"] = { {"w", lastRemoteSize->first}, {"h", lastRemoteSize->second} };
             }
             broadcastInfo(inf);
+            std::cout << "[control] Reconnected to " << CONTROL_TCP_HOST << ":" << CONTROL_TCP_PORT << "\n";
         });
 
         // query remote size
@@ -1331,7 +1338,7 @@ int main() {
         }
     });
 
-    app.listen("0.0.0.0", HTTP_PORT, [](auto *token) {
+    app.listen("127.0.0.1", HTTP_PORT, [](auto *token) {
         if (token) {
             gListenSocket = token;
             std::cout << "HTTP server listening on http://localhost:" << HTTP_PORT << "/\n";
